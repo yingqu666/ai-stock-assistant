@@ -1,0 +1,5 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="512" height="512" viewBox="0 0 512 512" role="img" aria-label="AI投资研究助手">
+  <rect width="512" height="512" rx="96" fill="#111827"/>
+  <rect x="88" y="96" width="336" height="320" rx="48" fill="#1f6feb"/>
+  <path d="M154 340 220 172h54l66 168h-50l-12-34h-66l-12 34h-46Zm72-74h38l-19-58-19 58Zm140 74V172h50v168h-50Z" fill="#fff"/>
+</svg>

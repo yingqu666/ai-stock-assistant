@@ -1,0 +1,21 @@
+services:
+  - type: web
+    name: ai-investment-workbench-api
+    env: node
+    plan: starter
+    buildCommand: npm install
+    startCommand: npm run server
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: TZ
+        value: Asia/Shanghai
+      - key: ENABLE_SCHEDULER
+        value: true
+      - key: DATABASE_SSL
+        value: true
+      - key: RATE_LIMIT_WINDOW_MS
+        value: 60000
+      - key: RATE_LIMIT_MAX
+        value: 120

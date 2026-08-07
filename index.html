@@ -1,0 +1,58 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#111827" />
+    <title>AI投资研究助手</title>
+    <link rel="manifest" href="./manifest.json" />
+    <link rel="stylesheet" href="./src/styles.css" />
+    <script src="./config.js"></script>
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="sidebar">
+        <div class="brand">
+          <div class="brand-mark">AI</div>
+          <div>
+            <strong>AI投资研究助手</strong>
+            <span>A股研究工作台</span>
+          </div>
+        </div>
+        <nav id="nav" class="nav" aria-label="主导航"></nav>
+      </aside>
+
+      <main class="main">
+        <header class="topbar">
+          <div>
+            <p class="eyebrow">个人投资研究终端</p>
+            <h1 id="page-title">首页</h1>
+          </div>
+          <div class="top-actions">
+            <span class="status-dot"></span>
+            <span>数据服务运行中</span>
+          </div>
+        </header>
+
+        <section id="content" class="content"></section>
+      </main>
+
+      <aside class="right-panel">
+        <section class="panel-section">
+          <h2>市场快照</h2>
+          <div id="side-market"></div>
+        </section>
+        <section class="panel-section">
+          <h2>风险提醒</h2>
+          <div id="side-risk"></div>
+        </section>
+        <section class="panel-section">
+          <h2>研究队列</h2>
+          <div id="side-queue"></div>
+        </section>
+      </aside>
+    </div>
+
+    <script type="module" src="./src/app.js"></script>
+  </body>
+</html>

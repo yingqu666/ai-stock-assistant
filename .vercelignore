@@ -1,0 +1,10 @@
+.env
+.env.*
+node_modules
+server/
+config/database.js
+DEPLOYMENT.md
+package-lock.json
+package.json
+render.yaml
+railway.json
