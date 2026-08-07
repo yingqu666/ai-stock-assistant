@@ -5,5 +5,5 @@
   window.__AI_INVESTMENT_API_BASE__ =
     savedApiBase ||
     window.__AI_INVESTMENT_API_BASE__ ||
-    (isLocal ? "http://localhost:8787/api" : "https://your-api-domain.example.com/api");
+    (isLocal ? "API_URL: "https://ai-stock-backend-2egj.onrender.com"/api" : "https://your-api-domain.example.com/api");
 })();
