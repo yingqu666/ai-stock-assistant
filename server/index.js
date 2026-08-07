@@ -1,6 +1,7 @@
 import "dotenv/config";
 import cors from "cors";
 import express from "express";
+import path from "node:path";
 import { initDatabase, getDatabaseMode, getDatabaseStatus } from "./db/store.js";
 import { aiRouter } from "./routes/ai.js";
 import { aiHistoryRouter } from "./routes/aiHistory.js";
@@ -20,6 +21,7 @@ import { errorHandler, notFound, rateLimit, securityHeaders } from "./middleware
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
+const rootDir = process.cwd();
 
 app.set("trust proxy", 1);
 app.use(securityHeaders);
@@ -58,7 +60,21 @@ app.use("/api/announcements", announcementRouter);
 app.use("/api/ai-history", aiHistoryRouter);
 app.use("/api/ai", aiRouter);
 app.use("/api/ai-review", aiReviewRouter);
-app.use(notFound);
+
+app.use("/api", notFound);
+app.use(
+  express.static(rootDir, {
+    index: "index.html",
+    extensions: ["html"],
+  }),
+);
+app.get("*", (req, res, next) => {
+  if (req.path.startsWith("/api")) {
+    next();
+    return;
+  }
+  res.sendFile(path.join(rootDir, "index.html"));
+});
 app.use(errorHandler);
 
 if (process.env.ENABLE_SCHEDULER !== "false") {
