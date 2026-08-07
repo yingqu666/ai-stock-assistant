@@ -2,6 +2,7 @@ import "dotenv/config";
 import cors from "cors";
 import express from "express";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
 import { initDatabase, getDatabaseMode, getDatabaseStatus } from "./db/store.js";
 import { aiRouter } from "./routes/ai.js";
 import { aiHistoryRouter } from "./routes/aiHistory.js";
@@ -21,7 +22,10 @@ import { errorHandler, notFound, rateLimit, securityHeaders } from "./middleware
 
 const app = express();
 const port = Number(process.env.PORT ?? 8787);
-const rootDir = process.cwd();
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const rootDir = path.join(__dirname, "..");
+const indexFile = path.join(__dirname, "..", "index.html");
 
 app.set("trust proxy", 1);
 app.use(securityHeaders);
@@ -73,7 +77,7 @@ app.get("*", (req, res, next) => {
     next();
     return;
   }
-  res.sendFile(path.join(rootDir, "index.html"));
+  res.sendFile(indexFile);
 });
 app.use(errorHandler);
 
