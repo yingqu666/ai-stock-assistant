@@ -51,9 +51,13 @@ const pages = {
 
 let currentPage = "dashboard";
 let appStarted = false;
-const APP_VERSION = "1.1";
+const APP_VERSION = "1.2";
 const appVersionKey = "ai-investment-app-version";
-const displayCacheKeys = ["ai-investment-sync:status", "ai-investment-refresh-logs"];
+const displayCacheKeys = ["ai-investment-sync:status", "ai-investment-refresh-logs", "investment_notification_log"];
+const mojibakeCodePoints = new Set([
+  0x9394, 0x942d, 0x7f01, 0x935f, 0x9357, 0x9359, 0x95b2, 0x9411, 0x6960, 0x704f, 0x891d, 0x7ec2, 0x59af, 0x5ad9,
+  0x837b, 0x7cba, 0x935a, 0x942e, 0x6231, 0x509a, 0xff04, 0x69e6, 0xfffd,
+]);
 
 function prepareFrontendCache() {
   try {
@@ -61,10 +65,20 @@ function prepareFrontendCache() {
     if (savedVersion !== APP_VERSION) {
       displayCacheKeys.forEach((key) => window.localStorage.removeItem(key));
       window.localStorage.setItem(appVersionKey, APP_VERSION);
+      return;
     }
+
+    displayCacheKeys.forEach((key) => {
+      const value = window.localStorage.getItem(key);
+      if (value && hasMojibake(value)) window.localStorage.removeItem(key);
+    });
   } catch {
     // Cache cleanup is best-effort and must not block page startup.
   }
+}
+
+function hasMojibake(value) {
+  return [...String(value)].some((char) => mojibakeCodePoints.has(char.charCodeAt(0)));
 }
 
 async function setPage(id) {
