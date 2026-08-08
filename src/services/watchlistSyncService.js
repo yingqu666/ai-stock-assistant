@@ -5,7 +5,7 @@ import { getUserStoragePrefix } from "./userService.js";
 
 const key = "ai-investment-cloud-watchlist-cache";
 const groupKey = "ai-investment-watchlist-groups-cache";
-const defaultGroups = ["AI科技", "半导体", "电力能源", "长期观察"];
+const defaultGroups = ["AI科技", "半导体", "电力能源", "资源", "长期观察"];
 
 export async function getSyncedWatchlist() {
   const result = await syncWatchlist({
@@ -13,8 +13,9 @@ export async function getSyncedWatchlist() {
     localSave: saveLocalWatchlist,
   });
   const groups = result.groups ?? (await getWatchlistGroups());
+  const items = await enrichWatchlistQuotes(normalizeItems(result.data));
   return {
-    items: normalizeItems(result.data),
+    items,
     groups,
     syncStatus: getSyncStatus().watchlist ?? {
       status: result.status,
@@ -26,14 +27,14 @@ export async function getSyncedWatchlist() {
 
 export async function addSyncedStock(query, groupName = "长期观察") {
   const keyword = String(query ?? "").trim();
-  if (!keyword) return { ok: false, message: "请输入股票代码、名称或拼音简称。" };
+  if (!keyword) return { ok: false, message: "请输入股票/ETF代码、名称、简称或拼音。" };
 
   const stock = await findStock(keyword);
-  if (!stock) return { ok: false, message: `未找到匹配股票：${keyword}` };
+  if (!stock) return { ok: false, message: `未找到匹配标的：${keyword}` };
 
   const current = loadLocalWatchlist();
   if (current.some((item) => normalizeItem(item).code === stock.code)) {
-    return { ok: false, message: "该股票已经在关注列表中。" };
+    return { ok: false, message: "该标的已经在关注列表中。" };
   }
 
   const payload = {
@@ -41,8 +42,12 @@ export async function addSyncedStock(query, groupName = "长期观察") {
     name: stock.name,
     stockCode: stock.code,
     stockName: stock.name,
+    assetType: stock.assetType ?? "股票",
+    industry: stock.industry ?? "待补充",
+    price: stock.price,
+    changePercent: stock.changePercent,
     reason: `${stock.industry ?? "A股"}方向观察，等待更多事件验证。`,
-    aiLevel: "新加入观察",
+    aiLevel: stock.assetType === "ETF" ? "主题观察" : "新加入观察",
     groupName,
     addedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
   };
@@ -78,20 +83,22 @@ export async function createWatchlistGroup(name) {
     const groups = await getWatchlistGroups();
     return { ok: true, data: result.data, groups, message: `已创建分组：${cleanName}` };
   } catch {
-    const groups = [...normalizeGroups(loadLocalGroups()), { name: cleanName }];
+    const groups = normalizeGroups([...loadLocalGroups(), { name: cleanName }]);
     saveLocalGroups(groups);
     return { ok: true, groups, message: `已本地创建分组：${cleanName}` };
   }
 }
 
 export async function renameWatchlistGroup(oldName, newName) {
+  const cleanName = String(newName ?? "").trim();
+  if (!cleanName) return { ok: false, message: "请输入新的分组名称。" };
   try {
-    await cloudDataApi.renameWatchlistGroup(oldName, newName);
+    await cloudDataApi.renameWatchlistGroup(oldName, cleanName);
   } catch {
     // local fallback below
   }
-  const groups = normalizeGroups(loadLocalGroups()).map((group) => (group.name === oldName ? { ...group, name: newName } : group));
-  const items = loadLocalWatchlist().map((item) => (normalizeItem(item).groupName === oldName ? { ...item, groupName: newName } : item));
+  const groups = normalizeGroups(loadLocalGroups()).map((group) => (group.name === oldName ? { ...group, name: cleanName } : group));
+  const items = loadLocalWatchlist().map((item) => (normalizeItem(item).groupName === oldName ? { ...item, groupName: cleanName } : item));
   saveLocalGroups(groups);
   saveLocalWatchlist(items);
   return { ok: true, message: "分组已重命名" };
@@ -105,7 +112,7 @@ export async function deleteWatchlistGroup(name) {
   }
   saveLocalGroups(normalizeGroups(loadLocalGroups()).filter((group) => group.name !== name));
   saveLocalWatchlist(loadLocalWatchlist().map((item) => (normalizeItem(item).groupName === name ? { ...item, groupName: "长期观察" } : item)));
-  return { ok: true, message: "分组已删除，组内股票已移至长期观察" };
+  return { ok: true, message: "分组已删除，组内标的已移动到长期观察" };
 }
 
 export async function moveSyncedStockToGroup(idOrCode, groupName) {
@@ -118,7 +125,27 @@ export async function moveSyncedStockToGroup(idOrCode, groupName) {
     const normalized = normalizeItem(item);
     return normalized.id === idOrCode || normalized.code === idOrCode ? { ...normalized, groupName } : normalized;
   }));
-  return { ok: true, message: "股票分组已更新" };
+  return { ok: true, message: "标的分组已更新" };
+}
+
+async function enrichWatchlistQuotes(items) {
+  const enriched = await Promise.all(items.map(async (item) => {
+    const stock = await findStock(item.code).catch(() => null);
+    if (!stock) return item;
+    return normalizeItem({
+      ...item,
+      ...stock,
+      id: item.id,
+      groupName: item.groupName,
+      reason: item.reason,
+      aiLevel: item.aiLevel,
+      addedAt: item.addedAt,
+      stockCode: item.code,
+      stockName: stock.name ?? item.name,
+    });
+  }));
+  saveLocalWatchlist(enriched);
+  return enriched;
 }
 
 async function findStock(keyword) {
@@ -128,8 +155,19 @@ async function findStock(keyword) {
   } catch {
     // fallback below
   }
-  const upper = keyword.toUpperCase();
-  return stockDatabase.find((stock) => stock.code === keyword || stock.name.includes(keyword) || String(stock.pinyin ?? "").toUpperCase().includes(upper));
+  return stockDatabase.find((stock) => matchesStock(stock, keyword));
+}
+
+function matchesStock(stock, keyword) {
+  const text = String(keyword ?? "").trim();
+  const upper = text.toUpperCase();
+  const aliases = (stock.aliases ?? []).map((item) => String(item).toUpperCase());
+  return stock.code === text
+    || stock.code.includes(text)
+    || String(stock.name ?? "").includes(text)
+    || String(stock.shortName ?? "").includes(text)
+    || String(stock.pinyin ?? "").toUpperCase().includes(upper)
+    || aliases.some((alias) => alias.includes(upper) || alias.includes(text));
 }
 
 function addLocal(item) {
@@ -177,7 +215,7 @@ function localKey(name) {
 function normalizeGroups(groups = []) {
   const seen = new Set();
   return [...groups, ...defaultGroups.map((name) => ({ name }))]
-    .map((group, index) => ({ id: group.id ?? group.name, name: group.name ?? group, sortOrder: group.sortOrder ?? index }))
+    .map((group, index) => ({ id: group.id ?? group.name ?? group, name: group.name ?? group, sortOrder: group.sortOrder ?? index }))
     .filter((group) => {
       if (!group.name || seen.has(group.name)) return false;
       seen.add(group.name);
@@ -186,7 +224,7 @@ function normalizeGroups(groups = []) {
 }
 
 function normalizeItems(items) {
-  return (items ?? []).map(normalizeItem);
+  return (items ?? []).map(normalizeItem).filter((item) => item.code);
 }
 
 function normalizeItem(item) {
@@ -196,9 +234,23 @@ function normalizeItem(item) {
     stockCode: item.stockCode ?? item.code,
     name: item.name ?? item.stockName,
     stockName: item.stockName ?? item.name,
+    assetType: item.assetType ?? "股票",
+    market: item.market ?? "待补充",
+    industry: item.industry ?? "待补充",
+    price: item.price ?? "暂无",
+    changePercent: item.changePercent ?? item.change ?? "暂无",
+    amount: item.amount ?? "暂无",
+    volume: item.volume ?? "暂无",
+    turnoverRate: item.turnoverRate ?? "暂无",
+    marketCap: item.marketCap ?? "暂无",
+    dataSource: item.dataSource ?? item.quoteSource ?? "云端/本地",
+    dataStatus: item.dataStatus ?? "部分真实",
+    updatedAt: item.updatedAt ?? "暂无",
     groupName: item.groupName ?? "长期观察",
     addedAt: item.addedAt ?? item.createdAt ?? new Date().toLocaleString("zh-CN", { hour12: false }),
     reason: item.reason ?? "",
     aiLevel: item.aiLevel ?? "观察",
+    riskTips: item.riskTips ?? [],
+    researchReport: item.researchReport,
   };
 }

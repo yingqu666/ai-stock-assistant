@@ -16,7 +16,7 @@ export async function queryStock(query) {
   try {
     const result = await cloudDataApi.getStocks(keyword || fallback.code);
     const stock = result.data?.[0];
-    if (!stock) throw new Error(result.message || "未找到股票");
+    if (!stock) throw new Error(result.message || "未找到股票或ETF");
     return normalizeCloudStock(stock, fallback, result);
   } catch (error) {
     addLog({
@@ -36,7 +36,8 @@ export async function searchStocks(query) {
   if (!keyword) return stockDatabase.map(withMockQuote);
   try {
     const result = await cloudDataApi.getStocks(keyword);
-    return result.data ?? [];
+    if (result.data?.length) return result.data;
+    return stockDatabase.filter((stock) => matchesMockStock(stock, keyword)).map(withMockQuote);
   } catch {
     return stockDatabase.filter((stock) => matchesMockStock(stock, keyword)).map(withMockQuote);
   }
@@ -54,6 +55,8 @@ export async function getWatchlistSnapshot() {
         change: quote.changeAmount ?? stock.change,
         changePercent: quote.changePercent ?? stock.change,
         amount: quote.amount ?? "暂无",
+        volume: quote.volume ?? "暂无",
+        turnoverRate: quote.turnoverRate ?? "暂无",
         tracking: buildQuoteTracking(stock, quote),
       };
     }));
@@ -81,7 +84,13 @@ export function findMockStock(query) {
 
 function matchesMockStock(stock, keyword) {
   const upper = keyword.toUpperCase();
-  return stock.code === keyword || stock.code.includes(keyword) || stock.name.includes(keyword) || String(stock.pinyin ?? "").toUpperCase().includes(upper);
+  const aliases = (stock.aliases ?? []).map((item) => String(item).toUpperCase());
+  return stock.code === keyword
+    || stock.code.includes(keyword)
+    || String(stock.name ?? "").includes(keyword)
+    || String(stock.shortName ?? "").includes(keyword)
+    || String(stock.pinyin ?? "").toUpperCase().includes(upper)
+    || aliases.some((alias) => alias.includes(upper) || alias.includes(keyword));
 }
 
 function normalizeCloudStock(stock, fallback, result = {}) {
@@ -90,7 +99,12 @@ function normalizeCloudStock(stock, fallback, result = {}) {
     ...stock,
     code: stock.code ?? fallback.code,
     name: stock.name ?? fallback.name,
+    assetType: stock.assetType ?? fallback.assetType ?? "股票",
+    market: stock.market ?? fallback.market ?? "待补充",
     industry: stock.industry ?? fallback.industry ?? "待补充",
+    volume: stock.volume ?? fallback.volume ?? "待补充",
+    turnoverRate: stock.turnoverRate ?? fallback.turnoverRate ?? "待补充",
+    valuationStatus: stock.valuationStatus ?? fallback.valuationStatus ?? "待观察",
     profile: stock.profile ?? fallback.profile ?? `${stock.name ?? fallback.name}，基础资料来自公开行情接口。`,
     riskTips: stock.riskTips ?? fallback.riskTips ?? ["行情存在延迟，请结合公告和财报继续观察。"],
     quoteSource: stock.quoteSource ?? result.source ?? "东方财富",
@@ -103,17 +117,19 @@ function normalizeCloudStock(stock, fallback, result = {}) {
 function withMockQuote(stock) {
   return {
     ...stock,
-    price: stock.basics?.find((item) => item.label === "当前价格")?.value ?? stock.price ?? "模拟",
+    price: stock.price ?? "模拟",
     changePercent: stock.changePercent ?? "模拟",
     changeAmount: stock.changeAmount ?? "模拟",
     amount: stock.amount ?? "模拟",
-    marketCap: stock.basics?.find((item) => item.label === "总市值")?.value ?? stock.marketCap ?? "模拟",
+    volume: stock.volume ?? "模拟",
+    turnoverRate: stock.turnoverRate ?? "模拟",
+    marketCap: stock.marketCap ?? "模拟",
     pe: stock.pe ?? "模拟",
     pb: stock.pb ?? "模拟",
     listingDate: stock.listingDate ?? "模拟",
-    dataSource: "模拟数据",
-    quoteSource: "模拟数据",
-    dataStatus: "模拟数据",
+    dataSource: stock.dataSource ?? "模拟数据",
+    quoteSource: stock.quoteSource ?? "模拟数据",
+    dataStatus: stock.dataStatus ?? "模拟数据",
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
   };
 }

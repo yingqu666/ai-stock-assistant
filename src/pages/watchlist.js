@@ -1,4 +1,4 @@
-import { riskCard, watchStockCard } from "../components/cards.js";
+import { metricCard, riskCard } from "../components/cards.js";
 import { timelineList } from "../components/lists.js";
 import { getWatchlistData, selectStockByCode } from "../services/mockService.js";
 import {
@@ -18,9 +18,9 @@ function portfolioRow(stock, groups) {
     <article class="data-card portfolio-row ${stock.isRisk ? "risk-row" : ""}">
       <div>
         <strong>${stock.name}</strong>
-        <small>${stock.code} · 分组：${stock.groupName ?? "长期观察"} · 添加时间：${stock.addedAt}</small>
-        <p>${stock.reason}</p>
-        <p><b>今日涨跌：</b>${stock.changePercent ?? "暂无"} · <b>风险：</b>${stock.riskText ?? "常规跟踪"}</p>
+        <small>${stock.code} · ${stock.assetType ?? "股票"} · ${stock.groupName ?? "长期观察"} · ${stock.industry ?? "行业待补充"}</small>
+        <p>${stock.reason || "已加入长期观察，等待行情、新闻和公告继续验证。"}</p>
+        <p><b>价格：</b>${stock.price ?? "暂无"} · <b>涨跌幅：</b>${stock.changePercent ?? "暂无"} · <b>风险：</b>${stock.riskText ?? firstRisk(stock)}</p>
       </div>
       <span>${stock.aiLevel}</span>
       <div class="row-actions">
@@ -33,15 +33,33 @@ function portfolioRow(stock, groups) {
     </article>`;
 }
 
+function stockDetailCard(stock) {
+  return `
+    <article class="data-card watch-card">
+      <div class="card-head">
+        <div><strong>${stock.name}</strong><span>${stock.code} · ${stock.assetType ?? "股票"}</span></div>
+        <em class="${toneClass(stock.changePercent)}">${stock.changePercent ?? "暂无"}</em>
+      </div>
+      <div class="watch-price"><span>当前价格</span><strong>${stock.price ?? "暂无"}</strong></div>
+      <div class="watch-meta">
+        <p><b>行业</b>${stock.industry ?? "待补充"}</p>
+        <p><b>成交额</b>${stock.amount ?? "暂无"}</p>
+        <p><b>换手率</b>${stock.turnoverRate ?? "暂无"}</p>
+        <p><b>AI关注等级</b>${stock.aiLevel ?? "观察"}</p>
+        <p><b>数据来源</b>${stock.dataSource ?? "云端/本地"} · ${stock.dataStatus ?? "部分真实"}</p>
+      </div>
+    </article>`;
+}
+
 export async function renderWatchlist() {
-  const [{ watchlist, stockNews, aiHistory, accuracyStats, riskSignals }, synced] = await Promise.all([
+  const [{ stockNews, aiHistory, accuracyStats, riskSignals }, synced] = await Promise.all([
     getWatchlistData(),
     getSyncedWatchlist(),
   ]);
   const syncStatus = synced.syncStatus;
   const groups = synced.groups ?? [];
   const sortMode = getSortMode();
-  const enrichedItems = sortStocks(enrichStocks(synced.items, watchlist, riskSignals), sortMode);
+  const enrichedItems = sortStocks(enrichStocks(synced.items, riskSignals), sortMode);
   const byGroup = groups.map((group) => ({ ...group, stocks: enrichedItems.filter((stock) => (stock.groupName ?? "长期观察") === group.name) }));
 
   return `
@@ -49,12 +67,12 @@ export async function renderWatchlist() {
       <div class="section-head">
         <div>
           <h2>我的关注股票</h2>
-          <span>支持代码、名称、拼音搜索添加；支持分组、移动和删除</span>
+          <span>支持股票和ETF，按代码、名称、简称或拼音搜索添加；支持分组、移动和删除</span>
         </div>
         <span class="notice">${syncStatus.status} · ${syncStatus.lastSyncAt} · ${syncStatus.source ?? "云端/本地"}</span>
       </div>
       <form class="stock-search add-stock-form">
-        <input name="stockQuery" placeholder="输入 600519 / 贵州茅台 / GZMT" />
+        <input name="stockQuery" placeholder="输入 600176 / 512760 / AI / 贵州茅台" />
         <select name="groupName">${groups.map((group) => `<option value="${group.name}">${group.name}</option>`).join("")}</select>
         <button type="submit">添加关注</button>
       </form>
@@ -84,14 +102,26 @@ export async function renderWatchlist() {
         `).join("")}
       </div>
       ${byGroup.map((group) => `
-        <div class="section-head compact"><h2>${group.name}</h2><span>${group.stocks.length} 只股票</span></div>
-        <div class="portfolio-list">${group.stocks.map((stock) => portfolioRow(stock, groups)).join("") || `<article class="data-card"><strong>暂无股票</strong><p>可通过上方搜索添加到该分组。</p></article>`}</div>
+        <div class="section-head compact"><h2>${group.name}</h2><span>${group.stocks.length} 只标的</span></div>
+        <div class="portfolio-list">${group.stocks.map((stock) => portfolioRow(stock, groups)).join("") || `<article class="data-card"><strong>暂无标的</strong><p>可通过上方搜索添加到该分组。</p></article>`}</div>
       `).join("")}
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>股票详情卡</h2><span>来源：东方财富/stockService · 更新时间：${watchlist[0]?.updatedAt ?? "暂无"} · 状态：真实/部分回退</span></div>
-      <div class="watch-grid">${watchlist.map(watchStockCard).join("")}</div>
+      <div class="section-head"><h2>关注标的详情卡</h2><span>每张卡片来自当前关注列表，不再使用固定示例内容</span></div>
+      <div class="watch-grid">${enrichedItems.map(stockDetailCard).join("") || `<article class="data-card"><strong>暂无关注</strong><p>先添加股票或ETF后，这里会显示独立详情卡。</p></article>`}</div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>关注组合摘要</h2><span>用于快速查看数量、风险和同步状态</span></div>
+      <div class="metrics">
+        ${[
+          { label: "关注数量", value: `${enrichedItems.length}只`, change: "股票/ETF" },
+          { label: "风险标的", value: `${enrichedItems.filter((item) => item.isRisk).length}只`, change: "置顶" },
+          { label: "ETF数量", value: `${enrichedItems.filter((item) => item.assetType === "ETF").length}只`, change: "资产类型" },
+          { label: "最后同步", value: syncStatus.lastSyncAt ?? "暂无", change: syncStatus.status ?? "状态" },
+        ].map(metricCard).join("")}
+      </div>
     </section>
 
     <section class="wide-section">
@@ -110,10 +140,12 @@ export async function renderWatchlist() {
     <section class="wide-section">
       <div class="section-head"><h2>异动提醒</h2><span>价格变化、成交变化、AI提醒</span></div>
       <div class="detail-grid">
-        ${watchlist.map((stock) => `
+        ${enrichedItems.map((stock) => `
           <article class="data-card">
-            <div class="card-head"><strong>${stock.name}</strong><span>${stock.changePercent ?? stock.change}</span></div>
-            ${timelineList(stock.tracking)}
+            <div class="card-head"><strong>${stock.name}</strong><span>${stock.changePercent ?? "暂无"}</span></div>
+            ${timelineList([
+              { date: "今日", title: `${stock.name} ${stock.changePercent ?? "暂无"}`, impact: `成交额 ${stock.amount ?? "暂无"}，AI提醒：关注变化但避免追高。` },
+            ])}
           </article>
         `).join("")}
       </div>
@@ -126,7 +158,7 @@ export async function renderWatchlist() {
           { label: "统计样本", value: `${accuracyStats.sampleSize}次`, change: "历史" },
           { label: "市场判断正确", value: `${accuracyStats.marketAccuracy}%`, change: "复盘" },
           { label: "风险提醒有效", value: `${accuracyStats.riskAccuracy}%`, change: "复盘" },
-        ].map((item) => `<article class="metric-card"><span>${item.label}</span><strong>${item.value}</strong><em>${item.change}</em></article>`).join("")}
+        ].map(metricCard).join("")}
       </div>
       <div class="detail-grid">
         ${aiHistory.map((item) => `
@@ -151,12 +183,10 @@ export async function renderWatchlist() {
             <small>${item.target}</small>
           </article>
         `).join("")}
-        ${watchlist.map((stock) => `
+        ${enrichedItems.map((stock) => `
           <article class="data-card">
             <div class="card-head"><strong>${stock.name}</strong><span>${stock.code}</span></div>
-            ${riskCard(`短期风险：${stock.risks.shortTerm}`)}
-            ${riskCard(`行业风险：${stock.risks.industry}`)}
-            ${riskCard(`事件风险：${stock.risks.event}`)}
+            ${(stock.riskTips?.length ? stock.riskTips : ["短期波动风险", "行业景气变化风险", "事件落空风险"]).map(riskCard).join("")}
           </article>
         `).join("")}
       </div>
@@ -173,7 +203,7 @@ export function mountWatchlist({ navigate, rerender }) {
     const formData = new FormData(form);
     if (message) message.textContent = "正在同步到云端...";
     const result = await addSyncedStock(formData.get("stockQuery"), formData.get("groupName"));
-    if (!result.ok && message) message.textContent = result.message;
+    if (message) message.textContent = result.message;
     if (result.ok) rerender();
   });
 
@@ -224,7 +254,7 @@ export function mountWatchlist({ navigate, rerender }) {
 
   document.querySelectorAll("[data-delete-group]").forEach((button) => {
     button.addEventListener("click", async () => {
-      if (!window.confirm(`删除分组“${button.dataset.deleteGroup}”？组内股票会移动到长期观察。`)) return;
+      if (!window.confirm(`删除分组“${button.dataset.deleteGroup}”？组内标的会移动到长期观察。`)) return;
       await deleteWatchlistGroup(button.dataset.deleteGroup);
       rerender();
     });
@@ -235,14 +265,12 @@ function getSortMode() {
   return window.localStorage.getItem(sortKey) ?? "risk";
 }
 
-function enrichStocks(items, watchlist, riskSignals) {
+function enrichStocks(items, riskSignals) {
   return items.map((item) => {
-    const detail = watchlist.find((stock) => stock.code === item.code);
     const risk = riskSignals.find((signal) => signal.target === item.name || signal.target === item.code);
     return {
       ...item,
-      changePercent: detail?.changePercent ?? detail?.change ?? "暂无",
-      changeValue: parseChange(detail?.changePercent ?? detail?.change),
+      changeValue: parseChange(item.changePercent),
       isRisk: Boolean(risk) || String(item.aiLevel).includes("风险"),
       riskText: risk?.message,
       aiScore: aiLevelScore(item.aiLevel),
@@ -270,4 +298,12 @@ function aiLevelScore(level) {
   if (text.includes("观察")) return 2;
   if (text.includes("风险")) return 1;
   return 0;
+}
+
+function firstRisk(stock) {
+  return stock.riskTips?.[0] ?? "常规跟踪";
+}
+
+function toneClass(value) {
+  return String(value).startsWith("-") || Number(value) < 0 ? "negative" : "positive";
 }

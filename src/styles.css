@@ -419,12 +419,16 @@ h3 {
   margin-top: 4px;
 }
 
-.stock-search input {
+.stock-search input,
+.stock-search select,
+.row-actions select {
   flex: 1;
   min-width: 0;
   border: 1px solid var(--line);
   border-radius: 8px;
   padding: 10px 12px;
+  color: var(--ink);
+  background: #fff;
 }
 
 .settings-form {
