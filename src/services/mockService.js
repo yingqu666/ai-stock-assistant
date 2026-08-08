@@ -1,4 +1,4 @@
-﻿import { DATA_MODE } from "../config/dataSources.js";
+import { DATA_MODE } from "../config/dataSources.js";
 import {
   account,
   aiHistory,
@@ -29,23 +29,23 @@ import { getUserStoragePrefix } from "./userService.js";
 export const currentDataMode = DATA_MODE;
 
 const navLabels = {
-  dashboard: "棣栭〉",
-  market: "甯傚満鍒嗘瀽",
-  opportunities: "AI鐮旂┒鏈轰細",
-  stock: "鑲＄エ鍒嗘瀽",
-  watchlist: "鎴戠殑鍏虫敞鑲＄エ",
-  dailyReport: "AI鏃ユ姤",
-  reportCenter: "鎶ュ憡涓績",
-  assistant: "AI鍔╂墜",
-  portfolio: "鎶曡祫缁勫悎",
-  review: "澶嶇洏鍒嗘瀽",
-  riskDashboard: "椋庨櫓鐪嬫澘",
-  industryResearch: "琛屼笟鐮旂┒",
-  profile: "鎴戠殑鎶曡祫妗ｆ",
-  account: "鎴戠殑璐︽埛",
-  team: "AI鐮旂┒鍥㈤槦",
+  dashboard: "首页",
+  market: "市场分析",
+  opportunities: "AI研究机会",
+  stock: "股票分析",
+  watchlist: "我的关注股票",
+  dailyReport: "AI日报",
+  reportCenter: "报告中心",
+  assistant: "AI助手",
+  portfolio: "投资组合",
+  review: "复盘分析",
+  riskDashboard: "风险看板",
+  industryResearch: "行业研究",
+  profile: "我的投资档案",
+  account: "我的账户",
+  team: "AI研究团队",
   systemStatus: "系统状态",
-  settings: "绯荤粺璁剧疆",
+  settings: "系统设置",
 };
 
 const portfolioKey = "ai-investment-user-portfolio";

@@ -51,6 +51,21 @@ const pages = {
 
 let currentPage = "dashboard";
 let appStarted = false;
+const APP_VERSION = "1.1";
+const appVersionKey = "ai-investment-app-version";
+const displayCacheKeys = ["ai-investment-sync:status", "ai-investment-refresh-logs"];
+
+function prepareFrontendCache() {
+  try {
+    const savedVersion = window.localStorage.getItem(appVersionKey);
+    if (savedVersion !== APP_VERSION) {
+      displayCacheKeys.forEach((key) => window.localStorage.removeItem(key));
+      window.localStorage.setItem(appVersionKey, APP_VERSION);
+    }
+  } catch {
+    // Cache cleanup is best-effort and must not block page startup.
+  }
+}
 
 async function setPage(id) {
   const navItems = getNavigation();
@@ -145,6 +160,7 @@ function registerPwa() {
 }
 
 function init() {
+  prepareFrontendCache();
   registerPwa();
   if (!isLoggedIn()) {
     showLogin();
