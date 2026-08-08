@@ -63,13 +63,14 @@ export async function getUserByPhone(phone) {
 export async function addWatchlist(userId, payload) {
   const id = payload.id ?? randomUUID();
   const result = await pool.query(
-    `insert into watchlists (id, user_id, stock_code, stock_name, reason, ai_level)
-     values ($1, $2, $3, $4, $5, $6)
+    `insert into watchlists (id, user_id, stock_code, stock_name, reason, ai_level, group_name)
+     values ($1, $2, $3, $4, $5, $6, $7)
      on conflict (user_id, stock_code) do update set
-       stock_name = excluded.stock_name, reason = excluded.reason, ai_level = excluded.ai_level, updated_at = now()
+       stock_name = excluded.stock_name, reason = excluded.reason, ai_level = excluded.ai_level,
+       group_name = excluded.group_name, updated_at = now()
      returning id, user_id as "userId", stock_code as "stockCode", stock_name as "stockName",
-       reason, ai_level as "aiLevel", created_at as "createdAt", updated_at as "updatedAt"`,
-    [id, userId, payload.stockCode ?? payload.code, payload.stockName ?? payload.name, payload.reason ?? "", payload.aiLevel ?? "观察"],
+       reason, ai_level as "aiLevel", group_name as "groupName", created_at as "createdAt", updated_at as "updatedAt"`,
+    [id, userId, payload.stockCode ?? payload.code, payload.stockName ?? payload.name, payload.reason ?? "", payload.aiLevel ?? "观察", payload.groupName ?? "长期观察"],
   );
   return result.rows[0];
 }
@@ -77,8 +78,8 @@ export async function addWatchlist(userId, payload) {
 export async function getWatchlist(userId) {
   const result = await pool.query(
     `select id, user_id as "userId", stock_code as "stockCode", stock_name as "stockName",
-      reason, ai_level as "aiLevel", created_at as "createdAt", updated_at as "updatedAt"
-     from watchlists where user_id = $1 order by created_at desc`,
+      reason, ai_level as "aiLevel", group_name as "groupName", created_at as "createdAt", updated_at as "updatedAt"
+     from watchlists where user_id = $1 order by group_name asc, created_at desc`,
     [userId],
   );
   return result.rows;
@@ -87,6 +88,56 @@ export async function getWatchlist(userId) {
 export async function deleteWatchlist(userId, idOrCode) {
   const result = await pool.query(`delete from watchlists where user_id = $1 and (id = $2 or stock_code = $2)`, [userId, idOrCode]);
   return { ok: true, deleted: result.rowCount };
+}
+
+export async function getWatchlistGroups(userId) {
+  await ensureDefaultWatchlistGroups(userId);
+  const result = await pool.query(
+    `select id, user_id as "userId", name, sort_order as "sortOrder", created_at as "createdAt", updated_at as "updatedAt"
+     from watchlist_groups where user_id = $1 order by sort_order asc, created_at asc`,
+    [userId],
+  );
+  return result.rows;
+}
+
+export async function saveWatchlistGroup(userId, payload) {
+  const id = payload.id ?? randomUUID();
+  const name = payload.name ?? "长期观察";
+  const result = await pool.query(
+    `insert into watchlist_groups (id, user_id, name, sort_order)
+     values ($1, $2, $3, $4)
+     on conflict (user_id, name) do update set sort_order = excluded.sort_order, updated_at = now()
+     returning id, user_id as "userId", name, sort_order as "sortOrder", created_at as "createdAt", updated_at as "updatedAt"`,
+    [id, userId, name, Number(payload.sortOrder ?? 100)],
+  );
+  return result.rows[0];
+}
+
+export async function renameWatchlistGroup(userId, oldName, newName) {
+  await pool.query(`update watchlist_groups set name = $3, updated_at = now() where user_id = $1 and name = $2`, [userId, oldName, newName]);
+  await pool.query(`update watchlists set group_name = $3, updated_at = now() where user_id = $1 and group_name = $2`, [userId, oldName, newName]);
+  return { ok: true };
+}
+
+export async function deleteWatchlistGroup(userId, name) {
+  await pool.query(`delete from watchlist_groups where user_id = $1 and name = $2`, [userId, name]);
+  await pool.query(`update watchlists set group_name = '长期观察', updated_at = now() where user_id = $1 and group_name = $2`, [userId, name]);
+  return { ok: true };
+}
+
+export async function moveWatchlistStock(userId, idOrCode, groupName) {
+  const result = await pool.query(
+    `update watchlists set group_name = $3, updated_at = now() where user_id = $1 and (id = $2 or stock_code = $2)
+     returning id, user_id as "userId", stock_code as "stockCode", stock_name as "stockName",
+      reason, ai_level as "aiLevel", group_name as "groupName", created_at as "createdAt", updated_at as "updatedAt"`,
+    [userId, idOrCode, groupName],
+  );
+  return result.rows[0] ?? null;
+}
+
+async function ensureDefaultWatchlistGroups(userId) {
+  const defaults = ["AI科技", "半导体", "电力能源", "长期观察"];
+  await Promise.all(defaults.map((name, index) => saveWatchlistGroup(userId, { name, sortOrder: index })));
 }
 
 export async function savePortfolio(userId, payload) {

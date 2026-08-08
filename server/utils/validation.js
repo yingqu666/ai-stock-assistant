@@ -24,6 +24,7 @@ export function cleanStockPayload(payload = {}) {
     stockName,
     reason: cleanString(payload.reason, 300),
     aiLevel: cleanString(payload.aiLevel ?? "观察", 40),
+    groupName: cleanString(payload.groupName ?? payload.group ?? "长期观察", 80),
   };
 }
 

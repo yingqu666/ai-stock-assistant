@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 const state = {
   users: new Map(),
   watchlists: new Map(),
+  watchlistGroups: new Map(),
   portfolio: new Map(),
   reports: new Map(),
   settings: new Map(),
@@ -35,6 +36,7 @@ export async function addWatchlist(userId, payload) {
     stockName: payload.stockName ?? payload.name,
     reason: payload.reason ?? "",
     aiLevel: payload.aiLevel ?? "观察",
+    groupName: payload.groupName ?? "长期观察",
   });
 }
 
@@ -47,6 +49,60 @@ export async function deleteWatchlist(userId, idOrCode) {
   const next = list.filter((item) => item.id !== idOrCode && item.stockCode !== idOrCode && item.code !== idOrCode);
   state.watchlists.set(userId, next);
   return { ok: true, deleted: list.length - next.length };
+}
+
+export async function getWatchlistGroups(userId) {
+  const current = state.watchlistGroups.get(userId);
+  if (current?.length) return current;
+  const defaults = ["AI科技", "半导体", "电力能源", "长期观察"].map((name, index) => ({
+    id: randomUUID(),
+    userId,
+    name,
+    sortOrder: index,
+    createdAt: new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  }));
+  state.watchlistGroups.set(userId, defaults);
+  return defaults;
+}
+
+export async function saveWatchlistGroup(userId, payload) {
+  const item = {
+    id: payload.id ?? randomUUID(),
+    userId,
+    name: payload.name ?? "长期观察",
+    sortOrder: Number(payload.sortOrder ?? 100),
+    createdAt: payload.createdAt ?? new Date().toISOString(),
+    updatedAt: new Date().toISOString(),
+  };
+  const list = await getWatchlistGroups(userId);
+  state.watchlistGroups.set(userId, [item, ...list.filter((entry) => entry.id !== item.id && entry.name !== item.name)]);
+  return item;
+}
+
+export async function renameWatchlistGroup(userId, oldName, newName) {
+  const groups = await getWatchlistGroups(userId);
+  state.watchlistGroups.set(userId, groups.map((group) => (group.name === oldName ? { ...group, name: newName, updatedAt: new Date().toISOString() } : group)));
+  state.watchlists.set(userId, getList("watchlists", userId).map((item) => (item.groupName === oldName ? { ...item, groupName: newName, updatedAt: new Date().toISOString() } : item)));
+  return { ok: true };
+}
+
+export async function deleteWatchlistGroup(userId, name) {
+  state.watchlistGroups.set(userId, (await getWatchlistGroups(userId)).filter((group) => group.name !== name));
+  state.watchlists.set(userId, getList("watchlists", userId).map((item) => (item.groupName === name ? { ...item, groupName: "长期观察", updatedAt: new Date().toISOString() } : item)));
+  return { ok: true };
+}
+
+export async function moveWatchlistStock(userId, idOrCode, groupName) {
+  let moved = null;
+  state.watchlists.set(userId, getList("watchlists", userId).map((item) => {
+    if (item.id === idOrCode || item.stockCode === idOrCode || item.code === idOrCode) {
+      moved = { ...item, groupName, updatedAt: new Date().toISOString() };
+      return moved;
+    }
+    return item;
+  }));
+  return moved;
 }
 
 export async function savePortfolio(userId, payload) {

@@ -4,11 +4,15 @@ import { getStockSearchData, selectStock } from "../services/mockService.js";
 
 export async function renderStockSearch() {
   const { stockDetail, stockNews, stockEvents, aiAnalysis } = await getStockSearchData();
+  const financials = stockDetail.financials ?? {};
+  const valuation = stockDetail.valuationRange ?? {};
+  const report = stockDetail.researchReport ?? {};
+  const newsImpact = report.newsImpact ?? (stockNews.map((item) => `${item.title}：${item.impact}`).slice(0, 2).join("；") || "暂无重大新闻变化。");
   const quoteMetrics = [
     { label: "当前价格", value: stockDetail.price ?? "暂无", change: stockDetail.changePercent ?? "暂无" },
     { label: "今日涨跌", value: stockDetail.changeAmount ?? "暂无", change: stockDetail.changePercent ?? "暂无" },
-    { label: "成交额", value: stockDetail.amount ?? "暂无", change: stockDetail.quoteSource ?? "数据源" },
     { label: "市值", value: stockDetail.marketCap ?? "暂无", change: stockDetail.industry ?? "行业" },
+    { label: "PE / PB", value: `${stockDetail.pe ?? "暂无"} / ${stockDetail.pb ?? "暂无"}`, change: stockDetail.listingDate ?? "上市时间待补充" },
   ];
 
   return `
@@ -16,21 +20,45 @@ export async function renderStockSearch() {
       <div class="section-head">
         <div>
           <h2>股票查询</h2>
-          <span>支持A股代码和股票名称，优先使用东方财富真实行情</span>
+          <span>支持 A股代码、股票名称、拼音简称，例如 600519 / 贵州茅台 / GZMT</span>
         </div>
       </div>
       <form class="stock-search stock-query-form">
-        <input name="stockQuery" value="${stockDetail.code ?? ""}" aria-label="股票代码或名称" placeholder="例如：600519、贵州茅台、宁德时代" />
+        <input name="stockQuery" value="${stockDetail.code ?? ""}" aria-label="股票代码、名称或拼音简称" placeholder="例如：600519、贵州茅台、GZMT" />
         <button type="submit">查询股票</button>
       </form>
-      <p id="stock-query-message" class="form-message">数据来源：${stockDetail.quoteSource ?? "未知"} · 更新时间：${stockDetail.updatedAt ?? "暂无"}</p>
-      <div class="section-head compact"><h2>${stockDetail.name} ${stockDetail.code}</h2><span>${stockDetail.industry} · ${stockDetail.quoteSource ?? "数据源"}</span></div>
+      <p id="stock-query-message" class="form-message">
+        数据来源：${stockDetail.dataSource ?? stockDetail.quoteSource ?? "未知"} · 更新时间：${stockDetail.updatedAt ?? "暂无"} · 状态：${stockDetail.dataStatus ?? "部分真实"}
+      </p>
+      <div class="section-head compact">
+        <h2>${stockDetail.name ?? "未选择股票"} ${stockDetail.code ?? ""}</h2>
+        <span>${stockDetail.industry ?? "行业待补充"} · ${stockDetail.companyName ?? stockDetail.name ?? ""}</span>
+      </div>
       <div class="metrics">${quoteMetrics.map(metricCard).join("")}</div>
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>股票基础信息</h2><span>${stockDetail.industry}</span></div>
-      <article class="data-card"><strong>公司简介</strong><p>${stockDetail.profile ?? "基础资料待补充，当前已优先展示真实行情数据。"}</p></article>
+      <div class="section-head"><h2>股票基础信息</h2><span>${stockDetail.industry ?? "行业待补充"}</span></div>
+      <div class="detail-grid">
+        <article class="data-card"><strong>公司名称</strong><p>${stockDetail.companyName ?? stockDetail.name ?? "待补充"}</p></article>
+        <article class="data-card"><strong>公司简介</strong><p>${stockDetail.profile ?? "基础资料待补充，当前已优先展示行情数据。"}</p></article>
+        <article class="data-card"><strong>主营业务</strong><p>${stockDetail.mainBusiness ?? "待接入年报和公告数据。"}</p></article>
+        <article class="data-card"><strong>行业地位</strong><p>${stockDetail.industryPosition ?? "待结合行业数据继续观察。"}</p></article>
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>财务指标与估值</h2><span>营收、利润、盈利能力和估值区间</span></div>
+      <div class="metrics">
+        ${[
+          { label: "营收", value: financials.revenue ?? "待接财报", change: "财务" },
+          { label: "净利润", value: financials.netProfit ?? "待接财报", change: "财务" },
+          { label: "毛利率", value: financials.grossMargin ?? "待接财报", change: "盈利" },
+          { label: "ROE", value: financials.roe ?? "待接财报", change: "回报" },
+          { label: "历史PE范围", value: valuation.pe ?? "待接入", change: "估值" },
+          { label: "历史PB范围", value: valuation.pb ?? "待接入", change: "估值" },
+        ].map(metricCard).join("")}
+      </div>
     </section>
 
     <section class="wide-section">
@@ -52,25 +80,29 @@ export async function renderStockSearch() {
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>AI分析区域</h2><span>${aiAnalysis.source ?? "AI/fallback"}</span></div>
+      <div class="section-head"><h2>个股研究报告</h2><span>研究结论只做机会观察和风险提示</span></div>
       <div class="detail-grid">
-        <article class="data-card"><strong>市场总结</strong><p>${aiAnalysis.summary ?? aiAnalysis.marketSummary}</p></article>
-        <article class="data-card"><strong>个股分析</strong><p>${aiAnalysis.stockAdvice ?? aiAnalysis.stockAnalysis}</p></article>
-        <article class="data-card"><strong>关注方向</strong><p>${(aiAnalysis.opportunities ?? []).join("、")}</p></article>
+        <article class="data-card"><strong>1. 公司基本情况</strong><p>${report.company ?? `${stockDetail.name ?? ""} 基础资料待继续补充。`}</p></article>
+        <article class="data-card"><strong>2. 所属行业分析</strong><p>${report.industry ?? "需结合行业景气度、政策和资金方向观察。"}</p></article>
+        <article class="data-card"><strong>3. 核心竞争力</strong><p>${report.moat ?? "需从主营业务、客户结构、盈利能力继续验证。"}</p></article>
+        <article class="data-card"><strong>4. 最近涨跌原因</strong><p>${report.moveReason ?? "需结合板块、指数和成交量综合判断。"}</p></article>
+        <article class="data-card"><strong>5. 最新新闻影响</strong><p>${newsImpact}</p></article>
+        <article class="data-card"><strong>6. 资金情况</strong><p>${report.capitalFlow ?? `成交额 ${stockDetail.amount ?? "暂无"}，资金情况仅作观察。`}</p></article>
+        <article class="data-card"><strong>7. 技术走势</strong><p>${report.technicalTrend ?? `涨跌幅 ${stockDetail.changePercent ?? "暂无"}，短线观察量价配合。`}</p></article>
+        <article class="data-card"><strong>8. 风险因素</strong><p>${(report.risks ?? aiAnalysis.risks ?? []).join("；") || "关注估值、业绩和行业波动风险。"}</p></article>
+        <article class="data-card"><strong>9. AI综合评分</strong><p>${report.aiScore ?? aiAnalysis.score ?? "待评分"} 分，仅代表研究关注度。</p></article>
+        <article class="data-card"><strong>10. 投资观察总结</strong><p>${report.summary ?? aiAnalysis.stockAnalysis ?? aiAnalysis.stockAdvice ?? "当前仅作为研究观察，不输出明确买卖建议。"}</p></article>
       </div>
-      <p class="answer">${(aiAnalysis.risks ?? []).join("；")}</p>
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>个股研究报告</h2><span>公司、行业、公告、新闻、逻辑和风险</span></div>
+      <div class="section-head"><h2>AI分析区域</h2><span>${aiAnalysis.source ?? "AI/fallback"}</span></div>
       <div class="detail-grid">
-        <article class="data-card"><strong>公司</strong><p>${stockDetail.name}：${stockDetail.profile ?? "基础资料待补充。"}</p></article>
-        <article class="data-card"><strong>行业</strong><p>${stockDetail.industry}，需要结合产业链景气度和资金方向观察。</p></article>
-        <article class="data-card"><strong>近期公告</strong><p>${stockNews.find((item) => String(item.category).includes("公告"))?.title ?? "暂无重大公告。"}</p></article>
-        <article class="data-card"><strong>新闻影响</strong><p>${stockNews.map((item) => `${item.title}：${item.impact}`).slice(0, 2).join("；") || "暂无新闻变化。"}</p></article>
-        <article class="data-card"><strong>投资逻辑</strong><p>${aiAnalysis.stockAnalysis ?? aiAnalysis.stockAdvice}</p></article>
-        <article class="data-card"><strong>注意事项</strong><p>${(aiAnalysis.risks ?? []).join("；")}</p></article>
+        <article class="data-card"><strong>市场总结</strong><p>${aiAnalysis.summary ?? aiAnalysis.marketSummary ?? "暂无"}</p></article>
+        <article class="data-card"><strong>个股分析</strong><p>${aiAnalysis.stockAdvice ?? aiAnalysis.stockAnalysis ?? "暂无"}</p></article>
+        <article class="data-card"><strong>关注方向</strong><p>${(aiAnalysis.opportunities ?? []).join("、") || "暂无"}</p></article>
       </div>
+      <p class="answer">${(aiAnalysis.risks ?? []).join("；")}</p>
     </section>
 
     <section class="wide-section">
@@ -88,7 +120,7 @@ export function mountStockSearch({ rerender }) {
     const formData = new FormData(form);
     const query = String(formData.get("stockQuery") ?? "").trim();
     if (!query) {
-      if (message) message.textContent = "请输入股票代码或名称。";
+      if (message) message.textContent = "请输入股票代码、名称或拼音简称。";
       return;
     }
     selectStock(query);

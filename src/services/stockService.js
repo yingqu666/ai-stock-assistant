@@ -16,8 +16,8 @@ export async function queryStock(query) {
   try {
     const result = await cloudDataApi.getStocks(keyword || fallback.code);
     const stock = result.data?.[0];
-    if (!stock) throw new Error("未找到股票");
-    return normalizeCloudStock(stock, fallback);
+    if (!stock) throw new Error(result.message || "未找到股票");
+    return normalizeCloudStock(stock, fallback, result);
   } catch (error) {
     addLog({
       module: "stock",
@@ -38,7 +38,7 @@ export async function searchStocks(query) {
     const result = await cloudDataApi.getStocks(keyword);
     return result.data ?? [];
   } catch {
-    return stockDatabase.filter((stock) => stock.code.includes(keyword) || stock.name.includes(keyword));
+    return stockDatabase.filter((stock) => matchesMockStock(stock, keyword)).map(withMockQuote);
   }
 }
 
@@ -76,10 +76,15 @@ export function getStockEvents(code) {
 
 export function findMockStock(query) {
   const keyword = String(query ?? "").trim();
-  return stockDatabase.find((stock) => stock.code === keyword || stock.name.includes(keyword));
+  return stockDatabase.find((stock) => matchesMockStock(stock, keyword));
 }
 
-function normalizeCloudStock(stock, fallback) {
+function matchesMockStock(stock, keyword) {
+  const upper = keyword.toUpperCase();
+  return stock.code === keyword || stock.code.includes(keyword) || stock.name.includes(keyword) || String(stock.pinyin ?? "").toUpperCase().includes(upper);
+}
+
+function normalizeCloudStock(stock, fallback, result = {}) {
   return {
     ...fallback,
     ...stock,
@@ -88,8 +93,10 @@ function normalizeCloudStock(stock, fallback) {
     industry: stock.industry ?? fallback.industry ?? "待补充",
     profile: stock.profile ?? fallback.profile ?? `${stock.name ?? fallback.name}，基础资料来自公开行情接口。`,
     riskTips: stock.riskTips ?? fallback.riskTips ?? ["行情存在延迟，请结合公告和财报继续观察。"],
-    quoteSource: stock.quoteSource ?? "东方财富",
-    updatedAt: stock.updatedAt ?? new Date().toLocaleString("zh-CN", { hour12: false }),
+    quoteSource: stock.quoteSource ?? result.source ?? "东方财富",
+    dataSource: stock.dataSource ?? result.source ?? "东方财富",
+    dataStatus: stock.dataStatus ?? result.status ?? "部分真实",
+    updatedAt: stock.updatedAt ?? result.updatedAt ?? new Date().toLocaleString("zh-CN", { hour12: false }),
   };
 }
 
@@ -101,7 +108,12 @@ function withMockQuote(stock) {
     changeAmount: stock.changeAmount ?? "模拟",
     amount: stock.amount ?? "模拟",
     marketCap: stock.basics?.find((item) => item.label === "总市值")?.value ?? stock.marketCap ?? "模拟",
+    pe: stock.pe ?? "模拟",
+    pb: stock.pb ?? "模拟",
+    listingDate: stock.listingDate ?? "模拟",
+    dataSource: "模拟数据",
     quoteSource: "模拟数据",
+    dataStatus: "模拟数据",
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
   };
 }

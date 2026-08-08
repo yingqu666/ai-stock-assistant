@@ -1,21 +1,32 @@
 import { riskCard, watchStockCard } from "../components/cards.js";
 import { timelineList } from "../components/lists.js";
 import { getWatchlistData, selectStockByCode } from "../services/mockService.js";
-import { addSyncedStock, getSyncedWatchlist, removeSyncedStock } from "../services/watchlistSyncService.js";
+import {
+  addSyncedStock,
+  createWatchlistGroup,
+  deleteWatchlistGroup,
+  getSyncedWatchlist,
+  moveSyncedStockToGroup,
+  removeSyncedStock,
+  renameWatchlistGroup,
+} from "../services/watchlistSyncService.js";
 
 const sortKey = "ai-investment-watchlist-sort";
 
-function portfolioRow(stock) {
+function portfolioRow(stock, groups) {
   return `
     <article class="data-card portfolio-row ${stock.isRisk ? "risk-row" : ""}">
       <div>
         <strong>${stock.name}</strong>
-        <small>${stock.code} · 添加时间：${stock.addedAt}</small>
+        <small>${stock.code} · 分组：${stock.groupName ?? "长期观察"} · 添加时间：${stock.addedAt}</small>
         <p>${stock.reason}</p>
         <p><b>今日涨跌：</b>${stock.changePercent ?? "暂无"} · <b>风险：</b>${stock.riskText ?? "常规跟踪"}</p>
       </div>
       <span>${stock.aiLevel}</span>
       <div class="row-actions">
+        <select data-move-stock="${stock.id ?? stock.code}">
+          ${groups.map((group) => `<option value="${group.name}" ${group.name === stock.groupName ? "selected" : ""}>${group.name}</option>`).join("")}
+        </select>
         <button class="secondary-button" data-view-stock="${stock.code}" type="button">查看详情</button>
         <button class="danger-button" data-remove-stock="${stock.id ?? stock.code}" type="button">删除</button>
       </div>
@@ -28,21 +39,28 @@ export async function renderWatchlist() {
     getSyncedWatchlist(),
   ]);
   const syncStatus = synced.syncStatus;
+  const groups = synced.groups ?? [];
   const sortMode = getSortMode();
   const enrichedItems = sortStocks(enrichStocks(synced.items, watchlist, riskSignals), sortMode);
+  const byGroup = groups.map((group) => ({ ...group, stocks: enrichedItems.filter((stock) => (stock.groupName ?? "长期观察") === group.name) }));
 
   return `
     <section class="wide-section">
       <div class="section-head">
         <div>
           <h2>我的关注股票</h2>
-          <span>云端优先同步，失败时自动使用本地缓存</span>
+          <span>支持代码、名称、拼音搜索添加；支持分组、移动和删除</span>
         </div>
         <span class="notice">${syncStatus.status} · ${syncStatus.lastSyncAt} · ${syncStatus.source ?? "云端/本地"}</span>
       </div>
       <form class="stock-search add-stock-form">
-        <input name="stockQuery" placeholder="输入 600519 / 贵州茅台 / 宏景科技" />
+        <input name="stockQuery" placeholder="输入 600519 / 贵州茅台 / GZMT" />
+        <select name="groupName">${groups.map((group) => `<option value="${group.name}">${group.name}</option>`).join("")}</select>
         <button type="submit">添加关注</button>
+      </form>
+      <form class="stock-search group-form compact">
+        <input name="groupName" placeholder="新分组名称" />
+        <button type="submit">创建分组</button>
       </form>
       <div class="driver-strip sort-strip">
         ${[
@@ -54,7 +72,21 @@ export async function renderWatchlist() {
         ].map(([key, label]) => `<button class="secondary-button ${sortMode === key ? "active-sort" : ""}" data-sort="${key}" type="button">${label}</button>`).join("")}
       </div>
       <p id="portfolio-message" class="form-message">${syncStatus.message ?? ""}</p>
-      <div class="portfolio-list">${enrichedItems.map(portfolioRow).join("")}</div>
+      <div class="detail-grid">
+        ${groups.map((group) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${group.name}</strong><span>${byGroup.find((item) => item.name === group.name)?.stocks.length ?? 0}只</span></div>
+            <div class="row-actions">
+              <button class="secondary-button" data-rename-group="${group.name}" type="button">改名</button>
+              <button class="danger-button" data-delete-group="${group.name}" type="button">删除分组</button>
+            </div>
+          </article>
+        `).join("")}
+      </div>
+      ${byGroup.map((group) => `
+        <div class="section-head compact"><h2>${group.name}</h2><span>${group.stocks.length} 只股票</span></div>
+        <div class="portfolio-list">${group.stocks.map((stock) => portfolioRow(stock, groups)).join("") || `<article class="data-card"><strong>暂无股票</strong><p>可通过上方搜索添加到该分组。</p></article>`}</div>
+      `).join("")}
     </section>
 
     <section class="wide-section">
@@ -133,14 +165,23 @@ export async function renderWatchlist() {
 
 export function mountWatchlist({ navigate, rerender }) {
   const form = document.querySelector(".add-stock-form");
+  const groupForm = document.querySelector(".group-form");
   const message = document.querySelector("#portfolio-message");
 
   form?.addEventListener("submit", async (event) => {
     event.preventDefault();
     const formData = new FormData(form);
     if (message) message.textContent = "正在同步到云端...";
-    const result = await addSyncedStock(formData.get("stockQuery"));
+    const result = await addSyncedStock(formData.get("stockQuery"), formData.get("groupName"));
     if (!result.ok && message) message.textContent = result.message;
+    if (result.ok) rerender();
+  });
+
+  groupForm?.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const formData = new FormData(groupForm);
+    const result = await createWatchlistGroup(formData.get("groupName"));
+    if (message) message.textContent = result.message;
     if (result.ok) rerender();
   });
 
@@ -162,6 +203,30 @@ export function mountWatchlist({ navigate, rerender }) {
     button.addEventListener("click", () => {
       selectStockByCode(button.dataset.viewStock);
       navigate("stock");
+    });
+  });
+
+  document.querySelectorAll("[data-move-stock]").forEach((select) => {
+    select.addEventListener("change", async () => {
+      await moveSyncedStockToGroup(select.dataset.moveStock, select.value);
+      rerender();
+    });
+  });
+
+  document.querySelectorAll("[data-rename-group]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      const next = window.prompt("请输入新的分组名称", button.dataset.renameGroup);
+      if (!next || next === button.dataset.renameGroup) return;
+      await renameWatchlistGroup(button.dataset.renameGroup, next);
+      rerender();
+    });
+  });
+
+  document.querySelectorAll("[data-delete-group]").forEach((button) => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm(`删除分组“${button.dataset.deleteGroup}”？组内股票会移动到长期观察。`)) return;
+      await deleteWatchlistGroup(button.dataset.deleteGroup);
+      rerender();
     });
   });
 }
