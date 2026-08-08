@@ -312,6 +312,7 @@ h3 {
 .data-card p {
   color: #344054;
   line-height: 1.6;
+  overflow-wrap: anywhere;
 }
 
 .opportunity-card {
@@ -344,6 +345,21 @@ h3 {
   margin: 0;
   background: #fff8e8;
   color: #8a5a12;
+}
+
+.check-pill {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  padding: 8px 10px;
+  background: #fff;
+  color: var(--ink);
+}
+
+.check-pill input {
+  width: auto;
 }
 
 .active-sort {
@@ -407,7 +423,7 @@ h3 {
 }
 
 .account-row {
-  grid-template-columns: 1.2fr 0.7fr 0.9fr 0.9fr 0.8fr;
+  grid-template-columns: 1.2fr 0.7fr 0.9fr 0.9fr 0.9fr auto;
 }
 
 .table-row:last-child {
@@ -930,8 +946,46 @@ h3 {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .nav {
+    gap: 6px;
+    padding-bottom: max(8px, env(safe-area-inset-bottom));
+  }
+
+  .nav button {
+    min-height: 44px;
+    max-width: 128px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .section-head span,
+  .form-message,
+  .side-note,
+  .metric-card em,
+  .data-card small {
+    overflow-wrap: anywhere;
+  }
+
+  .metric-card,
+  .data-card,
+  .watch-card,
+  .timeline-row,
+  .report-row {
+    min-width: 0;
+  }
+
+  .table {
+    overflow-x: visible;
+  }
+
+  .answer {
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+
   .driver-strip button {
     width: 100%;
+    min-height: 44px;
   }
 
   .sparkline {

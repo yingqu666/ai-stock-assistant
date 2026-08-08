@@ -2,10 +2,10 @@ import { saveAiAnswerFeedback } from "../services/aiService.js";
 import { askAiAssistant, getAiAssistantContext } from "../services/mockService.js";
 
 const quickQuestions = [
-  "今天市场为什么上涨？",
+  "现在AI板块怎么看？",
   "半导体趋势如何？",
-  "宏景科技风险？",
-  "我的组合风险？",
+  "宏景科技风险是什么？",
+  "我的组合风险在哪里？",
   "明天关注方向？",
 ];
 
@@ -18,13 +18,13 @@ export async function renderAiAssistant() {
     <section class="wide-section">
       <div class="section-head">
         <div>
-          <h2>AI投资助手</h2>
-          <span>基于行情、新闻、自选股票、组合和历史报告回答</span>
+          <h2>AI助手</h2>
+          <span>定位：个人A股投资研究分析师。回答会结合市场、自选股、投资档案、行业热点和风险信息。</span>
         </div>
       </div>
       <div class="driver-strip quick-question-strip">${quickQuestions.map((item) => `<button class="secondary-button quick-question" data-question="${item}" type="button">${item}</button>`).join("")}</div>
       <form class="stock-search ai-chat-form compact">
-        <input name="question" placeholder="例如：分析贵州茅台、为什么今天AI上涨、我的组合风险是什么" />
+        <input name="question" placeholder="例如：现在AI板块怎么看？分析贵州茅台。我的组合风险？" />
         <button type="submit">提问</button>
       </form>
       <p id="ai-chat-message" class="form-message"></p>
@@ -34,14 +34,17 @@ export async function renderAiAssistant() {
       <div class="section-head"><h2>当前上下文</h2><span>AI回答依据</span></div>
       <div class="detail-grid">
         <article class="data-card"><strong>市场</strong><p>${context.market.marketSentiment.summary}</p></article>
-        <article class="data-card"><strong>关注行业</strong><p>${context.profile.industries.join("、")}</p></article>
+        <article class="data-card"><strong>行业热点</strong><p>${(context.market.hotSectors ?? []).map((item) => item.name).slice(0, 4).join("、")}</p></article>
+        <article class="data-card"><strong>关注板块</strong><p>${context.profile.industries.join("、")}</p></article>
+        <article class="data-card"><strong>自选股</strong><p>${(context.watchlist ?? []).map((item) => item.name).slice(0, 5).join("、") || "暂无"}</p></article>
+        <article class="data-card"><strong>风险接受</strong><p>${context.profile.riskLevel} · ${context.profile.style} · ${context.profile.holdingPeriod}</p></article>
         <article class="data-card"><strong>历史报告</strong><p>${context.reports.length} 份已保存报告</p></article>
       </div>
     </section>
 
     <section class="wide-section">
       <div class="section-head"><h2>回答</h2><span>不构成投资建议</span></div>
-      <div id="ai-chat-answer" class="answer">请输入问题后生成回答。</div>
+      <pre id="ai-chat-answer" class="answer">请输入问题后生成回答。</pre>
       <div class="row-actions feedback-actions" style="display:none">
         <button id="feedback-good" class="secondary-button" type="button">有用 👍</button>
         <button id="feedback-bad" class="secondary-button" type="button">无帮助 👎</button>
@@ -63,7 +66,7 @@ export function mountAiAssistant() {
       if (message) message.textContent = "请输入问题。";
       return;
     }
-    if (message) message.textContent = "正在补充真实行情、新闻和用户数据...";
+    if (message) message.textContent = "正在整合市场、自选股、行业热点、投资档案和风险信息...";
     const result = await askAiAssistant(question);
     lastAnswer = result;
     if (answer) answer.textContent = result.answer;

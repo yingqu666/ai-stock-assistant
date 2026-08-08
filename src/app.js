@@ -2,19 +2,20 @@ import { metricCard } from "./components/cards.js";
 import { renderAccount } from "./pages/account.js";
 import { mountDashboard, renderDashboard } from "./pages/dashboard.js";
 import { mountDailyReport, renderDailyReport } from "./pages/dailyReport.js";
-import { renderInvestmentProfile } from "./pages/investmentProfile.js";
+import { mountInvestmentProfile, renderInvestmentProfile } from "./pages/investmentProfile.js";
 import { mountAiAssistant, renderAiAssistant } from "./pages/aiAssistant.js";
 import { mountReportCenter, renderReportCenter } from "./pages/reportCenter.js";
 import { mountPortfolio, renderPortfolio } from "./pages/portfolio.js";
 import { mountReviewAnalysis, renderReviewAnalysis } from "./pages/reviewAnalysis.js";
-import { renderRiskDashboard } from "./pages/riskDashboard.js";
-import { renderIndustryResearch } from "./pages/industryResearch.js";
+import { mountRiskDashboard, renderRiskDashboard } from "./pages/riskDashboard.js";
+import { mountIndustryResearch, renderIndustryResearch } from "./pages/industryResearch.js";
 import { mountLogin, renderLogin } from "./pages/login.js";
 import { renderMarket } from "./pages/market.js";
 import { renderOpportunities } from "./pages/opportunities.js";
 import { renderResearchTeam } from "./pages/researchTeam.js";
 import { mountSettings, renderSettings } from "./pages/settings.js";
 import { mountStockSearch, renderStockSearch } from "./pages/stockSearch.js";
+import { renderSystemStatus } from "./pages/systemStatus.js";
 import { mountWatchlist, renderWatchlist } from "./pages/watchlist.js";
 import { getNavigation, getSidePanelData } from "./services/mockService.js";
 import { initNotificationSchedule } from "./services/notificationService.js";
@@ -39,11 +40,12 @@ const pages = {
   assistant: { render: renderAiAssistant, mount: mountAiAssistant },
   portfolio: { render: renderPortfolio, mount: mountPortfolio },
   review: { render: renderReviewAnalysis, mount: mountReviewAnalysis },
-  riskDashboard: { render: renderRiskDashboard },
-  industryResearch: { render: renderIndustryResearch },
-  profile: { render: renderInvestmentProfile },
+  riskDashboard: { render: renderRiskDashboard, mount: mountRiskDashboard },
+  industryResearch: { render: renderIndustryResearch, mount: mountIndustryResearch },
+  profile: { render: renderInvestmentProfile, mount: mountInvestmentProfile },
   account: { render: renderAccount },
   team: { render: renderResearchTeam },
+  systemStatus: { render: renderSystemStatus },
   settings: { render: renderSettings, mount: mountSettings },
 };
 

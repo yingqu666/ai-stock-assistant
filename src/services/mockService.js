@@ -1,4 +1,4 @@
-import { DATA_MODE } from "../config/dataSources.js";
+﻿import { DATA_MODE } from "../config/dataSources.js";
 import {
   account,
   aiHistory,
@@ -17,6 +17,7 @@ import { answerInvestmentQuestion } from "./aiService.js";
 import { getAiAccuracyStats, getAiHistoryRecords } from "./historyService.js";
 import { getMarketSnapshot } from "./marketService.js";
 import { getNewsSnapshot, getStockNews } from "./newsService.js";
+import { getInvestmentProfile } from "./investmentProfileService.js";
 import { getCachedMarketData, getCachedNewsData, getCachedWatchlistData, getRefreshStatus, refreshAllData } from "./refreshService.js";
 import { getSavedReports, getTaskSchedule, getTaskStatus, runReportTask } from "./reportScheduler.js";
 import { getLogs, clearLogs } from "./logService.js";
@@ -28,28 +29,30 @@ import { getUserStoragePrefix } from "./userService.js";
 export const currentDataMode = DATA_MODE;
 
 const navLabels = {
-  dashboard: "首页",
-  market: "市场分析",
-  opportunities: "AI研究机会",
-  stock: "股票分析",
-  watchlist: "我的关注股票",
-  dailyReport: "AI日报",
-  reportCenter: "报告中心",
-  assistant: "AI助手",
-  portfolio: "投资组合",
-  review: "复盘分析",
-  riskDashboard: "风险看板",
-  industryResearch: "行业研究",
-  profile: "我的投资档案",
-  account: "我的账户",
-  team: "AI研究团队",
-  settings: "系统设置",
+  dashboard: "棣栭〉",
+  market: "甯傚満鍒嗘瀽",
+  opportunities: "AI鐮旂┒鏈轰細",
+  stock: "鑲＄エ鍒嗘瀽",
+  watchlist: "鎴戠殑鍏虫敞鑲＄エ",
+  dailyReport: "AI鏃ユ姤",
+  reportCenter: "鎶ュ憡涓績",
+  assistant: "AI鍔╂墜",
+  portfolio: "鎶曡祫缁勫悎",
+  review: "澶嶇洏鍒嗘瀽",
+  riskDashboard: "椋庨櫓鐪嬫澘",
+  industryResearch: "琛屼笟鐮旂┒",
+  profile: "鎴戠殑鎶曡祫妗ｆ",
+  account: "鎴戠殑璐︽埛",
+  team: "AI鐮旂┒鍥㈤槦",
+  systemStatus: "系统状态",
+  settings: "绯荤粺璁剧疆",
 };
 
 const portfolioKey = "ai-investment-user-portfolio";
 let portfolioState = loadPortfolio();
 let selectedStockQuery = stockDatabase[0].code;
 let selectedReport = dailyReport.history[0];
+let dailyReportHistoryState = dailyReport.history;
 
 function loadPortfolio() {
   try {
@@ -69,7 +72,10 @@ function savePortfolio() {
 }
 
 export function getNavigation() {
-  return navItems.map((item) => ({ ...item, label: navLabels[item.id] ?? item.label }));
+  const items = navItems.some((item) => item.id === "systemStatus")
+    ? navItems
+    : [...navItems.slice(0, -1), { id: "systemStatus", label: "系统状态" }, navItems[navItems.length - 1]];
+  return items.map((item) => ({ ...item, label: navLabels[item.id] ?? item.label }));
 }
 
 function getPortfolioKey() {
@@ -121,10 +127,10 @@ export function addPortfolioStock(query) {
   if (!keyword) return { ok: false, message: "请输入股票代码或名称。" };
 
   const match = findMockStock(keyword);
-  if (!match) return { ok: false, message: "模拟股票库中暂未找到该股票。" };
+  if (!match) return { ok: false, message: "股票库中暂未找到该标的。" };
 
   if (portfolioState.some((stock) => stock.code === match.code)) {
-    return { ok: false, message: "该股票已经在关注列表中。" };
+    return { ok: false, message: "该标的已经在关注列表中。" };
   }
 
   portfolioState = [
@@ -138,7 +144,7 @@ export function addPortfolioStock(query) {
     },
   ];
   savePortfolio();
-  return { ok: true, message: `已添加 ${match.name}` };
+  return { ok: true, message: `已添加${match.name}` };
 }
 
 export function removePortfolioStock(code) {
@@ -199,7 +205,7 @@ export async function getSidePanelData() {
 }
 
 export function selectDailyReport(index) {
-  selectedReport = dailyReport.history[index] ?? dailyReport.history[0];
+  selectedReport = dailyReportHistoryState[index] ?? dailyReportHistoryState[0] ?? dailyReport.history[0];
   return selectedReport;
 }
 
@@ -229,6 +235,7 @@ export async function getDailyReportData() {
     nextStrategy: record.content.close?.nextFocus?.join("、"),
   }));
   const mergedReport = { ...generatedReport, history: [...savedHistory, ...generatedReport.history, ...dailyReport.history] };
+  dailyReportHistoryState = mergedReport.history;
   return {
     dailyReport: mergedReport,
     selectedReport,
@@ -250,19 +257,22 @@ export async function generateTodayReport() {
     risks: record.content.morning.risks,
     nextStrategy: record.content.close.nextFocus.join("、"),
   };
+  dailyReportHistoryState = [selectedReport, ...dailyReportHistoryState];
   return record;
 }
 
 export async function getAiAssistantContext() {
-  const [market, newsSnapshot, reports] = await Promise.all([
+  const [market, newsSnapshot, reports, watchlistSnapshot] = await Promise.all([
     getCachedMarketData(),
     getCachedNewsData(),
     getSavedReports(),
+    getCachedWatchlistData(),
   ]);
   return {
     market,
     news: newsSnapshot.stockNews,
     reports,
+    watchlist: watchlistSnapshot,
     profile: getInvestmentProfileData(),
     history: await getAiHistoryRecords(),
   };
@@ -296,10 +306,6 @@ export async function refreshWorkbenchData() {
 }
 
 export function getInvestmentProfileData() {
-  return {
-    preference: "稳健成长，重视基本面和风险控制",
-    industries: ["AI算力", "半导体", "新能源", "高端消费"],
-    riskLevel: "中等",
-    focus: ["科技成长", "低位修复", "自选股公告变化", "市场情绪拐点"],
-  };
+  return getInvestmentProfile();
 }
+

@@ -26,6 +26,7 @@ export async function cloudLogout() {
 
 export const cloudDataApi = {
   getStocks: (query = "") => apiRequest(`/stocks?q=${encodeURIComponent(query)}`),
+  getStockDetail: (query = "") => apiRequest(`/stocks/detail?q=${encodeURIComponent(query)}`),
   getWatchlist: () => apiRequest("/watchlist"),
   saveWatchlist: (payload) => apiRequest("/watchlist", { method: "POST", body: JSON.stringify(payload) }),
   deleteWatchlist: (idOrCode) => apiRequest(`/watchlist/${encodeURIComponent(idOrCode)}`, { method: "DELETE" }),
@@ -49,6 +50,7 @@ export const cloudDataApi = {
   getAiLogs: () => apiRequest("/ai/logs"),
   saveAiFeedback: (payload) => apiRequest("/ai/feedback", { method: "POST", body: JSON.stringify(payload) }),
   getAiFeedback: () => apiRequest("/ai/feedback"),
+  getDbStatus: () => apiRequest("/db-status"),
   runResearchTeam: (payload) => apiRequest("/ai/research-team", { method: "POST", body: JSON.stringify(payload) }),
   getAiReviewStats: () => apiRequest("/ai-review/stats"),
   runAiReview: (payload = {}) => apiRequest("/ai-review/run", { method: "POST", body: JSON.stringify(payload) }),

@@ -1,5 +1,7 @@
 import { metricCard } from "../components/cards.js";
-import { getReviewChartData, runAiReview } from "../services/chartService.js";
+import { getReviewDetailData, runAiReview } from "../services/chartService.js";
+
+let selectedReviewDate = null;
 
 function bar(value) {
   const width = Math.max(0, Math.min(100, Number(value || 0) * 100));
@@ -15,17 +17,24 @@ function accuracyCard(label, stat) {
 }
 
 export async function renderReviewAnalysis() {
-  const data = await getReviewChartData();
+  const data = await getReviewDetailData(selectedReviewDate);
+  const detail = data.detail;
 
   return `
     <section class="wide-section">
       <div class="section-head">
         <div>
-          <h2>AI判断准确率复盘</h2>
+          <h2>复盘分析</h2>
           <span>来源：${data.source} · 样本：${data.stats.sampleSize}条</span>
         </div>
         <button id="run-ai-review-button" type="button">执行AI复盘</button>
       </div>
+      <form class="stock-search review-date-form">
+        <select name="date">
+          ${data.dates.map((date) => `<option value="${date}" ${date === data.selectedDate ? "selected" : ""}>${date}</option>`).join("")}
+        </select>
+        <button type="submit">查看日期</button>
+      </form>
       <div class="metrics">
         ${[
           { label: "市场判断准确率", value: `${data.stats.marketAccuracy}%`, change: "综合样本" },
@@ -34,7 +43,30 @@ export async function renderReviewAnalysis() {
           { label: "历史样本数量", value: `${data.stats.sampleSize}条`, change: "AI判断记录" },
         ].map(metricCard).join("")}
       </div>
-      <p id="ai-review-message" class="form-message">复盘结果优先使用东方财富真实行情，用于校准AI置信度，不代表未来表现。</p>
+      <p id="ai-review-message" class="form-message">选择日期查看当天市场、板块、自选股表现和AI观点。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>${detail.date} 当日复盘</h2><span>更新时间：${detail.updatedAt}</span></div>
+      <div class="detail-grid">
+        <article class="data-card"><strong>市场情况</strong><p>${detail.marketSummary}</p><p>${detail.breadth}</p></article>
+        <article class="data-card"><strong>板块表现</strong><p>${detail.hotSectors.join("、") || "暂无"}</p></article>
+        <article class="data-card"><strong>当时AI观点</strong><p>${detail.aiView}</p></article>
+        <article class="data-card"><strong>复盘总结</strong><p>${detail.reviewConclusion}</p><p>${detail.reviewReason}</p></article>
+      </div>
+      <p class="side-note">数据来源：${detail.source.join("、")}。本复盘用于校准AI判断，不代表未来表现。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>关注股票表现</h2><span>当天关注列表快照</span></div>
+      <div class="detail-grid">
+        ${detail.watchlistPerformance.map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.name}</strong><span>${item.changePercent}</span></div>
+            <p>${item.code} · ${item.industry}</p>
+          </article>
+        `).join("") || `<article class="data-card"><strong>暂无自选股</strong><p>添加关注股票后可在此复盘表现。</p></article>`}
+      </div>
     </section>
 
     <section class="wide-section">
@@ -85,6 +117,13 @@ export async function renderReviewAnalysis() {
 }
 
 export function mountReviewAnalysis({ rerender }) {
+  document.querySelector(".review-date-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    selectedReviewDate = String(formData.get("date") ?? "");
+    rerender();
+  });
+
   document.querySelector("#run-ai-review-button")?.addEventListener("click", async () => {
     const message = document.querySelector("#ai-review-message");
     if (message) message.textContent = "正在执行AI复盘...";

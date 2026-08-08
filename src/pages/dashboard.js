@@ -43,6 +43,22 @@ export async function renderDashboard() {
       </section>
 
       <section class="wide-section">
+        <div class="section-head"><h2>今日入口</h2><span>每天打开后先看这组信息</span></div>
+        <div class="metrics">
+          ${[
+            { label: "今日市场状态", value: normalizeMarketState(strategy.state, marketSentiment.summary), change: marketSentiment.summary },
+            { label: "AI综合评分", value: `${strategy.score ?? marketSentiment.heat ?? 0}分`, change: "0-100" },
+            { label: "市场风险等级", value: normalizeRiskLevel(strategy.risk ?? marketSentiment.riskLevel), change: "低 / 中 / 高" },
+          ].map(metricCard).join("")}
+        </div>
+        <div class="detail-grid compact">
+          <article class="data-card"><strong>今日重点</strong>${tagListSafe([...(aiSummary.opportunities ?? []), ...(hotSectors ?? []).map((item) => item.name)].slice(0, 5))}</article>
+          <article class="data-card"><strong>我的关注</strong><p>${watchlist.slice(0, 5).map((item) => `${item.name} ${item.changePercent ?? item.change ?? ""} ${item.riskLevel ? `(${item.riskLevel})` : ""}`).join("；") || "暂无关注股票"}</p></article>
+          <article class="data-card"><strong>PWA安装</strong><p>手机浏览器打开后可选择“添加到主屏幕”，用于每天快速查看早报、风险和自选股。</p></article>
+        </div>
+      </section>
+
+      <section class="wide-section">
         <div class="section-head"><h2>市场概况</h2><span>数据更新时间：${updatedAt ?? refreshStatus.updatedAt}</span></div>
         <div class="metrics">${marketOverview.map(metricCard).join("")}</div>
       </section>
@@ -159,4 +175,22 @@ export function mountDashboard({ rerender }) {
     await refreshWorkbenchData();
     rerender();
   });
+}
+
+function normalizeMarketState(state = "", summary = "") {
+  const text = `${state} ${summary}`;
+  if (/下跌|走弱|偏弱|回落/.test(text)) return "下跌";
+  if (/上涨|走强|偏强|修复/.test(text)) return "上涨";
+  return "震荡";
+}
+
+function normalizeRiskLevel(value = "") {
+  if (/高|较高/.test(value)) return "高";
+  if (/低|较低/.test(value)) return "低";
+  return "中";
+}
+
+function tagListSafe(items = []) {
+  const clean = [...new Set(items.filter(Boolean))].slice(0, 5);
+  return `<ul class="tag-list">${clean.map((item) => `<li>${item}</li>`).join("") || "<li>暂无</li>"}</ul>`;
 }

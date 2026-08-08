@@ -2,6 +2,9 @@ import { aiHistory } from "../data.js";
 import { cloudDataApi } from "./cloudService.js";
 import { getAiAccuracyStats, getAiHistoryRecords } from "./historyService.js";
 import { addLog } from "./logService.js";
+import { getMarketSnapshot } from "./marketService.js";
+import { getSavedReports } from "./reportScheduler.js";
+import { getWatchlistSnapshot } from "./stockService.js";
 
 export async function getReviewChartData() {
   try {
@@ -18,6 +21,55 @@ export async function getReviewChartData() {
     });
     return getLocalReviewChartData();
   }
+}
+
+export async function getReviewDetailData(selectedDate) {
+  const [reports, marketData, watchlist, chartData] = await Promise.all([
+    getSavedReports(),
+    getMarketSnapshot(),
+    getWatchlistSnapshot(),
+    getReviewChartData(),
+  ]);
+  const normalizedReports = (reports ?? []).map((report) => ({
+    ...report,
+    date: report.date ?? report.content?.morning?.date ?? "",
+  }));
+  const dates = [...new Set([
+    ...normalizedReports.map((report) => report.date),
+    new Date().toISOString().slice(0, 10),
+  ].filter(Boolean))].sort((a, b) => String(b).localeCompare(String(a)));
+  const date = selectedDate ?? dates[0];
+  const report = normalizedReports.find((item) => item.date === date) ?? normalizedReports[0];
+  const close = report?.content?.close ?? {};
+  const morning = report?.content?.morning ?? {};
+  const marketSummary = close.marketSummary ?? close.summary ?? morning.marketSummary ?? marketData.marketSentiment?.summary ?? "暂无市场记录";
+  const hotSectors = close.hotSectors ?? morning.focus ?? (marketData.hotSectors ?? []).map((item) => item.name);
+  const aiView = morning.strategy ?? close.summary ?? report?.mainView ?? "暂无AI观点";
+  const review = buildReviewConclusion({ report, marketData, hotSectors });
+
+  return {
+    ...chartData,
+    dates,
+    selectedDate: date,
+    detail: {
+      date,
+      report,
+      marketSummary,
+      breadth: close.breadth ?? `上涨 ${marketData.marketSentiment?.upCount ?? "未知"} 家，下跌 ${marketData.marketSentiment?.downCount ?? "未知"} 家`,
+      hotSectors,
+      watchlistPerformance: watchlist.slice(0, 6).map((item) => ({
+        name: item.name,
+        code: item.code,
+        changePercent: item.changePercent ?? item.change ?? "暂无",
+        industry: item.industry ?? "待补充",
+      })),
+      aiView,
+      reviewConclusion: review.conclusion,
+      reviewReason: review.reason,
+      source: ["历史日报", "东方财富行情", "自选股行情", "AI复盘"],
+      updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    },
+  };
 }
 
 export async function runAiReview(payload = {}) {
@@ -41,9 +93,9 @@ export async function runAiReview(payload = {}) {
   }
 }
 
-function getLocalReviewChartData() {
-  const records = getAiHistoryRecords?.() ?? aiHistory ?? [];
-  const stats = getAiAccuracyStats?.() ?? {};
+async function getLocalReviewChartData() {
+  const records = await getAiHistoryRecords?.() ?? aiHistory ?? [];
+  const stats = await getAiAccuracyStats?.() ?? {};
   const reviewed = records.filter((item) => item.actualResult || item.reviewStatus);
 
   return normalizeStats({
@@ -103,6 +155,27 @@ function normalizeStats(stats) {
     })),
     recent,
     source: stats.source ?? "cloud",
+  };
+}
+
+function buildReviewConclusion({ report, marketData, hotSectors }) {
+  if (!report) {
+    return {
+      conclusion: "暂无历史报告，无法复盘当时判断。",
+      reason: "请先生成AI日报，系统会保存当时观点用于后续复盘。",
+    };
+  }
+  const state = marketData.strategy?.state ?? marketData.marketSentiment?.summary ?? "";
+  const hasHotSector = hotSectors?.length > 0;
+  if (String(state).includes("强") || hasHotSector) {
+    return {
+      conclusion: "部分正确",
+      reason: "当时报告提到的关注方向仍有热点延续，但需要结合成交额和自选股表现继续验证。",
+    };
+  }
+  return {
+    conclusion: "待验证",
+    reason: "当前缺少完整次日行情对照，暂时只记录逻辑是否完整，不做确定性结论。",
   };
 }
 
