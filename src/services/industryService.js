@@ -28,6 +28,30 @@ export function getIndustryResearchData(name = "AI") {
   return industries[name] ?? industries.AI;
 }
 
+export async function getIndustryAiResearchData(name = "AI") {
+  const base = getIndustryResearchData(name);
+  try {
+    const [marketData, newsSnapshot] = await Promise.all([getMarketSnapshot(), getNewsSnapshot()]);
+    const relatedNews = (newsSnapshot.stockNews ?? newsSnapshot.news ?? []).filter((item) => {
+      const text = `${item.title ?? ""}${item.category ?? ""}${item.relatedIndustry ?? ""}`;
+      return text.includes(base.industry) || base.chain.some((node) => text.includes(node.name));
+    });
+    const riskData = base.risks.map((risk) => ({ title: risk, message: `${base.industry}行业风险：${risk}`, level: "中" }));
+    const aiInput = buildAiResearchInput({
+      marketData,
+      stockQuote: { name: base.industry, code: "INDUSTRY", industry: base.industry, type: "industry" },
+      newsEvents: relatedNews.length ? relatedNews : base.news,
+      riskData,
+      investmentProfile: getInvestmentProfile(),
+      portfolio: [],
+    });
+    const aiAnalysis = await generateAiAnalysis(aiInput);
+    return { ...base, aiAnalysis };
+  } catch {
+    return { ...base, aiAnalysis: null };
+  }
+}
+
 function industry(name, overview, chain, beneficiaries, risks) {
   return {
     industry: name,
@@ -67,3 +91,7 @@ function sampleLeaders(industryName) {
   };
   return map[industryName] ?? [industryName];
 }
+import { buildAiResearchInput, generateAiAnalysis } from "./aiService.js";
+import { getInvestmentProfile } from "./investmentProfileService.js";
+import { getMarketSnapshot } from "./marketService.js";
+import { getNewsSnapshot } from "./newsService.js";

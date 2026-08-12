@@ -1,17 +1,19 @@
-import { getIndustryOptions, getIndustryResearchData } from "../services/industryService.js";
+import { getIndustryAiResearchData, getIndustryOptions } from "../services/industryService.js";
 
 let selectedIndustry = "AI";
 
-export function renderIndustryResearch() {
-  const data = getIndustryResearchData(selectedIndustry);
+export async function renderIndustryResearch() {
+  const data = await getIndustryAiResearchData(selectedIndustry);
   const options = getIndustryOptions();
+  const ai = data.aiAnalysis;
+  const decision = ai?.investmentDecision ?? {};
 
   return `
     <section class="wide-section">
       <div class="section-head">
         <div>
           <h2>行业研究</h2>
-          <span>选择行业后查看产业链、新闻影响、受益方向和风险</span>
+          <span>选择行业后查看产业链、新闻影响、受益方向、风险和AI分析</span>
         </div>
       </div>
       <form class="stock-search industry-select-form">
@@ -28,6 +30,27 @@ export function renderIndustryResearch() {
         <article class="data-card"><strong>可信度</strong><p>${data.credibility.level}：${data.credibility.reason}</p><small>${data.credibility.sources.join("、")}</small></article>
       </div>
     </section>
+
+    ${ai ? `
+      <section class="wide-section">
+        <div class="section-head"><h2>AI行业分析</h2><span>${ai.source === "deepseek" ? "真实AI模型" : ai.source ?? "fallback"}</span></div>
+        <div class="metrics">
+          ${[
+            { label: "行业评级", value: decision.score >= 70 ? "看多" : decision.score >= 50 ? "中性" : "看空", change: decision.rating ?? "中性观察" },
+            { label: "行业评分", value: `${decision.score ?? 60}/100`, change: "0-100" },
+            { label: "短期趋势", value: decision.shortTerm ?? "震荡观察", change: decision.marketTrend ?? "震荡" },
+            { label: "中期趋势", value: decision.midTerm ?? "等待方向确认", change: decision.action ?? "等待" },
+          ].map(metricCardSafe).join("")}
+        </div>
+        <div class="detail-grid">
+          <article class="data-card"><strong>结论</strong><p>${ai.conclusion ?? ai.marketSummary ?? "当前仅作研究观察。"}</p></article>
+          <article class="data-card"><strong>依据</strong><p>${asList(ai.basis ?? ai.evidence).slice(0, 5).join("；") || "行情、新闻、行业资料"}</p></article>
+          <article class="data-card"><strong>风险</strong><p>${asList(ai.risks).join("；") || data.risks.join("；")}</p></article>
+          <article class="data-card"><strong>观察建议</strong><p>${asList(ai.observationAdvice ?? ai.tomorrowPlan).join("；") || "关注成交、政策和新闻变化。"}</p></article>
+          <article class="data-card"><strong>受益方向</strong><p>${data.chain.flatMap((item) => item.leaders).slice(0, 6).join("、")}</p></article>
+        </div>
+      </section>
+    ` : ""}
 
     <section class="wide-section">
       <div class="section-head"><h2>产业链拆解</h2><span>${data.industry}</span></div>
@@ -69,4 +92,15 @@ export function mountIndustryResearch({ rerender }) {
     selectedIndustry = String(formData.get("industry") ?? "AI");
     rerender();
   });
+}
+
+function asList(value) {
+  if (Array.isArray(value)) return value.map((item) => typeof item === "string" ? item : JSON.stringify(item));
+  if (typeof value === "object" && value) return Object.values(value).flatMap(asList);
+  if (!value) return [];
+  return [String(value)];
+}
+
+function metricCardSafe(item) {
+  return `<article class="metric-card"><span>${item.label}</span><strong>${item.value}</strong><small>${item.change ?? ""}</small></article>`;
 }

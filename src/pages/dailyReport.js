@@ -11,7 +11,9 @@ export async function renderDailyReport() {
     getReviewChartData(),
   ]);
   const { morning, close, history } = dailyReport;
+  const decision = morning.investmentDecision ?? close.investmentDecision ?? {};
   const reportSync = getSyncStatus().reports ?? { status: "尚未同步", lastSyncAt: "尚未同步", source: "本地/云端" };
+  const hotDirections = morning.hotDirections ?? close.hotDirections ?? [];
 
   return `
     <section class="wide-section">
@@ -20,12 +22,12 @@ export async function renderDailyReport() {
           <h2>AI日报</h2>
           <span>${reportSync.status} · ${reportSync.lastSyncAt} · ${reportSync.source ?? "Supabase/本地缓存"}</span>
         </div>
-        <button id="generate-report-button" type="button">生成今日报告</button>
+        <button id="generate-report-button" type="button">生成今日AI日报</button>
       </div>
       <div class="metrics">
         ${[
-          { label: "行情已更新", value: taskStatus.marketUpdated ? "是" : "待执行", change: taskStatus.marketUpdated ? "完成" : "待生成" },
-          { label: "新闻已获取", value: taskStatus.newsFetched ? "是" : "待执行", change: taskStatus.newsFetched ? "完成" : "待生成" },
+          { label: "行情已更新", value: taskStatus.marketUpdated ? "是" : "待执行", change: taskStatus.marketUpdated ? "完成" : "手动生成" },
+          { label: "新闻已获取", value: taskStatus.newsFetched ? "是" : "待执行", change: taskStatus.newsFetched ? "完成" : "手动生成" },
           { label: "报告已生成", value: taskStatus.reportGenerated ? "是" : "待执行", change: taskStatus.lastRunAt },
           { label: "已保存报告", value: `${savedReports.length}份`, change: "历史" },
         ].map(metricCard).join("")}
@@ -33,7 +35,63 @@ export async function renderDailyReport() {
       <div class="detail-grid compact">
         ${taskSchedule.map((task) => `<article class="data-card"><strong>${task.name}</strong><p>${task.time} · ${task.description}</p></article>`).join("")}
       </div>
-      <p id="daily-report-message" class="form-message">点击按钮后会采集市场、自选股、新闻和风险数据，生成并保存日报。</p>
+      <p id="daily-report-message" class="form-message">点击按钮后会采集市场、自选股、新闻、公告和风险数据，生成并保存日报。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>今日A股市场分析</h2><span>行情、强弱和主要影响因素</span></div>
+      <div class="metrics">
+        ${[
+          { label: "市场判断", value: decision.marketTrend ?? morning.marketState ?? "震荡", change: decision.rating ?? "中性观察" },
+          { label: "AI评分", value: `${decision.score ?? morning.score ?? 60}/100`, change: morning.aiStatus ?? "AI" },
+          { label: "仓位建议", value: decision.positionAdvice ?? morning.positionAdvice ?? "保持当前仓位", change: decision.action ?? "等待" },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid compact">
+        <article class="data-card"><strong>大盘表现</strong><p>${morning.marketAnalysis?.performance ?? morning.marketSummary ?? close.marketSummary}</p></article>
+        <article class="data-card"><strong>市场强弱</strong><p>${morning.marketAnalysis?.strength ?? close.breadth}</p></article>
+        <article class="data-card"><strong>主要影响因素</strong>${tagList(morning.marketAnalysis?.factors ?? [])}</article>
+        <article class="data-card"><strong>数据依据</strong><p>${morning.basis ?? close.basis}</p></article>
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>今日热点方向 TOP5</h2><span>根据行情热度、新闻和板块变化生成</span></div>
+      <div class="detail-grid">
+        ${hotDirections.map((item, index) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${index + 1}. ${item.name}</strong><span>${item.sustainability ?? "持续性观察"}</span></div>
+            <p><b>上涨原因：</b>${item.reason ?? "板块活跃度靠前"}</p>
+            <p><b>新闻催化：</b>${item.catalyst ?? "暂未匹配到强新闻催化"}</p>
+            <p><b>风险：</b>${item.risk ?? "成交缩量或高位分歧会削弱持续性"}</p>
+          </article>
+        `).join("") || `<article class="data-card"><strong>热点方向</strong><p>热点方向由行情和新闻接口补充；当前报告未返回TOP5。</p></article>`}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>明日市场观察</h2><span>重点方向、重点标的和风险方向</span></div>
+      <div class="detail-grid compact">
+        <article class="data-card"><strong>重点关注方向</strong>${tagList((morning.tomorrowPlan ?? close.nextFocus ?? []).slice(0, 6))}</article>
+        <article class="data-card"><strong>重点研究股票/ETF</strong>${tagList(morning.watchFocus ?? [])}</article>
+        <article class="data-card"><strong>风险方向</strong>${tagList((decision.risks ?? morning.risks ?? []).slice(0, 6))}</article>
+        <article class="data-card"><strong>操作纪律</strong><p>${decision.action ?? "等待"} · ${decision.positionAdvice ?? morning.positionAdvice ?? "保持当前仓位"}</p></article>
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>我的关注股票今日分析</h2><span>读取用户自己的观察池，不自动替换</span></div>
+      <div class="detail-grid">
+        ${(morning.watchlistAnalysis ?? []).map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.assetType}</span></div>
+            <p><b>AI评分：</b>${item.score}/100 · <b>当前判断：</b>${item.rating}</p>
+            <p><b>短期：</b>${item.shortTerm} · <b>一周趋势：</b>${item.weekTrend} · <b>明日策略：</b>${item.action}</p>
+            <p><b>核心原因：</b>${(item.reasons ?? []).slice(0, 3).join("；")}</p>
+            <p><b>风险：</b>${(item.risks ?? []).slice(0, 3).join("；")}</p>
+          </article>
+        `).join("") || `<article class="data-card"><strong>关注股票</strong><p>先在“我的关注股票”添加标的，生成日报时会逐只分析。</p></article>`}
+      </div>
     </section>
 
     <section class="wide-section">
@@ -52,49 +110,38 @@ export async function renderDailyReport() {
       <div class="section-head">
         <div>
           <h2>早盘分析</h2>
-          <span>${morning.date} · 生成时间：${morning.generatedAt ?? "自动生成"}</span>
+          <span>${morning.date} · 生成时间：${morning.generatedAt ?? "手动生成"}</span>
         </div>
-      </div>
-      <div class="metrics">
-        ${[
-          { label: "AI综合评分", value: `${morning.score}分`, change: "AI" },
-          { label: "市场状态", value: morning.marketState, change: "东方财富/部分回退" },
-          { label: "仓位建议", value: morning.positionAdvice ?? "观察仓位", change: "不追高" },
-        ].map(metricCard).join("")}
       </div>
       <div class="detail-grid compact">
         <article class="data-card"><strong>今日市场总结</strong><p>${morning.marketSummary ?? morning.strategy}</p></article>
         <article class="data-card"><strong>上涨原因</strong><p>${morning.riseReason ?? "热点与成交仍需观察。"}</p></article>
         <article class="data-card"><strong>下跌风险</strong><p>${morning.downsideRisk ?? (morning.risks ?? []).join("；")}</p></article>
-        <article class="data-card"><strong>热点板块</strong>${tagList(morning.focus ?? [])}</article>
-        <article class="data-card"><strong>关注方向</strong>${tagList(morning.watchFocus?.length ? morning.watchFocus : morning.focus ?? [])}</article>
+        <article class="data-card"><strong>关注方向</strong>${tagList(morning.focus ?? [])}</article>
         <article class="data-card"><strong>明日观察</strong>${tagList(morning.tomorrowPlan ?? [])}</article>
-      </div>
-      <p class="answer">${morning.strategy}</p>
-      <div class="split-section compact">
-        <div class="sub-panel"><h2>风险提醒</h2>${(morning.risks ?? []).map(riskCard).join("")}</div>
-        <div class="sub-panel"><h2>真实数据依据</h2><p>来源：${(morning.sources ?? ["东方财富行情", "新闻/公告", "AI分析"]).join("、")}</p><p>更新时间：${morning.generatedAt ?? "自动生成"} · 可信度：${morning.credibility?.level ?? "中"}（${morning.credibility?.score ?? morning.quality?.score ?? 0}分）</p><p>${morning.credibility?.reason ?? "基于行情、新闻、公告、财务和用户画像综合生成。"}</p></div>
+        <article class="data-card"><strong>AI状态</strong><p>${morning.aiStatus ?? "fallback"} · 来源：${(morning.sources ?? []).join("、")}</p></article>
       </div>
       <div class="detail-grid compact">
-        <article class="data-card"><strong>行情依据</strong><p>${(morning.evidence?.market ?? []).join("；") || "暂无"}</p></article>
-        <article class="data-card"><strong>新闻依据</strong><p>${(morning.evidence?.industry ?? []).join("；") || "暂无"}</p></article>
-        <article class="data-card"><strong>公告依据</strong><p>${(morning.evidence?.announcements ?? []).join("；") || "暂无"}</p></article>
-        <article class="data-card"><strong>财务依据</strong><p>${(morning.evidence?.financials ?? []).join("；") || "暂无"}</p></article>
+        <article class="data-card"><strong>行情依据</strong><p>${(morning.evidence?.market ?? []).join("；") || "数据源未返回"}</p></article>
+        <article class="data-card"><strong>新闻依据</strong><p>${(morning.evidence?.industry ?? morning.evidence?.news ?? []).join("；") || "数据源未返回"}</p></article>
+        <article class="data-card"><strong>公告依据</strong><p>${(morning.evidence?.announcements ?? morning.evidence?.announcement ?? []).join("；") || "数据源未返回"}</p></article>
+        <article class="data-card"><strong>财务依据</strong><p>${(morning.evidence?.financials ?? morning.evidence?.financial ?? []).join("；") || "数据源未返回"}</p></article>
       </div>
+      <div class="sub-panel compact"><h2>风险提醒</h2>${(morning.risks ?? []).map(riskCard).join("")}</div>
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>收盘复盘</h2><span>生成时间：${close.generatedAt ?? "自动生成"}</span></div>
+      <div class="section-head"><h2>收盘复盘</h2><span>生成时间：${close.generatedAt ?? "手动生成"}</span></div>
       <div class="detail-grid">
         <article class="data-card"><strong>今日市场总结</strong><p>${close.marketSummary ?? close.performance}</p></article>
         <article class="data-card"><strong>涨跌情况</strong><p>${close.breadth}</p></article>
         <article class="data-card"><strong>热点板块复盘</strong>${tagList(close.hotSectors ?? [])}</article>
-        <article class="data-card"><strong>热点原因</strong><p>${close.hotAnalysis ?? "需结合成交额和新闻事件继续观察。"}</p></article>
+        <article class="data-card"><strong>热点原因</strong><p>${close.hotAnalysis ?? "需要结合成交额和新闻事件继续观察。"}</p></article>
         <article class="data-card"><strong>AI判断复盘</strong><p>${close.aiReview ?? close.summary}</p></article>
         <article class="data-card"><strong>明日观察方向</strong>${tagList(close.nextFocus ?? [])}</article>
       </div>
       <div class="sub-panel compact"><h2>重要事件</h2>${tagList(close.events ?? [])}</div>
-      <p class="side-note">数据来源：${(close.sources ?? ["东方财富行情", "新闻/公告", "AI分析"]).join("、")}。更新时间：${close.generatedAt ?? "自动生成"}。可信度：${close.credibility?.level ?? "中"}（${close.credibility?.score ?? close.quality?.score ?? 0}分）。</p>
+      <p class="side-note">数据来源：${(close.sources ?? ["东方财富行情", "新闻/公告", "AI分析"]).join("、")}。更新时间：${close.generatedAt ?? "手动生成"}。可信度：${close.credibility?.level ?? "中"}（${close.credibility?.score ?? close.quality?.score ?? 0}分）。</p>
     </section>
 
     <section class="wide-section">

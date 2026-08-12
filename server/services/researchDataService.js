@@ -68,7 +68,10 @@ export async function getResearchData(query) {
     updatedAt: nowText(),
   };
 
-  const aiReport = await generateResearchReport({
+  const hasUsableQuote = effectiveQuoteResult.status === "real"
+    && quote.price && quote.price !== DATA_MISSING
+    && quote.changePercent && quote.changePercent !== DATA_MISSING;
+  const aiReport = hasUsableQuote ? await generateResearchReport({
     marketData,
     stockData: {
       ...security,
@@ -85,7 +88,11 @@ export async function getResearchData(query) {
   }).catch((error) => {
     latestSourceStatus.ai = { status: "fallback", message: error.message, updatedAt: nowText() };
     return null;
-  });
+  }) : null;
+
+  if (!hasUsableQuote) {
+    latestSourceStatus.ai = { status: "skipped", message: "基础行情不足，未调用AI", updatedAt: nowText() };
+  }
 
   if (aiReport?.source === "deepseek" || aiReport?.source === "ai-api") {
     latestSourceStatus.ai = { status: "ok", message: aiReport.source, updatedAt: nowText() };
@@ -188,7 +195,7 @@ async function fetchEastmoneyQuote(security) {
 }
 
 async function fetchSinaQuote(security) {
-  const symbol = `${security.code.startsWith("6") || security.code.startsWith("5") ? "sh" : "sz"}${security.code}`;
+  const symbol = `${quoteMarketPrefix(security.code)}${security.code}`;
   const response = await fetch(`${sinaQuoteApi}${symbol}`, { cache: "no-store", headers: { Referer: "https://finance.sina.com.cn/" } });
   if (!response.ok) throw new Error(`新浪行情 HTTP ${response.status}`);
   const text = new TextDecoder("gb18030").decode(Buffer.from(await response.arrayBuffer()));
@@ -196,6 +203,7 @@ async function fetchSinaQuote(security) {
   if (fields.length < 10 || !fields[0]) throw new Error("新浪行情为空");
   const previousClose = toNumber(fields[2]);
   const current = toNumber(fields[3]);
+  if (current <= 0 || previousClose <= 0) throw new Error("\u65b0\u6d6a\u884c\u60c5\u672a\u8fd4\u56de\u6709\u6548\u4ef7\u683c");
   const change = current - previousClose;
   const etf = isEtfCode(security.code) ? getEtfKnowledge(security.code) : {};
   return {
@@ -206,7 +214,7 @@ async function fetchSinaQuote(security) {
     price: formatPrice(current),
     changePercent: previousClose ? formatPercent((change / previousClose) * 100) : DATA_MISSING,
     changeAmount: formatPrice(change),
-    volume: formatVolume(fields[8]),
+    volume: formatVolume(toNumber(fields[8]) / 100),
     amount: formatAmount(fields[9]),
     turnoverRate: isEtfCode(security.code) ? "ETF不使用换手率" : DATA_MISSING,
     marketCap: DATA_MISSING,
@@ -220,7 +228,7 @@ async function fetchSinaQuote(security) {
 }
 
 async function fetchTencentQuote(security) {
-  const symbol = `${security.code.startsWith("6") || security.code.startsWith("5") ? "sh" : "sz"}${security.code}`;
+  const symbol = `${quoteMarketPrefix(security.code)}${security.code}`;
   const response = await fetch(`${tencentQuoteApi}${symbol}`, { cache: "no-store", headers: { Referer: "https://gu.qq.com/" } });
   if (!response.ok) throw new Error(`腾讯财经 HTTP ${response.status}`);
   const text = new TextDecoder("gb18030").decode(Buffer.from(await response.arrayBuffer()));
@@ -531,18 +539,26 @@ function toSecid(code) {
   return `${String(code).startsWith("6") || String(code).startsWith("5") ? "1" : "0"}.${code}`;
 }
 
+function quoteMarketPrefix(code) {
+  const text = String(code ?? "");
+  if (text.startsWith("6") || text.startsWith("5")) return "sh";
+  if (text.startsWith("8")) return "bj";
+  return "sz";
+}
+
 function inferMarket(code) {
   const text = String(code ?? "");
   if (isEtfCode(text)) return text.startsWith("5") ? "沪市ETF" : "深市ETF";
   if (text.startsWith("688") || text.startsWith("689")) return "科创板";
   if (text.startsWith("300") || text.startsWith("301")) return "创业板";
   if (text.startsWith("6")) return "沪市";
+  if (text.startsWith("8")) return "北交所";
   if (text.startsWith("0") || text.startsWith("2") || text.startsWith("3")) return "深市";
   return "A股";
 }
 
 function isEtfCode(code) {
-  return /^(51|52|56|58|15|16)\d{4}$/.test(String(code ?? ""));
+  return /^(?:5\d{5}|1[56]\d{4})$/.test(String(code ?? ""));
 }
 
 function toNumber(value) {

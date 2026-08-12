@@ -16,6 +16,9 @@ const schedulerState = {
 
 export function startReportScheduler() {
   schedulerState.startedAt = new Date().toISOString();
+  if (process.env.ENABLE_SCHEDULER !== "true") {
+    return;
+  }
 
   cron.schedule("0 8 * * *", () => runScheduledReport("morning").catch(recordSchedulerError), {
     timezone: process.env.TZ ?? "Asia/Shanghai",
@@ -33,12 +36,11 @@ export function startReportScheduler() {
 export function getSchedulerStatus() {
   return {
     ...schedulerState,
-    enabled: process.env.ENABLE_SCHEDULER !== "false",
+    enabled: process.env.ENABLE_SCHEDULER === "true",
+    mode: "manual",
     timezone: process.env.TZ ?? "Asia/Shanghai",
     tasks: [
-      { time: "08:00", name: "早盘报告", status: schedulerState.lastMorningAt ? "已运行" : "等待" },
-      { time: "20:00", name: "收盘复盘", status: schedulerState.lastCloseAt ? "已运行" : "等待" },
-      { time: "21:00", name: "AI判断复盘", status: schedulerState.lastReviewAt ? "已运行" : "等待" },
+      { time: "手动", name: "AI日报", status: "用户点击生成今日AI日报" },
     ],
   };
 }

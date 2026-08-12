@@ -2,28 +2,46 @@ import { cloudDataApi } from "./cloudService.js";
 import { getReports as getLocalReports, saveReport as saveLocalReport } from "./storageService.js";
 import { addLog } from "./logService.js";
 
-const syncStatusKey = "ai-investment-sync:status";
+let syncState = defaultStatus();
 
 export function getSyncStatus() {
-  try {
-    return JSON.parse(window.localStorage.getItem(syncStatusKey) ?? "null") ?? defaultStatus();
-  } catch {
-    return defaultStatus();
-  }
+  return syncState;
+}
+
+export function getTopSyncStatus() {
+  const entries = Object.values(syncState).filter(Boolean);
+  const latest = entries.reduce((selected, item) => {
+    if (!selected) return item;
+    return (item.lastSyncAtMs ?? 0) > (selected.lastSyncAtMs ?? 0) ? item : selected;
+  }, null);
+
+  return latest ?? {
+    status: "尚未同步",
+    message: "",
+    source: "本次会话",
+    lastSyncAt: "尚未同步",
+    lastSyncAtMs: 0,
+  };
 }
 
 export function setSyncStatus(scope, status, message = "", extra = {}) {
-  const next = {
-    ...getSyncStatus(),
-    [scope]: {
-      status,
-      message,
-      lastSyncAt: new Date().toLocaleString("zh-CN", { hour12: false }),
-      ...extra,
-    },
+  const timestampMs = extra.lastSyncAtMs ?? parseDateValue(extra.lastSyncAt)?.getTime() ?? Date.now();
+  const item = {
+    status,
+    message,
+    source: extra.source ?? "前端同步",
+    ...extra,
+    lastSyncAt: extra.lastSyncAt ?? formatDateTime(timestampMs),
+    lastSyncAtMs: timestampMs,
   };
-  window.localStorage.setItem(syncStatusKey, JSON.stringify(next));
-  return next[scope];
+
+  syncState = {
+    ...syncState,
+    [scope]: item,
+  };
+
+  notifySyncStatusUpdated(item);
+  return item;
 }
 
 export async function checkCloudStatus() {
@@ -31,30 +49,60 @@ export async function checkCloudStatus() {
     const response = await fetch(`${getApiBase()}/db-status`);
     const data = await response.json();
     if (!response.ok) throw new Error(data.message ?? `HTTP ${response.status}`);
-    setSyncStatus("cloud", data.connected ? "已连接" : "部分回退", data.connected ? "Supabase PostgreSQL 正常" : "数据库未连接", {
+
+    const databaseTime = data.connected ? await getDatabaseLatestSyncTime() : null;
+    const lastSync = databaseTime ?? { lastSyncAtMs: Date.now(), source: "云端状态检查" };
+    setSyncStatus("cloud", data.connected ? "云端已连接" : "部分回退", data.connected ? "Supabase PostgreSQL 正常" : "数据库未连接", {
+      connected: data.connected,
       mode: data.mode,
       tables: data.tables ?? [],
+      source: lastSync.source,
+      lastSyncAtMs: lastSync.lastSyncAtMs,
+      lastSyncAt: formatDateTime(lastSync.lastSyncAtMs),
     });
-    return { ...data, ok: true };
+
+    return { ...data, ok: true, lastSyncAt: formatDateTime(lastSync.lastSyncAtMs) };
   } catch (error) {
     logFailure("cloud", error, "云端连接状态检查失败");
-    setSyncStatus("cloud", "连接失败", error.message, { mode: "unknown", tables: [] });
+    setSyncStatus("cloud", "连接失败", error.message, { mode: "unknown", tables: [], source: "云端状态检查" });
     return { ok: false, mode: "unknown", connected: false, tables: [], error: error.message };
   }
 }
 
 export async function syncWatchlist({ localLoad, localSave } = {}) {
   try {
+    const localData = localLoad?.() ?? [];
     const result = await cloudDataApi.getWatchlist();
-    localSave?.(result.data);
-    setSyncStatus("watchlist", "已同步", "自选股已从云端更新", { source: "Supabase" });
-    return { data: result.data, mode: "cloud", status: "已同步" };
+    let cloudData = result.data ?? [];
+    if (!cloudData.length && localData.length) {
+      const migrated = await Promise.all(localData.map((item) => cloudDataApi.saveWatchlist(normalizeWatchlistPayload(item)).then((saved) => saved.data).catch(() => null)));
+      cloudData = migrated.filter(Boolean);
+      if (!cloudData.length) cloudData = localData;
+    }
+    localSave?.(cloudData);
+    setSyncStatus("watchlist", "已同步", "自选股已保存并从云端更新", { source: "Supabase" });
+    return { data: cloudData, groups: result.groups, mode: "cloud", status: "已同步" };
   } catch (error) {
     const data = localLoad?.() ?? [];
     logFailure("watchlist", error, "自选股同步失败");
     setSyncStatus("watchlist", "离线模式", error.message, { source: "本地缓存" });
     return { data, mode: "local", status: "离线模式" };
   }
+}
+
+function normalizeWatchlistPayload(item = {}) {
+  const code = item.stockCode ?? item.code;
+  const name = item.stockName ?? item.name ?? code;
+  return {
+    ...item,
+    code,
+    name,
+    stockCode: code,
+    stockName: name,
+    reason: item.reason ?? "",
+    aiLevel: item.aiLevel ?? "观察",
+    groupName: item.groupName ?? item.group ?? "长期观察",
+  };
 }
 
 export async function addSyncedWatchlist(payload, { localAdd } = {}) {
@@ -183,6 +231,52 @@ export function registerNetworkSync(onOnline) {
   });
 }
 
+async function getDatabaseLatestSyncTime() {
+  const loaders = [
+    cloudDataApi.getWatchlist(),
+    cloudDataApi.getPortfolio(),
+    cloudDataApi.getReports(),
+    cloudDataApi.getSettings(),
+  ];
+  const results = await Promise.allSettled(loaders);
+  const timestamps = [];
+
+  results.forEach((result) => {
+    if (result.status !== "fulfilled") return;
+    collectTimestamps(result.value, timestamps);
+  });
+
+  if (!timestamps.length) return null;
+  return {
+    lastSyncAtMs: Math.max(...timestamps),
+    source: "Supabase数据记录",
+  };
+}
+
+function collectTimestamps(value, output) {
+  if (!value) return;
+  if (Array.isArray(value)) {
+    value.forEach((item) => collectTimestamps(item, output));
+    return;
+  }
+  if (typeof value !== "object") return;
+
+  const dateKeys = ["updatedAt", "updated_at", "createdAt", "created_at", "createdTime", "addedAt", "generatedAt", "date"];
+  dateKeys.forEach((key) => {
+    const parsed = parseDateValue(value[key]);
+    if (parsed) output.push(parsed.getTime());
+  });
+
+  ["data", "items", "reports", "watchlist", "portfolio"].forEach((key) => {
+    if (value[key]) collectTimestamps(value[key], output);
+  });
+}
+
+function notifySyncStatusUpdated(detail) {
+  if (typeof window === "undefined") return;
+  window.dispatchEvent(new CustomEvent("sync-status-updated", { detail }));
+}
+
 function logFailure(module, error, message) {
   addLog({
     module,
@@ -203,7 +297,19 @@ function defaultStatus() {
     network: {
       status: navigator.onLine ? "已联网" : "离线模式",
       message: "",
+      source: "浏览器网络",
       lastSyncAt: "尚未同步",
+      lastSyncAtMs: 0,
     },
   };
+}
+
+function formatDateTime(value) {
+  return new Date(value).toLocaleString("zh-CN", { hour12: false });
+}
+
+function parseDateValue(value) {
+  if (!value) return null;
+  const date = value instanceof Date ? value : new Date(value);
+  return Number.isNaN(date.getTime()) ? null : date;
 }

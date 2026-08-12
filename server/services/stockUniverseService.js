@@ -59,7 +59,10 @@ export async function getSecurityUniverse({ force = false } = {}) {
 export async function searchSecurityUniverse(query, limit = 30) {
   const keyword = String(query ?? "").trim();
   const upper = keyword.toUpperCase();
-  const cache = await getSecurityUniverse();
+  if (!universeCache.data.length) {
+    void getSecurityUniverse().catch(() => {});
+  }
+  const cache = universeCache;
   const etfRows = buildKnownEtfRows();
   const source = dedupe([...cache.data, ...etfRows]);
   if (!keyword) return source.slice(0, limit);
@@ -239,7 +242,7 @@ function inferMarket(code, marketId) {
 }
 
 function isEtfCode(code) {
-  return /^(51|52|56|58|15|16)\d{4}$/.test(String(code ?? ""));
+  return /^(?:5\d{5}|1[56]\d{4})$/.test(String(code ?? ""));
 }
 
 function nowText() {

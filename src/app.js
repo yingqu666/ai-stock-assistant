@@ -20,7 +20,7 @@ import { mountWatchlist, renderWatchlist } from "./pages/watchlist.js";
 import { getNavigation, getSidePanelData } from "./services/mockService.js";
 import { initNotificationSchedule } from "./services/notificationService.js";
 import { initAutoRefresh } from "./services/refreshService.js";
-import { checkCloudStatus, getSyncStatus, registerNetworkSync } from "./services/syncService.js";
+import { checkCloudStatus, getSyncStatus, getTopSyncStatus, registerNetworkSync } from "./services/syncService.js";
 import { getCurrentUser, isLoggedIn, logout } from "./services/userService.js";
 
 const appShell = document.querySelector(".app-shell");
@@ -137,16 +137,17 @@ async function renderSidePanel() {
   document.querySelector("#side-queue").innerHTML = aiTeam.slice(0, 3).map((item) => `<p class="side-note"><b>${item.role}</b><br>${item.focus.join(" / ")}</p>`).join("");
 }
 
-async function renderUserStatus() {
+async function renderUserStatus({ refreshCloud = true } = {}) {
   const user = getCurrentUser();
-  const cloud = await checkCloudStatus();
-  const status = getSyncStatus();
-  const lastSyncAt = status.watchlist?.lastSyncAt ?? status.reports?.lastSyncAt ?? status.cloud?.lastSyncAt ?? "尚未同步";
+  const cloud = refreshCloud ? await checkCloudStatus() : getSyncStatus().cloud;
+  const syncStatus = getTopSyncStatus();
+  const lastSyncAt = syncStatus.lastSyncAt ?? cloud?.lastSyncAt ?? "尚未同步";
+  const cloudConnected = cloud?.connected !== false && cloud?.status !== "连接失败";
   if (!topActions) return;
   topActions.innerHTML = `
     <span class="status-dot"></span>
     <span>${user?.phone ?? "未登录"}</span>
-    <span>${cloud.connected ? "云端已连接" : "云端回退"}</span>
+    <span>${cloudConnected ? "云端已连接" : "云端回退"}</span>
     <span>同步：${lastSyncAt}</span>
     <button class="logout-button" type="button">退出</button>
   `;
@@ -173,13 +174,18 @@ function initApp() {
   if (appStarted) return;
   appStarted = true;
   renderUserStatus();
+  window.addEventListener("sync-status-updated", () => {
+    renderUserStatus({ refreshCloud: false });
+  });
   renderNavigation();
   initNotificationSchedule();
   registerNetworkSync(() => {
+    renderUserStatus();
     renderSidePanel();
     setPage(currentPage);
   });
   initAutoRefresh(() => {
+    renderUserStatus({ refreshCloud: false });
     renderSidePanel();
     if (currentPage === "dashboard" || currentPage === "market" || currentPage === "watchlist") {
       setPage(currentPage);

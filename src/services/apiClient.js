@@ -14,19 +14,27 @@ export function clearServerToken() {
 
 export async function apiRequest(path, options = {}) {
   const token = window.localStorage.getItem(tokenKey);
+  const timeoutMs = options.timeoutMs ?? 20000;
+  const controller = new AbortController();
+  const timeout = window.setTimeout(() => controller.abort(), timeoutMs);
+  const { timeoutMs: _timeoutMs, ...fetchOptions } = options;
   let response;
   try {
     response = await fetch(`${apiBaseUrl}${path}`, {
-      ...options,
+      ...fetchOptions,
+      signal: fetchOptions.signal ?? controller.signal,
       headers: {
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        ...(options.headers ?? {}),
+        ...(fetchOptions.headers ?? {}),
       },
     });
   } catch (error) {
-    writeApiLog(path, "network-failed", error.message);
-    throw error;
+    const message = error.name === "AbortError" ? `请求超时：${timeoutMs}ms` : error.message;
+    writeApiLog(path, "network-failed", message);
+    throw new Error(message);
+  } finally {
+    window.clearTimeout(timeout);
   }
 
   const data = await response.json();

@@ -4,20 +4,18 @@ import { addLog } from "./logService.js";
 
 const noticeApi = "https://np-anotice-stock.eastmoney.com/api/security/ann";
 const fastNewsApi = "https://np-listapi.eastmoney.com/comm/web/getFastNews";
-const trackedStocks = ["600176", "600519", "300750", "301396", "688981", "512760"];
+const trackedStocks = ["600176", "600519", "300750", "301396", "688981", "512760", "515050", "515980"];
 
 export const newsProviders = [
-  { key: "eastmoney_notice", name: "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a", enabled: true, type: "\u516c\u544a" },
-  { key: "eastmoney_fast", name: "\u4e1c\u65b9\u8d22\u5bcc\u5feb\u8baf", enabled: true, type: "\u8d22\u7ecf\u65b0\u95fb" },
-  { key: "cninfo", name: "\u5de8\u6f6e\u8d44\u8baf", enabled: false, type: "\u516c\u544a/\u8d22\u62a5\u9884\u7559" },
-  { key: "cls", name: "\u8d22\u8054\u793e", enabled: false, type: "\u5e02\u573a\u65b0\u95fb\u9884\u7559" },
-  { key: "chinanews", name: "\u4e2d\u56fd\u65b0\u95fb\u7f51", enabled: false, type: "\u653f\u7b56\u65b0\u95fb\u9884\u7559" },
+  { key: "eastmoney_notice", name: "东方财富公告", enabled: true, type: "公告" },
+  { key: "eastmoney_fast", name: "东方财富快讯", enabled: true, type: "财经新闻" },
+  { key: "cninfo", name: "巨潮资讯", enabled: false, type: "公告/财报接口预留" },
+  { key: "cls", name: "财联社", enabled: false, type: "市场新闻接口预留" },
+  { key: "chinanews", name: "中国新闻网", enabled: false, type: "政策新闻接口预留" },
 ];
 
 export async function getNewsSnapshot() {
-  if (DATA_MODE !== "real") {
-    return buildFallbackSnapshot("\u6a21\u62df\u65b0\u95fb");
-  }
+  if (DATA_MODE !== "real") return buildFallbackSnapshot("本地备用新闻");
 
   try {
     const [announcements, fastNews] = await Promise.all([
@@ -31,20 +29,20 @@ export async function getNewsSnapshot() {
       }),
     ]);
     const realNews = [...announcements, ...fastNews];
-    if (!realNews.length) return buildFallbackSnapshot("\u6a21\u62df\u65b0\u95fb\u56de\u9000");
+    if (!realNews.length) return buildFallbackSnapshot("新闻接口未返回，使用本地备用新闻");
 
     return {
-      news: realNews.slice(0, 6),
+      news: realNews.slice(0, 8),
       riskAlerts,
       stockNews: realNews,
       updatedAt: formatNow(),
-      source: "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a/\u5feb\u8baf",
-      dataStatus: announcements.length && fastNews.length ? "\u771f\u5b9e\u6570\u636e" : "\u90e8\u5206\u771f\u5b9e",
+      source: "东方财富公告/快讯",
+      dataStatus: announcements.length && fastNews.length ? "真实数据" : "部分真实",
       providers: newsProviders,
     };
   } catch (error) {
     logNewsFailure("snapshot", error);
-    return buildFallbackSnapshot("\u6a21\u62df\u65b0\u95fb\u56de\u9000");
+    return buildFallbackSnapshot("新闻接口异常，使用本地备用新闻");
   }
 }
 
@@ -52,21 +50,21 @@ export async function getStockNews(code) {
   const snapshot = await getNewsSnapshot();
   const keyword = String(code ?? "");
   const related = snapshot.stockNews.filter((item) => item.relatedStock === keyword
-    || item.relatedStock === "A\u80a1"
-    || item.relatedStock === "\u5e02\u573a"
+    || item.relatedStock === "A股"
+    || item.relatedStock === "市场"
     || (item.relatedStocks ?? []).includes(keyword));
   return related.length ? related : snapshot.stockNews.slice(0, 5);
 }
 
 export function analyzeNewsImpact(title) {
   const text = String(title ?? "");
-  const positiveWords = ["\u589e\u957f", "\u4e2d\u6807", "\u56de\u8d2d", "\u589e\u6301", "\u76c8\u5229", "\u7a81\u7834", "\u5229\u597d", "\u9700\u6c42", "\u4e0a\u8c03", "\u6269\u4ea7"];
-  const negativeWords = ["\u51cf\u6301", "\u4e8f\u635f", "\u4e0b\u6ed1", "\u5904\u7f5a", "\u98ce\u9669", "\u7ec8\u6b62", "\u8bc9\u8bbc", "\u9000\u5e02", "\u4e0b\u964d"];
+  const positiveWords = ["增长", "中标", "回购", "增持", "盈利", "突破", "利好", "需求", "上调", "扩产"];
+  const negativeWords = ["减持", "亏损", "下滑", "处罚", "风险", "终止", "诉讼", "退市", "下降"];
   const target = inferImpactTarget(text);
 
-  if (positiveWords.some((word) => text.includes(word))) return { direction: "\u5229\u597d", target, credibility: "\u4e2d" };
-  if (negativeWords.some((word) => text.includes(word))) return { direction: "\u5229\u7a7a", target, credibility: "\u4e2d" };
-  return { direction: "\u4e2d\u6027", target, credibility: "\u4e2d" };
+  if (positiveWords.some((word) => text.includes(word))) return { direction: "利好", target, credibility: "中" };
+  if (negativeWords.some((word) => text.includes(word))) return { direction: "利空", target, credibility: "中" };
+  return { direction: "中性", target, credibility: "中" };
 }
 
 async function fetchAnnouncements(codes) {
@@ -77,7 +75,7 @@ async function fetchAnnouncements(codes) {
 }
 
 async function fetchFastNews() {
-  const url = `${fastNewsApi}?client=web&biz=web_724&fastColumn=102&sortEnd=0&pageSize=8&req_trace=${Date.now()}`;
+  const url = `${fastNewsApi}?client=web&biz=web_724&fastColumn=102&sortEnd=0&pageSize=12&req_trace=${Date.now()}`;
   const json = await fetchJson(url);
   const rows = Array.isArray(json?.data) ? json.data : [];
   return rows.map(normalizeFastNews);
@@ -85,62 +83,74 @@ async function fetchFastNews() {
 
 function normalizeAnnouncement(item) {
   const firstCode = item.codes?.[0];
-  const title = item.title ?? "\u516c\u53f8\u516c\u544a";
+  const title = item.title ?? "公司公告";
   const analysis = analyzeNewsImpact(title);
-  const relatedStock = firstCode?.stock_code ?? "A\u80a1";
+  const relatedStock = firstCode?.stock_code ?? "A股";
   return {
     title,
-    source: "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a",
-    time: item.notice_date?.slice(0, 16) ?? "\u672a\u77e5\u65f6\u95f4",
+    source: "东方财富公告",
+    time: item.notice_date?.slice(0, 16) ?? formatNow(),
     link: item.art_code ? `https://data.eastmoney.com/notices/detail/${relatedStock}/${item.art_code}.html` : "",
     relatedStock,
     relatedStocks: (item.codes ?? []).map((code) => code.stock_code).filter(Boolean),
     relatedIndustry: analysis.target,
+    relatedIndustries: inferRelatedIndustries(title, analysis.target),
     category: classifyAnnouncement(title),
     impact: analysis.direction,
-    target: "\u4e2a\u80a1",
-    credibility: { level: analysis.credibility, reason: "\u516c\u544a\u6807\u9898\u89c4\u5219\u5206\u7c7b\uff0c\u9700\u7ed3\u5408\u6b63\u6587\u590d\u6838" },
+    target: "个股",
+    credibility: { level: analysis.credibility, reason: "公告标题规则分类，需结合正文复核" },
   };
 }
 
 function normalizeFastNews(item) {
-  const title = item.title ?? "\u8d22\u7ecf\u65b0\u95fb";
+  const title = item.title ?? "财经新闻";
   const analysis = analyzeNewsImpact(title);
   return {
     title,
-    source: item.mediaName ?? "\u4e1c\u65b9\u8d22\u5bcc\u5feb\u8baf",
-    time: item.showTime ?? "\u672a\u77e5\u65f6\u95f4",
+    source: item.mediaName ?? "东方财富快讯",
+    time: item.showTime ?? formatNow(),
     link: item.url ?? item.shareUrl ?? "",
-    relatedStock: "\u5e02\u573a",
+    relatedStock: "市场",
     relatedStocks: [],
     relatedIndustry: analysis.target,
+    relatedIndustries: inferRelatedIndustries(title, analysis.target),
     category: classifyMarketNews(title),
     impact: analysis.direction,
-    target: analysis.target === "\u5e02\u573a" ? "\u5e02\u573a" : "\u884c\u4e1a",
-    credibility: { level: "\u4e2d", reason: "\u5feb\u8baf\u6765\u6e90\uff0c\u9700\u7b49\u5f85\u516c\u544a\u6216\u6743\u5a01\u62a5\u9053\u9a8c\u8bc1" },
+    target: analysis.target === "市场" ? "市场" : "行业",
+    credibility: { level: "中", reason: "快讯来源，需等待公告或权威报道验证" },
   };
 }
 
 function classifyAnnouncement(title) {
-  if (/财报|年度报告|季度报告|半年报|业绩|预告/.test(title)) return "\u8d22\u62a5";
-  if (/股东|减持|增持/.test(title)) return "\u80a1\u4e1c\u53d8\u5316";
-  if (/回购/.test(title)) return "\u56de\u8d2d";
-  if (/重大|停牌|收购|重组|合同|中标/.test(title)) return "\u91cd\u5927\u4e8b\u9879";
-  return "\u516c\u53f8\u516c\u544a";
+  if (/财报|年度报告|季度报告|半年报|业绩|预告/.test(title)) return "财报";
+  if (/股东|减持|增持/.test(title)) return "股东变化";
+  if (/回购/.test(title)) return "回购";
+  if (/重大|停牌|收购|重组|合同|中标/.test(title)) return "重大事项";
+  return "公司公告";
 }
 
 function classifyMarketNews(title) {
-  if (/政策|国务院|证监会|发改委|工信部/.test(title)) return "\u653f\u7b56\u65b0\u95fb";
-  if (/行业|产业|需求|订单|服务器|芯片|算力|半导体/.test(title)) return "\u884c\u4e1a\u65b0\u95fb";
-  return "\u5e02\u573a\u70ed\u70b9";
+  if (/政策|国务院|证监会|发改委|工信部/.test(title)) return "政策新闻";
+  if (/行业|产业|需求|订单|服务器|芯片|算力|半导体|光模块|储能|电力/.test(title)) return "行业新闻";
+  return "市场热点";
 }
 
 function inferImpactTarget(title) {
-  if (/AI|算力|服务器|光模块/.test(title)) return "\u7b97\u529b\u677f\u5757";
-  if (/半导体|芯片/.test(title)) return "\u534a\u5bfc\u4f53\u884c\u4e1a";
-  if (/新能源|光伏|储能|电力/.test(title)) return "\u65b0\u80fd\u6e90/\u7535\u529b\u884c\u4e1a";
-  if (/消费|白酒/.test(title)) return "\u6d88\u8d39\u884c\u4e1a";
-  return "\u5e02\u573a";
+  if (/AI|人工智能|算力|服务器/.test(title)) return "算力板块";
+  if (/光模块|光通信/.test(title)) return "光模块";
+  if (/半导体|芯片/.test(title)) return "半导体行业";
+  if (/新能源|光伏|储能|电力|电网/.test(title)) return "新能源/电力行业";
+  if (/消费|白酒/.test(title)) return "消费行业";
+  return "市场";
+}
+
+function inferRelatedIndustries(title, target) {
+  const related = [target].filter(Boolean);
+  if (/AI|人工智能|算力|芯片|服务器/.test(title)) related.push("半导体", "光模块", "算力", "电力");
+  if (/半导体|芯片/.test(title)) related.push("半导体", "芯片ETF");
+  if (/光模块|通信|5G/.test(title)) related.push("光模块", "通信");
+  if (/电力|储能|电网/.test(title)) related.push("电力", "储能");
+  return [...new Set(related)];
 }
 
 async function fetchJson(url) {
@@ -162,7 +172,7 @@ function buildFallbackSnapshot(source) {
     stockNews,
     updatedAt: formatNow(),
     source,
-    dataStatus: "\u6a21\u62df\u6570\u636e",
+    dataStatus: "备用数据",
     providers: newsProviders,
   };
 }
@@ -171,9 +181,9 @@ function logNewsFailure(module, error) {
   addLog({
     module: "news",
     status: "failed",
-    mode: "real-fallback",
+    mode: "local-backup",
     source: module,
-    message: "\u771f\u5b9e\u65b0\u95fb\u83b7\u53d6\u5931\u8d25\uff0c\u5df2\u4fdd\u7559fallback",
+    message: "真实新闻获取失败，保留本地备用新闻",
     error: error.message,
   });
 }

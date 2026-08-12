@@ -1,26 +1,22 @@
 import fs from "node:fs/promises";
 import { randomUUID } from "node:crypto";
 import pg from "pg";
-import { databaseConfig, getSafeDatabaseInfo, hasDatabaseUrl } from "../../config/database.js";
+import { getPoolConfig, getSafeDatabaseInfo, hasDatabaseUrl } from "../../config/database.js";
 
 const { Pool } = pg;
-const pool = hasDatabaseUrl()
-  ? new Pool({
-      connectionString: databaseConfig.url,
-      ssl: databaseConfig.ssl,
-      connectionTimeoutMillis: databaseConfig.connectionTimeoutMillis,
-    })
-  : null;
+const pool = hasDatabaseUrl() ? new Pool(getPoolConfig()) : null;
 
 export function isPostgresEnabled() {
   return Boolean(pool);
 }
 
 export async function initPostgres() {
+  logDatabaseConfig("startup");
   if (!pool) return { ok: false, mode: "memory", message: "DATABASE_URL 未配置" };
   const schema = await fs.readFile(new URL("./schema.sql", import.meta.url), "utf8");
   await pool.query("select 1");
   await pool.query(schema);
+  console.log("PostgreSQL connected");
   return { ok: true, mode: "postgres" };
 }
 
@@ -37,6 +33,16 @@ export async function getPostgresStatus() {
   } catch (error) {
     return { mode: "memory", connected: false, tables: [], error: error.message, info };
   }
+}
+
+export function logDatabaseConfig(stage = "startup") {
+  const info = getSafeDatabaseInfo();
+  console.log(
+    `[database:${stage}] configured=${info.configured ? "yes" : "no"} source=${info.source || "none"} host=${info.host || "-"} port=${info.port || "-"} database=${info.database || "-"} user=${info.user || "-"} ssl=${info.ssl ? "on" : "off"} poolMax=${info.poolMax ?? "-"}`,
+  );
+  if (info.isSupabasePooler) console.log("[database:startup] Supabase Transaction Pooler detected");
+  else if (info.isSupabase) console.log("[database:startup] Supabase direct database host detected");
+  if (info.warning) console.warn(`[database:${stage}] ${info.warning}`);
 }
 
 export async function createUser(phone) {
@@ -136,7 +142,7 @@ export async function moveWatchlistStock(userId, idOrCode, groupName) {
 }
 
 async function ensureDefaultWatchlistGroups(userId) {
-  const defaults = ["AI科技", "半导体", "电力能源", "长期观察"];
+  const defaults = ["AI科技", "半导体", "ETF", "长期观察"];
   await Promise.all(defaults.map((name, index) => saveWatchlistGroup(userId, { name, sortOrder: index })));
 }
 

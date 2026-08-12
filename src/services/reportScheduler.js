@@ -1,10 +1,10 @@
-import { generateDailyReports } from "./aiService.js";
+import { buildAiResearchInput, generateAiAnalysis, generateDailyReports } from "./aiService.js";
 import { getMarketSnapshot } from "./marketService.js";
 import { buildNotificationText, notifyUser } from "./notificationService.js";
 import { getNewsSnapshot } from "./newsService.js";
 import { analyzeRisks } from "./riskService.js";
 import { saveSyncedReport, syncReports } from "./syncService.js";
-import { getWatchlistSnapshot } from "./stockService.js";
+import { getSyncedWatchlist } from "./watchlistSyncService.js";
 import { getInvestmentProfile } from "./investmentProfileService.js";
 
 let lastTaskStatus = {
@@ -16,8 +16,7 @@ let lastTaskStatus = {
 
 export function getTaskSchedule() {
   return [
-    { id: "morning", name: "早盘任务", time: "08:00", description: "获取市场数据、关注股票、新闻并生成早盘报告。" },
-    { id: "close", name: "收盘任务", time: "20:00", description: "获取收盘行情、新闻变化并生成收盘复盘。" },
+    { id: "manual", name: "手动生成AI日报", time: "用户点击", description: "获取行情、新闻、自选股、持仓和投资档案后生成今日研究报告。" },
   ];
 }
 
@@ -30,33 +29,46 @@ export async function getSavedReports() {
 }
 
 export async function runReportTask(type = "manual") {
-  const [marketData, newsSnapshot, watchlist] = await Promise.all([
+  const [marketData, newsSnapshot, syncedWatchlist, savedReports] = await Promise.all([
     getMarketSnapshot(),
     getNewsSnapshot(),
-    getWatchlistSnapshot(),
+    getSyncedWatchlist(),
+    syncReports(),
   ]);
-
+  const watchlist = syncedWatchlist.items ?? [];
+  const profile = getInvestmentProfile();
   const risks = analyzeRisks({ watchlist, newsEvents: newsSnapshot.stockNews, marketData });
+
+  const aiInput = buildAiResearchInput({
+    marketData,
+    stockQuote: null,
+    newsEvents: newsSnapshot.stockNews,
+    riskData: risks,
+    investmentProfile: profile,
+    portfolio: watchlist,
+    historicalReports: savedReports.data ?? [],
+  });
+  const aiAnalysis = await generateAiAnalysis(aiInput);
   const rawReport = generateDailyReports({
     marketData,
     newsEvents: newsSnapshot.stockNews,
     watchlist,
-    investmentProfile: getInvestmentProfile(),
+    investmentProfile: profile,
     riskAlerts: risks,
   });
-  const report = normalizeDailyReport(rawReport, { marketData, newsEvents: newsSnapshot.stockNews, watchlist, risks, profile: getInvestmentProfile() });
+  const report = normalizeDailyReport(rawReport, { marketData, newsEvents: newsSnapshot.stockNews, watchlist, risks, profile, aiAnalysis, newsSnapshot });
 
   const record = {
     id: `${Date.now()}`,
     date: new Date().toISOString().slice(0, 10),
     type,
-    title: type === "manual" || type === "手动生成" ? "今日AI投资研究日报" : `${type}报告`,
+    title: "今日AI投资研究日报",
     generatedAt: report.generatedAt,
     score: report.morning.score,
     marketState: report.morning.marketState,
     mainView: report.morning.strategy,
     content: report,
-    sourceData: ["东方财富行情", "stockService", "新闻接口/公告", "riskService", "aiService"],
+    sourceData: ["东方财富行情", "东方财富公告/快讯", "stockService", "riskService", aiAnalysis.source ?? "aiService"],
   };
 
   await saveSyncedReport(record);
@@ -67,70 +79,170 @@ export async function runReportTask(type = "manual") {
     lastRunAt: record.generatedAt,
   };
 
-  const notificationType = type === "早盘" ? "morning" : type === "收盘" ? "close" : "risk";
-  const message = buildNotificationText(notificationType);
+  const message = buildNotificationText("manual-report");
   notifyUser(message.title, message.body);
-
   return record;
 }
 
-function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks, profile }) {
+function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks, profile, aiAnalysis, newsSnapshot }) {
   const generatedAt = new Date().toLocaleString("zh-CN", { hour12: false });
   const strategy = marketData.strategy ?? {};
   const sentiment = marketData.marketSentiment ?? {};
-  const hotSectors = (marketData.hotSectors ?? []).map((item) => item.name);
-  const watchNames = (watchlist ?? []).map((item) => item.name).filter(Boolean).slice(0, 4);
-  const riskTexts = normalizeRiskTexts(risks, report.morning?.risks);
+  const hotDirections = normalizeHotDirections(aiAnalysis?.hotDirections, marketData, newsEvents);
+  const hotNames = hotDirections.map((item) => item.name);
+  const watchNames = (watchlist ?? []).map((item) => item.name).filter(Boolean).slice(0, 5);
+  const watchlistAnalysis = buildWatchlistDailyAnalysis(watchlist, marketData, newsEvents, risks);
+  const riskTexts = normalizeRiskTexts(aiAnalysis?.risks ?? risks, report.morning?.risks);
   const quality = report.morning?.quality ?? report.close?.quality ?? scoreQuality({ marketData, newsEvents, risks });
-
-  const marketSummary = report.close?.marketSummary ?? report.close?.performance ?? report.morning?.marketSummary ?? sentiment.summary ?? "市场处于结构性观察阶段。";
-  const profileFocus = buildProfileFocus(profile);
-  const focus = [...new Set([...(profileFocus.length ? profileFocus : []), ...(report.morning?.focus ?? []), ...hotSectors, ...watchNames])].slice(0, 8);
-  const nextFocus = report.close?.nextFocus?.length ? report.close.nextFocus : [...focus, "观察成交额变化", "检查自选股公告"].slice(0, 6);
+  const marketSummary = aiAnalysis?.marketSummary ?? report.close?.marketSummary ?? report.morning?.marketSummary ?? sentiment.summary ?? "市场处于结构性观察阶段。";
+  const investmentDecision = aiAnalysis?.investmentDecision ?? report.morning?.investmentDecision ?? {};
+  const nextFocus = aiAnalysis?.tomorrowPlan ?? report.close?.nextFocus ?? [...hotNames, ...watchNames, "观察成交额变化", "检查自选股公告"].slice(0, 6);
+  const evidence = aiAnalysis?.evidence ?? report.morning?.evidence ?? {};
 
   return {
     generatedAt,
     morning: {
       date: new Date().toLocaleDateString("zh-CN"),
+      investmentDecision,
       generatedAt,
-      score: strategy.score ?? report.morning?.score ?? 70,
+      score: strategy.score ?? investmentDecision.score ?? report.morning?.score ?? 70,
       marketState: strategy.state ?? report.morning?.marketState ?? sentiment.summary ?? "震荡观察",
       marketSummary,
-      riseReason: `热点集中在${hotSectors.slice(0, 3).join("、") || "结构性方向"}，需要继续观察成交额和资金持续性。`,
-      downsideRisk: riskTexts.join("；") || "成交不足、热点轮动过快、外部扰动可能压制风险偏好。",
-      strategy: `结合你的关注板块（${profile.industries.join("、")}），今日重点观察${focus.join("、") || "市场主线"}。保持研究观察，不追高。`,
-      focus,
+      marketAnalysis: {
+        title: "今日A股市场分析",
+        performance: marketSummary,
+        strength: `上涨 ${sentiment.upCount ?? "数据源未返回"} 家，下跌 ${sentiment.downCount ?? "数据源未返回"} 家，市场热度 ${sentiment.heat ?? "数据源未返回"}。`,
+        factors: buildMarketFactors(marketData, newsEvents),
+      },
+      hotDirections,
+      riseReason: hotDirections.slice(0, 3).map((item) => `${item.name}：${item.reason}`).join("；") || "今日主线仍需结合成交确认。",
+      downsideRisk: riskTexts.join("；") || "成交不足、热点轮动过快和外部扰动可能压制风险偏好。",
+      strategy: aiAnalysis?.conclusion ?? aiAnalysis?.summary ?? `今日重点观察${hotNames.join("、") || "市场结构性机会"}，不追高。`,
+      focus: hotNames,
       watchFocus: watchNames,
+      watchlistAnalysis,
       risks: riskTexts,
       tomorrowPlan: nextFocus,
-      positionAdvice: strategy.position ?? report.morning?.positionAdvice ?? "建议保持观察仓位，避免追高。",
-      sources: ["东方财富行情", "新闻接口/公告", "stockService自选股", "riskService", "AI分析"],
-      basis: `基于指数涨跌、成交额、涨跌家数、热点板块、新闻事件、关注股票和你的投资画像（${profile.style}/${profile.riskLevel}风险）生成。`,
-      evidence: report.morning?.evidence ?? {},
-      credibility: report.morning?.credibility ?? {},
+      positionAdvice: strategy.position ?? investmentDecision.positionAdvice ?? "保持观察仓位，避免追高。",
+      sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService自选股", "riskService", aiAnalysis?.source ?? "AI分析"],
+      basis: `基于指数、成交额、涨跌家数、热点行业、新闻事件、自选股和投资档案生成。行情更新时间：${marketData.updatedAt ?? generatedAt}；新闻更新时间：${newsSnapshot.updatedAt ?? generatedAt}。`,
+      evidence,
+      credibility: aiAnalysis?.credibility ?? report.morning?.credibility ?? {},
       quality,
+      aiStatus: ["真实AI模型", "deepseek"].includes(aiAnalysis?.source) ? "真实AI" : "fallback",
     },
     close: {
       date: new Date().toLocaleDateString("zh-CN"),
+      investmentDecision,
       generatedAt,
       performance: marketSummary,
       marketSummary,
-      breadth: `上涨 ${sentiment.upCount ?? "未知"} 家，下跌 ${sentiment.downCount ?? "未知"} 家。`,
-      hotSectors,
-      hotAnalysis: `${hotSectors.slice(0, 4).join("、") || "暂无明确主线"} 是当前主要复盘方向。`,
-      events: (newsEvents ?? []).slice(0, 4).map((item) => `${item.title}：${item.impact ?? item.category ?? "待判断"}`),
+      breadth: `上涨 ${sentiment.upCount ?? "数据源未返回"} 家，下跌 ${sentiment.downCount ?? "数据源未返回"} 家。`,
+      hotSectors: hotNames,
+      hotDirections,
+      hotAnalysis: hotDirections.map((item) => `${item.name}：${item.reason}；催化：${item.catalyst}；持续性：${item.sustainability}；风险：${item.risk}`).join("\n"),
+      events: (newsEvents ?? []).slice(0, 5).map((item) => `${item.title}：${item.impact ?? item.category ?? "中性"}，来源 ${item.source ?? "新闻接口"}`),
       summary: `今日市场总结：${marketSummary}`,
       aiReview: "当日判断需要结合后续市场和板块表现复盘，不代表未来结果。",
       nextFocus,
-      positionAdvice: strategy.position ?? "控制仓位，关注风险收益比。",
-      sources: ["东方财富行情", "新闻接口/公告", "stockService", "aiService"],
-      basis: "基于收盘行情、新闻变化、关注股票表现和风险信号生成。",
-      evidence: report.close?.evidence ?? {},
-      credibility: report.close?.credibility ?? {},
+      positionAdvice: strategy.position ?? investmentDecision.positionAdvice ?? "控制仓位，关注风险收益比。",
+      sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService", aiAnalysis?.source ?? "aiService"],
+      basis: `基于收盘行情、新闻变化、关注股票表现和风险信号生成。行情更新时间：${marketData.updatedAt ?? generatedAt}；新闻更新时间：${newsSnapshot.updatedAt ?? generatedAt}。`,
+      evidence,
+      credibility: aiAnalysis?.credibility ?? report.close?.credibility ?? {},
       quality,
+      aiStatus: ["真实AI模型", "deepseek"].includes(aiAnalysis?.source) ? "真实AI" : "fallback",
     },
     history: report.history ?? [],
   };
+}
+
+function normalizeHotDirections(aiHotDirections, marketData = {}, newsEvents = []) {
+  if (Array.isArray(aiHotDirections) && aiHotDirections.length) return aiHotDirections.slice(0, 5);
+  const sectors = (marketData.hotSectors ?? []).slice(0, 8);
+  const source = sectors.length ? sectors : inferSectorsFromNews(newsEvents);
+  return source.slice(0, 5).map((item) => {
+    const name = item.name ?? item;
+    const relatedNews = newsEvents.find((event) => `${event.title ?? ""}${event.relatedIndustry ?? ""}${(event.relatedIndustries ?? []).join("")}`.includes(name));
+    return {
+      name,
+      reason: item.status ?? item.flow ?? item.changePercent ?? "板块活跃度靠前",
+      catalyst: relatedNews ? `${relatedNews.title}（${relatedNews.source ?? "新闻"}）` : "暂未匹配到强新闻催化，主要依据行情热度",
+      sustainability: item.status?.includes("流入") || item.flow?.includes("流入") ? "持续性偏强，继续看成交延续" : "持续性需观察成交和新闻后续",
+      risk: "若成交缩量或高位分歧放大，板块持续性会下降",
+    };
+  });
+}
+
+function inferSectorsFromNews(news = []) {
+  const text = JSON.stringify(news);
+  const names = [];
+  if (/AI|人工智能|算力|服务器/.test(text)) names.push({ name: "AI算力" });
+  if (/芯片|半导体/.test(text)) names.push({ name: "半导体" });
+  if (/光模块|通信|5G/.test(text)) names.push({ name: "光模块/通信" });
+  if (/电力|储能|电网/.test(text)) names.push({ name: "电力储能" });
+  if (/消费|白酒/.test(text)) names.push({ name: "消费" });
+  return names.length ? names : [{ name: "市场结构性机会" }];
+}
+
+function buildMarketFactors(marketData = {}, newsEvents = []) {
+  const factors = [];
+  if ((marketData.marketOverview ?? []).length) factors.push(...marketData.marketOverview.slice(0, 3).map((item) => `${item.label ?? item.name} ${item.value ?? ""} ${item.change ?? item.changePercent ?? ""}`.trim()));
+  if ((marketData.hotSectors ?? []).length) factors.push(`热点方向：${marketData.hotSectors.slice(0, 5).map((item) => item.name).join("、")}`);
+  if (newsEvents.length) factors.push(`新闻催化：${newsEvents.slice(0, 3).map((item) => item.title).join("；")}`);
+  return factors;
+}
+
+function buildWatchlistDailyAnalysis(watchlist = [], marketData = {}, newsEvents = [], risks = []) {
+  return watchlist.map((stock) => {
+    const technicalScore = scoreByChange(stock.changePercent);
+    const capitalScore = /亿|万/.test(String(stock.amount ?? "")) ? 14 : 8;
+    const basicScore = stock.assetType === "ETF" ? 12 : (stock.marketCap && stock.marketCap !== "数据源未返回" ? 14 : 10);
+    const relatedNews = newsEvents.filter((item) => String(item.title ?? "").includes(stock.name) || String(item.relatedStock ?? "").includes(stock.code));
+    const newsScore = Math.min(20, 10 + relatedNews.length * 3);
+    const marketScore = Number(marketData.marketSentiment?.heat ?? 50) >= 60 ? 14 : 10;
+    const score = Math.max(0, Math.min(100, Math.round(technicalScore + capitalScore + basicScore + newsScore + marketScore)));
+    const stockRisks = risks.filter((item) => item.target === stock.name || item.target === stock.code).map((item) => item.message ?? item.title).filter(Boolean);
+    return {
+      code: stock.code,
+      name: stock.name,
+      assetType: stock.assetType ?? "股票",
+      score,
+      rating: scoreToRating(score),
+      shortTerm: score >= 70 ? "1-5天偏强观察" : score >= 50 ? "1-5天震荡观察" : "1-5天偏弱观察",
+      weekTrend: score >= 70 ? "上涨" : score >= 50 ? "震荡" : "下跌",
+      action: score >= 75 ? "关注" : score >= 60 ? "持有" : score >= 45 ? "等待" : "降低仓位",
+      reasons: [
+        `技术面${technicalScore}/20：今日涨跌幅 ${stock.changePercent ?? "数据源未返回"}。`,
+        `资金面${capitalScore}/20：成交额 ${stock.amount ?? "数据源未返回"}。`,
+        relatedNews.length ? `消息面${newsScore}/20：匹配到 ${relatedNews.length} 条相关新闻。` : `消息面${newsScore}/20：未匹配到强相关新闻。`,
+      ],
+      risks: [
+        ...stockRisks,
+        "短期涨跌幅放大时需要防止追高或情绪回落。",
+        "公告、新闻和财务数据可能存在延迟，需要复核来源。",
+        "若板块热度下降，个股或ETF弹性会减弱。",
+      ].slice(0, 4),
+    };
+  });
+}
+
+function scoreByChange(value) {
+  const change = Number(String(value ?? "").replace("%", "").replace("+", ""));
+  if (!Number.isFinite(change)) return 8;
+  if (change >= 3) return 18;
+  if (change >= 1) return 15;
+  if (change >= 0) return 12;
+  if (change > -2) return 9;
+  return 5;
+}
+
+function scoreToRating(score) {
+  if (score >= 85) return "强烈关注";
+  if (score >= 70) return "积极关注";
+  if (score >= 55) return "中性观察";
+  if (score >= 40) return "等待机会";
+  return "风险较高";
 }
 
 function normalizeRiskTexts(risks = [], fallback = []) {
@@ -150,23 +262,4 @@ function scoreQuality({ marketData, newsEvents, risks }) {
     newsCount: newsEvents?.length ?? 0,
     basis: "行情、新闻、风险、自选股、AI分析",
   };
-}
-
-function buildProfileFocus(profile) {
-  const semi = "\u534a\u5bfc\u4f53";
-  const optical = "\u5149\u6a21\u5757";
-  const power = "\u7535\u529b";
-  const storage = "\u50a8\u80fd";
-  const resource = "\u8d44\u6e90";
-  const domestic = "\u56fd\u4ea7\u66ff\u4ee3";
-  const map = {
-    AI: ["AI\u4ea7\u4e1a\u94fe", "\u7b97\u529b", "\u82af\u7247", optical],
-    [semi]: ["\u534a\u5bfc\u4f53\u8bbe\u5907", domestic, "\u5148\u8fdb\u5c01\u88c5"],
-    [optical]: ["\u9ad8\u901f\u5149\u6a21\u5757", "\u6570\u636e\u4e2d\u5fc3", "\u6d77\u5916\u4e91\u5382\u5546\u9700\u6c42"],
-    [power]: ["\u7535\u7f51", "\u7535\u529b\u8bbe\u5907", "\u6570\u636e\u4e2d\u5fc3\u7528\u7535"],
-    [storage]: ["\u50a8\u80fd\u8ba2\u5355", "\u7535\u529b\u5e02\u573a\u5316", "\u6570\u636e\u4e2d\u5fc3\u5907\u7535"],
-    [resource]: ["\u6709\u8272\u91d1\u5c5e", "\u80fd\u6e90\u4ef7\u683c", "\u5468\u671f\u4fee\u590d"],
-    [domestic]: ["\u4fe1\u521b", "\u534a\u5bfc\u4f53\u8bbe\u5907", "\u57fa\u7840\u8f6f\u4ef6"],
-  };
-  return [...new Set((profile.industries ?? []).flatMap((item) => map[item] ?? [item]))];
 }

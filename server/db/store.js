@@ -9,6 +9,7 @@ let lastDatabaseError = "";
 
 export async function initDatabase() {
   if (!postgres.isPostgresEnabled()) {
+    postgres.logDatabaseConfig("startup");
     activeStore = memory;
     databaseMode = "memory";
     databaseConnected = false;

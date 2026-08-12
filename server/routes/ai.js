@@ -19,7 +19,7 @@ aiRouter.get("/provider-status", asyncHandler(async (_req, res) => {
     enabled: status.mode === "api" && status.hasApiKey,
     keyConfigured: status.hasApiKey,
     model: status.model,
-    version: "2026-08-11-ai-status-fix",
+    version: "2026-08-12-stock-ai-chain-fix",
     mode: status.aiMode,
     lastCallAt: status.lastCallAt,
     lastFailureReason: status.lastFailureReason,
@@ -47,13 +47,15 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
   });
   try {
     const report = await generateResearchReport(input);
+    const realAi = ["deepseek", "openai", "ai-api"].includes(report.source);
     console.info("[stock-ai-report] AI response:", {
-      success: true,
+      success: realAi,
       source: report.source,
       provider: getAiRuntimeStatus().provider,
       mode: getAiRuntimeStatus().aiMode,
       rating: report.investmentDecision?.rating,
       score: report.investmentDecision?.score,
+      error: report.error ?? "",
     });
     res.json({ ok: true, data: report, report });
   } catch (error) {

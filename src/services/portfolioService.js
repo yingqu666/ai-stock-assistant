@@ -256,7 +256,7 @@ function inferIndustry(code) {
   return "其他";
 }
 
-function buildPortfolioAnalysis(positions, totalMarketValue, industryAllocation) {
+function buildLegacyPortfolioAnalysis(positions, totalMarketValue, industryAllocation) {
   const allocation = buildAllocation(positions, totalMarketValue);
   const maxStock = [...allocation].sort((a, b) => b.weight - a.weight)[0];
   const maxIndustry = industryAllocation[0];
@@ -273,6 +273,39 @@ function buildPortfolioAnalysis(positions, totalMarketValue, industryAllocation)
 
 function sumBy(items, key) {
   return items.reduce((sum, item) => sum + Number(item[key] ?? 0), 0);
+}
+
+function buildPortfolioAnalysis(positions, totalMarketValue, industryAllocation) {
+  const allocation = buildAllocation(positions, totalMarketValue);
+  const maxStock = [...allocation].sort((a, b) => b.weight - a.weight)[0];
+  const maxIndustry = industryAllocation[0];
+  const concentration = Math.max(maxStock?.weight ?? 0, maxIndustry?.weight ?? 0);
+  const score = Math.max(30, Math.min(100, Math.round(88 - concentration * 0.45 - (positions.length > 0 && positions.length <= 2 ? 8 : 0))));
+  const riskLevel = concentration >= 65 ? "高" : concentration >= 40 ? "中" : "低";
+  const industryConcentration = maxIndustry ? `${maxIndustry.industry} 占比 ${maxIndustry.weight.toFixed(1)}%` : "暂无持仓";
+  const maxRiskSource = maxIndustry?.weight > (maxStock?.weight ?? 0)
+    ? `${maxIndustry.industry}行业集中度偏高`
+    : (maxStock ? `${maxStock.name}单一标的占比偏高` : "暂无持仓风险");
+  const risks = [];
+  if (maxStock?.weight > 50) risks.push(`${maxStock.name} 占比 ${maxStock.weight.toFixed(1)}%，单一标的集中度偏高`);
+  if (maxIndustry?.weight > 60) risks.push(`${maxIndustry.industry} 行业占比 ${maxIndustry.weight.toFixed(1)}%，行业集中度偏高`);
+  if (!risks.length) risks.push("组合集中度暂时可控，但仍需关注市场波动和新闻事件。");
+  const positionAdvice = riskLevel === "高" ? "降低同方向新增仓位" : riskLevel === "中" ? "保持当前仓位并等待确认" : "低仓位到中等仓位观察";
+  return {
+    score,
+    industryConcentration,
+    riskLevel,
+    maxRiskSource,
+    positionAdvice,
+    adjustmentDirections: [
+      riskLevel === "高" ? "优先降低单一行业或单一标的集中度" : "继续保持分散观察",
+      "新增资产前先检查是否与现有持仓同方向暴露过高",
+      "结合AI日报和风险看板复核市场环境",
+    ],
+    strengths: ["持仓数据支持云端同步", "股票与ETF已统一纳入资产管理", "组合结构清晰，便于每日复盘"],
+    risks,
+    suggestions: ["关注单一标的和行业集中度变化", "结合风险提醒调整观察优先级", "不输出买卖指令，只给出研究和风险提示"],
+  };
 }
 
 function parseChange(value) {

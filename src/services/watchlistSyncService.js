@@ -1,11 +1,11 @@
-import { stockDatabase, userPortfolio } from "../data.js";
+import { stockDatabase } from "../data.js";
 import { cloudDataApi } from "./cloudService.js";
 import { addSyncedWatchlist, deleteSyncedWatchlist, getSyncStatus, syncWatchlist } from "./syncService.js";
 import { getUserStoragePrefix } from "./userService.js";
 
 const key = "ai-investment-cloud-watchlist-cache";
 const groupKey = "ai-investment-watchlist-groups-cache";
-const defaultGroups = ["AI科技", "半导体", "电力能源", "资源", "长期观察"];
+const defaultGroups = ["AI科技", "半导体", "ETF", "长期观察"];
 
 export async function getSyncedWatchlist() {
   const result = await syncWatchlist({
@@ -48,7 +48,7 @@ export async function addSyncedStock(query, groupName = "长期观察") {
     changePercent: stock.changePercent,
     reason: `${stock.industry ?? "A股"}方向观察，等待更多事件验证。`,
     aiLevel: stock.assetType === "ETF" ? "主题观察" : "新加入观察",
-    groupName,
+    groupName: stock.assetType === "ETF" && (!groupName || groupName === "长期观察") ? "ETF" : groupName,
     addedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
   };
 
@@ -186,9 +186,9 @@ function removeLocal(idOrCode) {
 
 function loadLocalWatchlist() {
   try {
-    return JSON.parse(window.localStorage.getItem(localKey(key)) ?? "null") ?? userPortfolio;
+    return JSON.parse(window.localStorage.getItem(localKey(key)) ?? "null") ?? [];
   } catch {
-    return userPortfolio;
+    return [];
   }
 }
 

@@ -14,13 +14,13 @@ export async function getMarketSnapshot() {
   try {
     return await getRealMarketSnapshot();
   } catch (error) {
-    console.warn("真实行情获取失败，已回退模拟数据：", error);
+    console.warn("真实行情获取失败，已使用本地备用数据：", error);
     return getMockMarketSnapshot();
   }
 }
 
 function getMockMarketSnapshot() {
-  return { strategy, marketOverview, marketSentiment, hotSectors, sectors, updatedAt: formatNow(), source: "模拟数据" };
+  return { strategy, marketOverview, marketSentiment, hotSectors, sectors, updatedAt: formatNow(), source: "本地备用数据", dataStatus: "暂无实时数据" };
 }
 
 async function getRealMarketSnapshot() {
@@ -87,6 +87,7 @@ async function getRealMarketSnapshot() {
     sectors: realSectors.length ? realSectors : sectors,
     updatedAt: formatNow(),
     source: realSectors.length ? "东方财富" : "东方财富指数 + 模拟板块回退",
+    dataStatus: realSectors.length ? "真实数据" : "部分真实",
   };
 }
 

@@ -25,8 +25,10 @@ export async function cloudLogout() {
 }
 
 export const cloudDataApi = {
-  getStocks: (query = "") => apiRequest(`/stocks?q=${encodeURIComponent(query)}`),
-  getStockDetail: (query = "") => apiRequest(`/stocks/detail?q=${encodeURIComponent(query)}`),
+  getStocks: (query = "") => apiRequest(`/stocks?q=${encodeURIComponent(query)}`, { timeoutMs: 5000 }),
+  getStockResearch: (query = "") => apiRequest(`/stocks/research?q=${encodeURIComponent(query)}`, { timeoutMs: 8000 }),
+  getResearchSourceStatus: () => apiRequest("/stocks/research/status"),
+  getStockDetail: (query = "") => apiRequest(`/stocks/detail?q=${encodeURIComponent(query)}`, { timeoutMs: 5000 }),
   getWatchlist: () => apiRequest("/watchlist"),
   saveWatchlist: (payload) => apiRequest("/watchlist", { method: "POST", body: JSON.stringify(payload) }),
   deleteWatchlist: (idOrCode) => apiRequest(`/watchlist/${encodeURIComponent(idOrCode)}`, { method: "DELETE" }),
@@ -44,6 +46,8 @@ export const cloudDataApi = {
   saveSettings: (payload) => apiRequest("/settings", { method: "POST", body: JSON.stringify(payload) }),
   getAiHistory: () => apiRequest("/ai-history"),
   saveAiHistory: (payload) => apiRequest("/ai-history", { method: "POST", body: JSON.stringify(payload) }),
+  generateStockAiReport: (payload) => apiRequest("/ai/stock-report", { method: "POST", body: JSON.stringify(payload), timeoutMs: 12000 }),
+  getAiProviderStatus: () => apiRequest("/ai/provider-status", { timeoutMs: 5000 }),
   generateAiReport: (payload) => apiRequest("/ai/report", { method: "POST", body: JSON.stringify(payload) }),
   askAi: (payload) => apiRequest("/ai/ask", { method: "POST", body: JSON.stringify(payload) }),
   getAiStatus: () => apiRequest("/ai/status"),

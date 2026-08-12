@@ -147,9 +147,9 @@ function stock(input) {
   return withResearch({
     ...input,
     assetType: "股票",
-    dataSource: "模拟数据",
-    quoteSource: "模拟数据",
-    dataStatus: "模拟数据",
+    dataSource: "本地备用数据",
+    quoteSource: "本地备用数据",
+    dataStatus: "暂无实时数据",
     updatedAt: nowText(),
   });
 }
@@ -176,9 +176,9 @@ function etf(input) {
     valuationRange: { pe: "ETF不适用", pb: "ETF不适用" },
     valuationStatus: "观察跟踪指数估值",
     riskTips: ["ETF会跟随指数波动", "主题ETF波动通常高于宽基ETF", "跨境ETF还需关注汇率、溢价和海外市场波动"],
-    dataSource: "模拟数据",
-    quoteSource: "模拟数据",
-    dataStatus: "模拟数据",
+    dataSource: "本地备用数据",
+    quoteSource: "本地备用数据",
+    dataStatus: "暂无实时数据",
     updatedAt: nowText(),
   });
 }

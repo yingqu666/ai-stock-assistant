@@ -2,6 +2,7 @@ import { getMarketSnapshot } from "./marketService.js";
 import { addLog } from "./logService.js";
 import { getNewsSnapshot } from "./newsService.js";
 import { getWatchlistSnapshot } from "./stockService.js";
+import { setSyncStatus } from "./syncService.js";
 
 const refreshIntervalMs = 30 * 60 * 1000;
 const cache = {
@@ -52,12 +53,19 @@ export async function refreshAllData() {
   try {
     cache.watchlist = await getWatchlistSnapshot();
     status.watchlistOk = true;
-    addLog({ module: "自选股", source: cache.watchlist?.[0]?.quoteSource ?? "stockService", status: "成功", mode: cache.watchlist?.[0]?.quoteSource === "东方财富" ? "real" : "mock回退" });
+    addLog({ module: "自选股", source: cache.watchlist?.[0]?.quoteSource ?? "stockService", status: "成功", mode: cache.watchlist?.[0]?.quoteSource === "东方财富" ? "real" : "fallback" });
   } catch {
     cache.watchlist = previous.watchlist;
     status.message = "部分数据刷新失败，已保留旧数据";
     addLog({ module: "自选股", source: "stockService", status: "失败", mode: "保留旧数据" });
   }
+
+  const refreshOk = status.marketOk || status.newsOk || status.watchlistOk;
+  setSyncStatus("refresh", refreshOk ? "已刷新" : "刷新失败", status.message, {
+    source: "数据刷新",
+    lastSyncAt: status.updatedAt,
+    lastSyncAtMs: Date.now(),
+  });
 
   lastRefreshStatus = status;
   return status;

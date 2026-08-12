@@ -88,6 +88,12 @@ export async function renderPortfolio() {
     <section class="wide-section">
       <div class="section-head"><h2>AI组合风险分析</h2><span>不输出买卖指令</span></div>
       <div class="detail-grid">
+        <article class="data-card"><strong>当前组合评分</strong><p>${portfolio.aiAnalysis.score ?? 60}/100</p></article>
+        <article class="data-card"><strong>行业集中度</strong><p>${portfolio.aiAnalysis.industryConcentration ?? "暂无持仓"}</p></article>
+        <article class="data-card"><strong>风险等级</strong><p>${portfolio.aiAnalysis.riskLevel ?? "中"}</p></article>
+        <article class="data-card"><strong>最大风险来源</strong><p>${portfolio.aiAnalysis.maxRiskSource ?? "暂无明确集中风险"}</p></article>
+        <article class="data-card"><strong>仓位建议</strong><p>${portfolio.aiAnalysis.positionAdvice ?? "保持当前仓位并继续观察"}</p></article>
+        <article class="data-card"><strong>调整方向</strong><p>${(portfolio.aiAnalysis.adjustmentDirections ?? []).join("；")}</p></article>
         <article class="data-card"><strong>组合优势</strong><p>${portfolio.aiAnalysis.strengths.join("；")}</p></article>
         <article class="data-card"><strong>风险点</strong><p>${portfolio.aiAnalysis.risks.join("；")}</p></article>
         <article class="data-card"><strong>观察建议</strong><p>${portfolio.aiAnalysis.suggestions.join("；")}</p></article>

@@ -3,6 +3,7 @@ import { cloudDataApi } from "./cloudService.js";
 import { addLog } from "./logService.js";
 
 const aiConfigKey = "ai-investment-ai-config";
+const missing = "数据源未返回";
 
 export function getAiConfig() {
   try {
@@ -14,16 +15,20 @@ export function getAiConfig() {
 
 export async function getAiStatus() {
   try {
-    const result = await cloudDataApi.getAiStatus();
-    const data = result.data ?? {};
+    const result = await cloudDataApi.getAiProviderStatus();
+    const data = result.data ?? result ?? {};
+    const keyConfigured = data.keyConfigured ?? data.hasApiKey;
+    const realAi = Boolean(data.enabled ?? (keyConfigured && ["api", "\u771f\u5b9eAI"].includes(data.mode)));
     return {
       ...data,
-      connected: data.mode === "api" && data.hasApiKey,
-      label: data.mode === "api" ? "API\u6a21\u5f0f" : "Fallback\u6a21\u5f0f",
-      message: data.mode === "api" ? "\u670d\u52a1\u7aefAI API\u914d\u7f6e\u5df2\u68c0\u6d4b" : "\u5f53\u524d\u4f7f\u7528\u89c4\u5219fallback",
+      hasApiKey: Boolean(keyConfigured),
+      keyStatus: keyConfigured ? "\u5df2\u914d\u7f6e" : "\u672a\u914d\u7f6e",
+      connected: data.enabled ?? realAi,
+      label: (data.enabled ?? realAi) ? `\u771f\u5b9eAI\u6a21\u578b\uff1a${data.provider ?? "API"}` : "Fallback\u6a21\u5f0f",
+      message: realAi ? `\u670d\u52a1\u7aef\u5df2\u542f\u7528 ${data.model ?? "AI\u6a21\u578b"}` : "\u5f53\u524d\u4f7f\u7528\u89c4\u5219fallback",
     };
   } catch (error) {
-    return { mode: "fallback", provider: "local", connected: false, label: "Fallback\u6a21\u5f0f", message: error.message };
+    return { mode: "fallback", provider: "local", connected: false, keyStatus: "\u672a\u914d\u7f6e", aiMode: "fallback", label: "Fallback\u6a21\u5f0f", message: error.message };
   }
 }
 
@@ -33,8 +38,8 @@ export function saveAiConfig(config) {
     provider: config.provider ?? "openai-compatible",
     endpoint: config.endpoint ?? "",
     model: config.model ?? "",
-    apiKeyStatus: config.apiKey ? "\u5df2\u586b\u5199\uff0c\u4ec5\u4fdd\u5b58Key\u72b6\u6001\uff0c\u4e0d\u628a\u5bc6\u94a5\u5199\u5165\u4ee3\u7801" : "\u672a\u586b\u5199",
-    updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    apiKeyStatus: config.apiKey ? "已填写，仅保存Key状态，不把密钥写入代码" : "未填写",
+    updatedAt: nowText(),
   };
   window.localStorage.setItem(aiConfigKey, JSON.stringify(clean));
   return clean;
@@ -67,45 +72,87 @@ export function buildAiResearchInput({
 
 export function buildPrompt(input) {
   return JSON.stringify({
-    task: "\u751f\u6210A\u80a1\u6295\u8d44\u7814\u7a76\u62a5\u544a",
+    task: "生成A股投资研究报告",
     rules: [
-      "\u4e0d\u8f93\u51fa\u786e\u5b9a\u4e70\u5165\u6216\u5356\u51fa\u5efa\u8bae",
-      "\u6bcf\u4e2a\u7ed3\u8bba\u5fc5\u987b\u9644\u6570\u636e\u4f9d\u636e",
-      "\u6ca1\u6709\u6570\u636e\u652f\u6301\u65f6\u660e\u786e\u8bf4\u660e\u6570\u636e\u4e0d\u8db3",
-      "\u8f93\u51fa\u7ed3\u6784\u5316JSON",
+      "不输出确定买入或卖出建议",
+      "每个结论必须附数据依据",
+      "没有数据支持时明确说明数据不足",
+      "输出结构化JSON",
     ],
-    outputTemplate: ["\u5e02\u573a\u73af\u5883", "\u5f53\u524d\u4e3b\u7ebf", "\u70ed\u70b9\u884c\u4e1a", "\u5173\u6ce8\u80a1\u7968", "\u98ce\u9669\u56e0\u7d20", "\u660e\u65e5\u89c2\u5bdf", "\u6570\u636e\u4f9d\u636e", "\u53ef\u4fe1\u5ea6"],
+    outputTemplate: ["公司/标的分析", "近期变化", "投资逻辑", "风险分析", "AI投资判断", "数据依据"],
     input,
   }, null, 2);
 }
 
 export async function generateAiAnalysis(input) {
   try {
-    const result = await cloudDataApi.generateAiReport(input);
-    if (result.data?.summary || result.data?.marketSummary) return normalizeAiOutput(result.data, input, "\u4e91\u7aefAI/API");
+    const stock = input.stockData ?? input.stockQuote ?? {};
+    console.info("[stock-ai-report] 股票数据:", {
+      code: stock.code,
+      name: stock.name,
+      price: stock.price,
+      changePercent: stock.changePercent,
+      amount: stock.amount,
+      industry: stock.industry,
+      dataStatus: stock.dataStatus,
+    });
+    console.info("[stock-ai-report] AI请求:", Boolean(stock.code || stock.name));
+    const result = stock.code || stock.name
+      ? await cloudDataApi.generateStockAiReport(input)
+      : await cloudDataApi.generateAiReport(input);
+    const output = result.report ?? result.data?.content ?? result.data?.report ?? result.data;
+    if (output?.investmentDecision || output?.marketSummary || output?.companyAnalysis) {
+      console.info("[stock-ai-report] AI返回:", {
+        success: true,
+        provider: output.source ?? result.data?.source ?? "unknown",
+        rating: output.investmentDecision?.rating,
+        score: output.investmentDecision?.score,
+      });
+      return normalizeAiOutput(output, input, aiSourceLabel(output.source ?? result.data?.source));
+    }
   } catch (error) {
-    addAiLog("AI\u62a5\u544a\u751f\u6210\u5931\u8d25\uff0c\u5df2\u4f7f\u7528\u672c\u5730\u89c4\u5219fallback", error);
+    console.info("[stock-ai-report] AI返回:", { success: false, error: error.message });
+    try {
+      const result = await cloudDataApi.generateAiReport(input);
+      const output = result.report ?? result.data?.content ?? result.data?.report ?? result.data;
+      if (output?.investmentDecision || output?.marketSummary || output?.companyAnalysis) {
+        console.info("[stock-ai-report] AI备用接口返回:", {
+          success: true,
+          provider: output.source ?? result.data?.source ?? "unknown",
+        });
+        return normalizeAiOutput(output, input, aiSourceLabel(output.source ?? result.data?.source));
+      }
+    } catch (reportError) {
+      console.info("[stock-ai-report] AI备用接口返回:", { success: false, error: reportError.message });
+    }
+    addAiLog("AI报告生成失败，已使用本地规则fallback", error);
   }
   return generateRuleBasedAnalysis(input);
 }
 
+function aiSourceLabel(source) {
+  if (source === "deepseek") return "DeepSeek";
+  if (source === "openai" || source === "ai-api") return "OpenAI";
+  return source ?? "云端AI";
+}
+
 export async function testAiConnection(config) {
-  if (config.mode !== "api") return { ok: true, message: "\u5f53\u524d\u4e3afallback\u6a21\u5f0f\uff0c\u65e0\u9700\u6d4b\u8bd5API\u3002" };
-  if (!config.endpoint || !config.apiKey) return { ok: false, message: "\u8bf7\u586b\u5199API\u5730\u5740\u548cKey\u3002" };
+  if (config.mode !== "api") return { ok: true, message: "当前为fallback模式，无需测试API。" };
+  if (!config.endpoint || !config.apiKey) return { ok: false, message: "请填写API地址和Key。" };
   try {
     const response = await fetch(config.endpoint, {
       method: "POST",
       headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.apiKey}` },
       body: JSON.stringify({
         model: config.model || "gpt-4.1-mini",
-        messages: [{ role: "user", content: "\u8bf7\u56de\u590d\uff1aAI\u8fde\u63a5\u6210\u529f" }],
+        messages: [{ role: "user", content: "请回复：AI连接成功" }],
         temperature: 0,
       }),
     });
-    if (!response.ok) return { ok: false, message: `AI\u8fde\u63a5\u5931\u8d25\uff1aHTTP ${response.status}` };
-    return { ok: true, message: "AI\u8fde\u63a5\u6210\u529f\u3002" };
+    if (!response.ok) return { ok: false, message: `AI连接失败：HTTP ${response.status}` };
+    return { ok: true, message: "AI连接成功。" };
   } catch (error) {
-    return { ok: false, message: `AI\u8fde\u63a5\u5931\u8d25\uff1a${error.message}` };
+    return { ok: false, message: `AI连接失败：${error.message}` };
   }
 }
 
@@ -116,12 +163,12 @@ export async function answerInvestmentQuestion(question, context) {
       question,
       answer: formatCloudAnswer(result.data),
       raw: result.data,
-      source: result.data?.source === "ai-api" ? "\u771f\u5b9eAI\u63a5\u53e3" : "\u89c4\u5219fallback",
+      source: ["ai-api", "deepseek"].includes(result.data?.source) ? "真实AI模型" : "规则fallback",
       context,
     };
   } catch (error) {
-    addAiLog("AI\u52a9\u624b\u4e91\u7aef\u95ee\u7b54\u5931\u8d25", error);
-    return { question, answer: buildProfessionalFallbackAnswer(question, context), source: "\u672c\u5730\u89c4\u5219fallback", context };
+    addAiLog("AI助手云端问答失败", error);
+    return { question, answer: buildProfessionalFallbackAnswer(question, context), source: "本地规则fallback", context };
   }
 }
 
@@ -129,90 +176,131 @@ export async function saveAiAnswerFeedback(payload) {
   try {
     return await cloudDataApi.saveAiFeedback(payload);
   } catch (error) {
-    addAiLog("AI\u53cd\u9988\u4fdd\u5b58\u5931\u8d25", error);
+    addAiLog("AI反馈保存失败", error);
     return { ok: false, message: error.message };
   }
+}
+
+export function normalizeInvestmentDecision(decision = {}, input = {}) {
+  const fallback = buildRuleInvestmentDecision(input);
+  const source = decision && typeof decision === "object" ? decision : {};
+  const score = clampScore(source.score ?? fallback.score);
+  return {
+    marketTrend: source.marketTrend ?? fallback.marketTrend,
+    rating: normalizeRating(source.rating ?? fallback.rating),
+    score,
+    shortTerm: source.shortTerm ?? fallback.shortTerm,
+    midTerm: source.midTerm ?? fallback.midTerm,
+    action: normalizeAction(source.action ?? fallback.action),
+    positionAdvice: source.positionAdvice ?? fallback.positionAdvice,
+    probability: normalizeProbability(source.probability ?? fallback.probability, score),
+    reasons: asList(source.reasons ?? fallback.reasons).slice(0, 6),
+    risks: asList(source.risks ?? fallback.risks).slice(0, 6),
+    watchPoints: asList(source.watchPoints ?? fallback.watchPoints).slice(0, 6),
+  };
 }
 
 export function generateRuleBasedAnalysis(input) {
   const newsEvents = input.newsData ?? input.newsEvents ?? [];
   const stock = input.stockData ?? input.stockQuote ?? {};
-  const stockName = stock.name ?? "\u5f53\u524d\u80a1\u7968";
-  const sentiment = input.marketData?.marketSentiment ?? {};
-  const marketSummary = sentiment.summary ?? "\u5e02\u573a\u6570\u636e\u6682\u672a\u66f4\u65b0";
-  const preferred = input.investmentProfile?.industries ?? [];
-  const hotSectors = (input.marketData?.hotSectors ?? []).map((item) => item.name);
-  const opportunities = [...new Set([...preferred, ...hotSectors])].slice(0, 6);
+  const stockName = stock.name ?? "当前标的";
+  const marketSummary = input.marketData?.marketSentiment?.summary ?? "市场数据正在更新";
+  const hotDirections = buildHotDirections(input.marketData, newsEvents);
+  const opportunities = hotDirections.map((item) => item.name).slice(0, 5);
   const evidence = buildEvidence(input);
   const credibility = scoreCredibility({ marketData: input.marketData, stock, newsEvents, riskData: input.riskData });
+  const investmentDecision = buildRuleInvestmentDecision(input);
 
   return {
-    marketSummary: `\u4eca\u65e5\u5e02\u573a\uff1a${marketSummary}\u3002`,
-    coreLogic: "\u6838\u5fc3\u903b\u8f91\uff1a\u7ed3\u5408\u6307\u6570\u6da8\u8dcc\u3001\u6210\u4ea4\u989d\u3001\u6da8\u8dcc\u5bb6\u6570\u548c\u70ed\u70b9\u677f\u5757\u6301\u7eed\u6027\u505a\u89c2\u5bdf\uff0c\u4e0d\u5f62\u6210\u786e\u5b9a\u4e70\u5356\u7ed3\u8bba\u3002",
-    industryAnalysis: `\u70ed\u70b9\u884c\u4e1a\uff1a${(opportunities.length ? opportunities : ["AI", "\u534a\u5bfc\u4f53", "\u7535\u529b"]).join("\u3001")}\u3002`,
-    stockAnalysis: `${stockName}\uff1a\u9700\u7ed3\u5408\u4ef7\u683c\u3001\u6da8\u8dcc\u5e45\u3001\u6210\u4ea4\u989d\u3001\u516c\u544a\u3001\u8d22\u52a1\u548c\u884c\u4e1a\u65b0\u95fb\u6301\u7eed\u8ddf\u8e2a\u3002`,
+    companyAnalysis: {
+      profile: stock.profile ?? (stock.assetType === "ETF" ? `${stockName}为ETF标的，重点看跟踪指数、规模、流动性和成分方向。` : "公司简介由公告和年报继续补充。"),
+      industry: stock.industry ?? missing,
+      coreBusiness: stock.mainBusiness ?? stock.trackingIndex ?? "核心业务由公告和年报继续补充",
+      industryPosition: stock.industryPosition ?? "行业地位需要结合行业数据继续观察",
+    },
+    recentChanges: {
+      priceMoveReason: `${stockName} 当前涨跌幅 ${stock.changePercent ?? missing}，成交额 ${stock.amount ?? missing}。`,
+      newsImpact: newsEvents.slice(0, 3).map((item) => `${item.title}：${item.impact ?? item.category ?? "中性"}`).join("；") || "新闻接口未返回强相关记录。",
+      announcementImpact: (stock.announcements ?? []).slice(0, 3).map((item) => `${item.title}：${item.analysis?.direction ?? item.impact ?? "中性"}`).join("；") || "公告接口未返回强相关记录。",
+    },
+    investmentLogic: {
+      positiveFactors: investmentDecision.reasons.slice(0, 3),
+      growthFactors: hotDirections.slice(0, 3).map((item) => `${item.name}：${item.sustainability}`),
+      watchPoints: investmentDecision.watchPoints,
+    },
+    riskAnalysis: {
+      industryRisks: ["热点持续性不足", "行业估值波动", "政策和需求预期变化"],
+      companyRisks: investmentDecision.risks.slice(0, 3),
+      marketRisks: ["市场成交不足", "指数回撤", "高位题材波动放大"],
+    },
+    investmentDecision,
+    marketSummary: `今日市场：${marketSummary}。`,
+    coreLogic: "核心逻辑：结合指数涨跌、成交额、涨跌家数、热点板块、新闻公告和用户关注标的进行结构化观察。",
+    industryAnalysis: formatHotDirections(hotDirections),
+    hotDirections,
+    stockAnalysis: `${stockName}：当前评级 ${investmentDecision.rating}，评分 ${investmentDecision.score}/100，需要继续跟踪行情、新闻、公告和财务变化。`,
     opportunities,
     risks: buildRiskList(input, newsEvents),
-    tomorrowPlan: ["\u89c2\u5bdf\u70ed\u70b9\u677f\u5757\u6210\u4ea4\u662f\u5426\u5ef6\u7eed", "\u68c0\u67e5\u81ea\u9009\u80a1\u516c\u544a\u548c\u65b0\u95fb\u53d8\u5316", "\u590d\u76d8AI\u98ce\u9669\u63d0\u9192\u662f\u5426\u6709\u6548"],
+    tomorrowPlan: ["观察热点板块成交是否延续", "检查自选股公告和新闻变化", "复盘AI风险提醒是否有效"],
     evidence,
     conclusionBasis: evidence,
     credibility,
-    summary: `${marketSummary}\u3002\u5f53\u524d\u66f4\u9002\u5408\u7ed3\u6784\u5316\u89c2\u5bdf\u3002`,
-    stockAdvice: `${stockName}\uff1a\u7ee7\u7eed\u5173\u6ce8\u516c\u544a\u3001\u8d22\u52a1\u3001\u6210\u4ea4\u989d\u548c\u884c\u4e1a\u6d88\u606f\u53d8\u5316\uff1b\u4e0d\u8f93\u51fa\u786e\u5b9a\u4e70\u5165\u6216\u5356\u51fa\u7ed3\u8bba\u3002`,
-    source: "\u672c\u5730\u89c4\u5219fallback",
+    summary: `${marketSummary}。当前更适合结构化观察。`,
+    stockAdvice: `${stockName}：继续关注公告、财务、成交额和行业消息变化；不输出确定买入或卖出结论。`,
+    source: "本地规则fallback",
   };
 }
 
 export function generateDailyReports({ marketData, newsEvents = [], watchlist = [], investmentProfile, riskAlerts = [] }) {
   const analysis = generateRuleBasedAnalysis({ marketData, newsData: newsEvents, investmentProfile, riskData: riskAlerts, historyReports: reportHistory, portfolio: watchlist });
-  const hotNames = (marketData.hotSectors ?? []).map((item) => item.name);
+  const hotDirections = analysis.hotDirections ?? [];
+  const hotNames = hotDirections.map((item) => item.name);
   const watchedNames = watchlist.map((item) => item.name).filter(Boolean).slice(0, 4);
-  const stockEvidence = watchlist.slice(0, 4).map((item) => `${item.name} ${item.code}\uff1a${item.changePercent ?? item.change ?? "\u6682\u65e0"}\uff0c${item.dataSource ?? "\u6570\u636e\u6e90\u672a\u77e5"}`);
-  const announcementEvidence = watchlist.flatMap((item) => item.announcements ?? []).slice(0, 4).map((item) => `${item.title}\uff1a${item.analysis?.direction ?? item.impact ?? "\u4e2d\u6027"}`);
-  const financialEvidence = watchlist.slice(0, 4).map((item) => `${item.name}\u8d22\u52a1\uff1a\u8425\u6536 ${item.financials?.revenue ?? "\u6682\u65e0"}\uff0c\u51c0\u5229\u6da6 ${item.financials?.netProfit ?? "\u6682\u65e0"}\uff0c\u6765\u6e90 ${item.financials?.source ?? "\u6682\u65e0"}`);
   const sentiment = marketData.marketSentiment ?? {};
   const strategy = marketData.strategy ?? {};
-  const generatedAt = new Date().toLocaleString("zh-CN", { hour12: false });
+  const generatedAt = nowText();
   const quality = scoreReportQuality({ marketData, newsEvents, riskAlerts, watchlist });
 
   return {
     morning: {
       date: new Date().toLocaleDateString("zh-CN"),
+      investmentDecision: analysis.investmentDecision,
       generatedAt,
-      score: strategy.score ?? 70,
-      marketState: strategy.state ?? sentiment.summary ?? "\u9707\u8361\u89c2\u5bdf",
-      overseas: "\u591c\u95f4\u5916\u56f4\u5e02\u573a\u4f5c\u4e3a\u60c5\u7eea\u53d8\u91cf\uff0c\u91cd\u70b9\u770b\u79d1\u6280\u677f\u5757\u5bf9A\u80a1AI\u3001\u534a\u5bfc\u4f53\u548c\u7b97\u529b\u65b9\u5411\u7684\u6620\u5c04\u3002",
+      score: strategy.score ?? analysis.investmentDecision.score ?? 70,
+      marketState: strategy.state ?? sentiment.summary ?? "震荡观察",
       marketSummary: analysis.marketSummary,
-      riseReason: `\u70ed\u70b9\u677f\u5757\u96c6\u4e2d\u5728 ${hotNames.slice(0, 3).join("\u3001") || "\u7ed3\u6784\u6027\u65b9\u5411"}\uff0c\u6210\u4ea4\u548c\u60c5\u7eea\u662f\u4e3b\u8981\u89c2\u5bdf\u53d8\u91cf\u3002`,
-      downsideRisk: analysis.risks.join("\uff1b"),
-      strategy: `\u4eca\u65e5\u5173\u6ce8\u65b9\u5411\uff1a${analysis.opportunities.join("\u3001")}\u3002\u7ee7\u7eed\u7814\u7a76\u89c2\u5bdf\uff0c\u4e0d\u8ffd\u9ad8\u3002`,
-      focus: analysis.opportunities,
+      riseReason: hotDirections.slice(0, 3).map((item) => `${item.name}：${item.reason}`).join("；") || "市场主线仍需观察成交确认。",
+      downsideRisk: analysis.risks.join("；"),
+      strategy: `今日重点观察：${hotNames.join("、") || "市场结构性机会"}。继续研究观察，不追高。`,
+      focus: hotNames,
+      hotDirections,
       watchFocus: watchedNames,
       risks: analysis.risks,
       tomorrowPlan: analysis.tomorrowPlan,
-      positionAdvice: strategy.position ?? "\u4fdd\u6301\u89c2\u5bdf\u4ed3\u4f4d\uff0c\u907f\u514d\u8ffd\u9ad8",
-      sources: ["\u4e1c\u65b9\u8d22\u5bcc\u884c\u60c5", "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a/\u5feb\u8baf", "stockService\u81ea\u9009\u80a1", "riskService", "AI\u5206\u6790"],
-      basis: "\u57fa\u4e8e\u5e02\u573a\u60c5\u7eea\u3001\u70ed\u70b9\u677f\u5757\u3001\u65b0\u95fb\u4e8b\u4ef6\u3001\u516c\u544a\u3001\u8d22\u52a1\u3001\u81ea\u9009\u80a1\u548c\u7528\u6237\u6295\u8d44\u6863\u6848\u751f\u6210\u3002",
-      evidence: { ...analysis.evidence, stocks: stockEvidence, announcements: announcementEvidence, financials: financialEvidence },
+      positionAdvice: strategy.position ?? analysis.investmentDecision.positionAdvice ?? "保持观察仓位",
+      sources: ["东方财富行情", "东方财富公告/快讯", "stockService自选股", "riskService", analysis.source],
+      basis: "基于市场情绪、热点板块、新闻事件、公告、财务、自选股和用户投资档案生成。",
+      evidence: analysis.evidence,
       credibility: analysis.credibility,
       quality,
     },
     close: {
       date: new Date().toLocaleDateString("zh-CN"),
+      investmentDecision: analysis.investmentDecision,
       generatedAt,
       performance: analysis.marketSummary,
       marketSummary: analysis.marketSummary,
-      breadth: `\u4e0a\u6da8 ${sentiment.upCount ?? "\u672a\u77e5"} \u5bb6\uff0c\u4e0b\u8dcc ${sentiment.downCount ?? "\u672a\u77e5"} \u5bb6\u3002`,
+      breadth: `上涨 ${sentiment.upCount ?? missing} 家，下跌 ${sentiment.downCount ?? missing} 家。`,
       hotSectors: hotNames,
-      hotAnalysis: `${hotNames.slice(0, 4).join("\u3001") || "\u6682\u65e0\u660e\u786e\u4e3b\u7ebf"} \u662f\u4eca\u65e5\u91cd\u70b9\u590d\u76d8\u65b9\u5411\uff0c\u9700\u7ed3\u5408\u6210\u4ea4\u6301\u7eed\u6027\u5224\u65ad\u3002`,
-      events: newsEvents.slice(0, 4).map((item) => `${item.title}\uff1a${item.source ?? "\u65b0\u95fb"}\uff0c${item.impact ?? item.category ?? "\u5f85\u5224\u65ad"}`),
-      summary: `\u4eca\u65e5\u5e02\u573a\u603b\u7ed3\uff1a${analysis.marketSummary}`,
-      aiReview: "\u672c\u62a5\u544a\u590d\u76d8\u5f53\u65e5\u903b\u8f91\uff0c\u540e\u7eed\u9700\u7ed3\u5408\u6b21\u65e5\u8d70\u52bf\u9a8c\u8bc1\u5224\u65ad\u6709\u6548\u6027\u3002",
+      hotAnalysis: formatHotDirections(hotDirections),
+      events: newsEvents.slice(0, 4).map((item) => `${item.title}：${item.source ?? "新闻"}，${item.impact ?? item.category ?? "中性"}`),
+      summary: `今日市场总结：${analysis.marketSummary}`,
+      aiReview: "本报告复盘当日逻辑，后续需结合次日走势验证判断有效性。",
       nextFocus: [...hotNames, ...watchedNames, ...analysis.tomorrowPlan].slice(0, 6),
-      positionAdvice: strategy.position ?? "\u63a7\u5236\u4ed3\u4f4d\uff0c\u5173\u6ce8\u98ce\u9669\u6536\u76ca\u6bd4",
-      sources: ["\u4e1c\u65b9\u8d22\u5bcc\u884c\u60c5", "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a/\u5feb\u8baf", "stockService", "aiService"],
-      basis: "\u57fa\u4e8e\u6536\u76d8\u884c\u60c5\u3001\u65b0\u95fb\u53d8\u5316\u3001\u516c\u544a\u3001\u8d22\u52a1\u3001\u4e2a\u80a1\u5f02\u52a8\u548c\u98ce\u9669\u4fe1\u53f7\u751f\u6210\u3002",
-      evidence: { ...analysis.evidence, stocks: stockEvidence, announcements: announcementEvidence, financials: financialEvidence },
+      positionAdvice: strategy.position ?? analysis.investmentDecision.positionAdvice ?? "控制仓位，关注风险收益比",
+      sources: ["东方财富行情", "东方财富公告/快讯", "stockService", analysis.source],
+      basis: "基于收盘行情、新闻变化、公告、财务、个股异动和风险信号生成。",
+      evidence: analysis.evidence,
       credibility: analysis.credibility,
       quality,
     },
@@ -222,7 +310,7 @@ export function generateDailyReports({ marketData, newsEvents = [], watchlist = 
       title: item.content.summary,
       score: strategy.score ?? 70,
       marketSummary: item.content.summary,
-      hotAnalysis: item.content.opportunities.join("\u3001"),
+      hotAnalysis: item.content.opportunities.join("、"),
       risks: item.content.risks,
       nextStrategy: item.content.stockAdvice,
     })),
@@ -232,8 +320,15 @@ export function generateDailyReports({ marketData, newsEvents = [], watchlist = 
 function normalizeAiOutput(output, input, source) {
   const fallback = generateRuleBasedAnalysis(input);
   return {
+    ...fallback,
+    ...output,
+    investmentDecision: normalizeInvestmentDecision(output.investmentDecision ?? fallback.investmentDecision, input),
+    companyAnalysis: output.companyAnalysis ?? fallback.companyAnalysis,
+    recentChanges: output.recentChanges ?? fallback.recentChanges,
+    investmentLogic: output.investmentLogic ?? fallback.investmentLogic,
+    riskAnalysis: output.riskAnalysis ?? fallback.riskAnalysis,
     marketSummary: output.marketSummary ?? output.summary ?? fallback.marketSummary,
-    coreLogic: output.coreLogic ?? fallback.coreLogic,
+    hotDirections: Array.isArray(output.hotDirections) ? output.hotDirections : fallback.hotDirections,
     industryAnalysis: output.industryAnalysis ?? fallback.industryAnalysis,
     opportunities: Array.isArray(output.opportunities) ? output.opportunities : fallback.opportunities,
     risks: Array.isArray(output.risks) ? output.risks : fallback.risks,
@@ -248,6 +343,42 @@ function normalizeAiOutput(output, input, source) {
   };
 }
 
+function formatCloudAnswer(data) {
+  if (!data) return "AI暂未返回结果。";
+  if (data.answer) return data.answer;
+  const decision = data.investmentDecision ?? {};
+  return [
+    "【AI投资判断】",
+    `评级：${decision.rating ?? "中性观察"}`,
+    `评分：${decision.score ?? 60}/100`,
+    `趋势：${decision.marketTrend ?? "震荡"}`,
+    `短期：${decision.shortTerm ?? "1-5天观察"}`,
+    `中期：${decision.midTerm ?? "1-4周观察"}`,
+    `策略：${decision.action ?? "等待"}，${decision.positionAdvice ?? "保持当前仓位"}`,
+    "",
+    "【依据】",
+    ...asList(data.basis ?? data.evidence ?? ["行情、新闻、公告、财务、用户画像"]),
+    "",
+    "【风险】",
+    ...asList(data.risks ?? data.riskAnalysis ?? ["成交不足、估值波动、新闻落空或政策变化"]),
+    "",
+    "【观察建议】",
+    ...asList(data.observationAdvice ?? data.tomorrowPlan ?? data.opportunities ?? ["关注主线持续性", "等待成交确认", "控制组合集中度"]),
+  ].join("\n");
+}
+
+function buildProfessionalFallbackAnswer(question, context) {
+  const analysis = generateRuleBasedAnalysis({
+    marketData: context.market ?? context.marketData,
+    stockQuote: context.stockData,
+    newsEvents: context.news ?? context.newsData,
+    riskData: context.risks ?? context.riskData,
+    investmentProfile: context.profile ?? context.investmentProfile,
+    portfolio: context.watchlist ?? context.portfolio,
+  });
+  return formatCloudAnswer({ ...analysis, conclusion: `针对“${question}”，当前为规则fallback分析。` });
+}
+
 function buildEvidence(input) {
   const marketOverview = input.marketData?.marketOverview ?? [];
   const sentiment = input.marketData?.marketSentiment ?? {};
@@ -257,27 +388,27 @@ function buildEvidence(input) {
   const financials = stock.financials ?? {};
   return {
     market: [
-      ...marketOverview.slice(0, 4).map((item) => `${item.label}\uff1a${item.value}\uff0c${item.change ?? "\u65e0\u53d8\u5316\u4fe1\u606f"}`),
-      `\u6da8\u8dcc\u5bb6\u6570\uff1a\u4e0a\u6da8${sentiment.upCount ?? "\u672a\u77e5"}\uff0c\u4e0b\u8dcc${sentiment.downCount ?? "\u672a\u77e5"}`,
+      ...marketOverview.slice(0, 4).map((item) => `${item.label}：${item.value}，${item.change ?? "无变化信息"}`),
+      `涨跌家数：上涨${sentiment.upCount ?? missing}，下跌${sentiment.downCount ?? missing}`,
     ],
     industry: [
-      ...((input.marketData?.hotSectors ?? []).slice(0, 4).map((item) => `${item.name}\uff1a${item.status ?? item.flow ?? "\u70ed\u70b9"}`)),
-      ...newsData.slice(0, 3).map((item) => `${item.title}\uff1a${item.source ?? "\u65b0\u95fb"}\uff0c${item.impact ?? item.category ?? "\u5f85\u5224\u65ad"}`),
+      ...((input.marketData?.hotSectors ?? []).slice(0, 5).map((item) => `${item.name}：${item.status ?? item.flow ?? "热点"}`)),
+      ...newsData.slice(0, 3).map((item) => `${item.title}：${item.source ?? "新闻"}，${item.impact ?? item.category ?? "中性"}`),
     ],
     stock: stock.code ? [
       `${stock.name} ${stock.code}`,
-      `\u4ef7\u683c ${stock.price ?? "\u6682\u65e0"}`,
-      `\u6da8\u8dcc\u5e45 ${stock.changePercent ?? "\u6682\u65e0"}`,
-      `\u6210\u4ea4\u989d ${stock.amount ?? "\u6682\u65e0"}`,
-      `\u884c\u4e1a ${stock.industry ?? "\u5f85\u8865\u5145"}`,
-    ] : ["\u672a\u63d0\u4f9b\u660e\u786e\u80a1\u7968\u6570\u636e"],
-    announcements: announcements.length ? announcements.slice(0, 3).map((item) => `${item.title}\uff1a${item.analysis?.direction ?? item.impact ?? "\u4e2d\u6027"}`) : ["\u6682\u65e0\u516c\u544a\u6570\u636e"],
+      `价格 ${stock.price ?? missing}`,
+      `涨跌幅 ${stock.changePercent ?? missing}`,
+      `成交额 ${stock.amount ?? missing}`,
+      `行业 ${stock.industry ?? missing}`,
+    ] : ["未提供明确股票数据"],
+    announcements: announcements.length ? announcements.slice(0, 3).map((item) => `${item.title}：${item.analysis?.direction ?? item.impact ?? "中性"}`) : ["公告接口未返回强相关记录"],
     financials: [
-      `\u8425\u6536 ${financials.revenue ?? "\u6682\u65e0"}`,
-      `\u8425\u6536\u540c\u6bd4 ${financials.revenueYoY ?? "\u6682\u65e0"}`,
-      `\u51c0\u5229\u6da6 ${financials.netProfit ?? "\u6682\u65e0"}`,
-      `ROE ${financials.roe ?? "\u6682\u65e0"}`,
-      `\u6765\u6e90 ${financials.source ?? "\u6682\u65e0"}`,
+      `营收 ${financials.revenue ?? missing}`,
+      `营收同比 ${financials.revenueYoY ?? missing}`,
+      `净利润 ${financials.netProfit ?? missing}`,
+      `ROE ${financials.roe ?? missing}`,
+      `来源 ${financials.source ?? missing}`,
     ],
   };
 }
@@ -293,99 +424,218 @@ function buildInputSummary({ marketData, stockQuote, newsEvents, riskData, inves
   };
 }
 
+function buildHotDirections(marketData = {}, newsEvents = []) {
+  const sectors = (marketData?.hotSectors ?? []).slice(0, 8);
+  const ranked = sectors.length ? sectors : inferSectorsFromNews(newsEvents);
+  return ranked.slice(0, 5).map((item) => {
+    const name = item.name ?? item;
+    const relatedNews = newsEvents.find((event) => `${event.title ?? ""}${event.relatedIndustry ?? ""}${(event.relatedIndustries ?? []).join("")}`.includes(name));
+    return {
+      name,
+      reason: item.status ?? item.flow ?? item.changePercent ?? "板块活跃度靠前",
+      catalyst: relatedNews ? `${relatedNews.title}（${relatedNews.source ?? "新闻"}）` : "暂未匹配到强新闻催化，主要依据行情热度",
+      sustainability: item.status?.includes("流入") || item.flow?.includes("流入") ? "持续性偏强，继续看成交延续" : "持续性需观察成交和新闻后续",
+      risk: "若成交缩量或高位分歧放大，板块持续性会下降",
+    };
+  });
+}
+
+function inferSectorsFromNews(news = []) {
+  const text = JSON.stringify(news);
+  const names = [];
+  if (/AI|人工智能|算力|服务器/.test(text)) names.push({ name: "AI算力" });
+  if (/芯片|半导体/.test(text)) names.push({ name: "半导体" });
+  if (/光模块|通信|5G/.test(text)) names.push({ name: "光模块/通信" });
+  if (/电力|储能|电网/.test(text)) names.push({ name: "电力储能" });
+  if (/消费|白酒/.test(text)) names.push({ name: "消费" });
+  return names.length ? names : [{ name: "市场结构性机会" }];
+}
+
+function formatHotDirections(items = []) {
+  return items.map((item) => `${item.name}：${item.reason}；催化：${item.catalyst}；持续性：${item.sustainability}；风险：${item.risk}`).join("\n");
+}
+
 function buildRiskList(input, newsEvents) {
   const risks = [];
   if ((input.riskData ?? []).length) risks.push(...input.riskData.map((item) => typeof item === "string" ? item : item.message ?? item.title));
-  if (newsEvents.some((item) => item.impact === "\u5229\u7a7a" || item.impact === "\u504f\u5229\u7a7a")) risks.push("\u65b0\u95fb\u6216\u516c\u544a\u5b58\u5728\u5229\u7a7a\u5f71\u54cd\uff0c\u9700\u7ee7\u7eed\u8ddf\u8e2a\u3002");
-  risks.push("\u70ed\u70b9\u8f6e\u52a8\u8fc7\u5feb\u53ef\u80fd\u5bfc\u81f4\u77ed\u7ebf\u6ce2\u52a8\u3002", "\u6210\u4ea4\u989d\u4e0d\u8db3\u4f1a\u964d\u4f4e\u4e0a\u6da8\u6301\u7eed\u6027\u3002");
+  if (newsEvents.some((item) => item.impact === "利空" || item.impact === "偏利空")) risks.push("新闻或公告存在利空影响，需要继续跟踪。");
+  risks.push("热点轮动过快可能导致短线波动。", "成交额不足会降低上涨持续性。");
   return [...new Set(risks.filter(Boolean))].slice(0, 6);
 }
 
 function scoreReportQuality({ marketData, newsEvents, riskAlerts, watchlist = [] }) {
   let score = 50;
   if (marketData?.marketOverview?.length >= 3) score += 15;
-  if (marketData?.source && !String(marketData.source).includes("\u6a21\u62df")) score += 10;
+  if (marketData?.source && !String(marketData.source).includes("模拟")) score += 10;
   if ((newsEvents?.length ?? 0) >= 3) score += 10;
   if ((riskAlerts?.length ?? 0) >= 1) score += 10;
-  if (watchlist.some((item) => item.financials?.status === "\u771f\u5b9e\u6570\u636e")) score += 5;
-  return { score: Math.min(100, score), dataCompleteness: score >= 80 ? "\u8f83\u5b8c\u6574" : "\u90e8\u5206\u5b8c\u6574", newsCount: newsEvents?.length ?? 0, basis: "\u884c\u60c5\u3001\u65b0\u95fb\u3001\u516c\u544a\u3001\u8d22\u52a1\u3001\u98ce\u9669\u3001\u81ea\u9009\u80a1\u3001\u6295\u8d44\u6863\u6848" };
+  if (watchlist.some((item) => item.financials?.status === "真实数据")) score += 5;
+  return { score: Math.min(100, score), dataCompleteness: score >= 80 ? "较完整" : "部分完整", newsCount: newsEvents?.length ?? 0, basis: "行情、新闻、公告、财务、风险、自选股、投资档案" };
 }
 
 function scoreCredibility({ marketData, stock, newsEvents, riskData }) {
   let score = 30;
   const reasons = [];
-  if (marketData?.marketOverview?.length) { score += 20; reasons.push("\u5df2\u6709\u884c\u60c5\u6570\u636e"); }
-  if (stock?.dataStatus === "\u771f\u5b9e\u6570\u636e") { score += 15; reasons.push("\u5df2\u6709\u4e2a\u80a1\u884c\u60c5"); }
-  if ((stock?.announcements ?? []).length) { score += 15; reasons.push("\u5df2\u6709\u516c\u544a\u4f9d\u636e"); }
-  if (stock?.financials?.status === "\u771f\u5b9e\u6570\u636e") { score += 15; reasons.push("\u5df2\u6709\u8d22\u52a1\u6570\u636e"); }
-  if ((newsEvents ?? []).length) { score += 10; reasons.push("\u5df2\u6709\u65b0\u95fb\u4f9d\u636e"); }
-  if ((riskData ?? []).length) { score += 5; reasons.push("\u5df2\u6709\u98ce\u9669\u4fe1\u53f7"); }
-  const level = score >= 80 ? "\u9ad8" : score >= 55 ? "\u4e2d" : "\u4f4e";
-  return { score: Math.min(100, score), level, reason: reasons.join("\uff1b") || "\u6570\u636e\u4e0d\u8db3\uff0c\u4ec5\u4f5c\u89c4\u5219\u89c2\u5bdf" };
+  if (marketData?.marketOverview?.length) { score += 20; reasons.push("已有行情数据"); }
+  if (stock?.dataStatus === "真实数据") { score += 15; reasons.push("已有个股行情"); }
+  if ((stock?.announcements ?? []).length) { score += 15; reasons.push("已有公告依据"); }
+  if (stock?.financials?.status === "真实数据") { score += 15; reasons.push("已有财务数据"); }
+  if ((newsEvents ?? []).length) { score += 10; reasons.push("已有新闻依据"); }
+  if ((riskData ?? []).length) { score += 5; reasons.push("已有风险信号"); }
+  const level = score >= 80 ? "高" : score >= 55 ? "中" : "低";
+  return { score: Math.min(100, score), level, reason: reasons.join("；") || "数据不足，仅作规则观察" };
 }
 
-function formatCloudAnswer(data) {
-  if (!data) return "AI\u6682\u672a\u8fd4\u56de\u7ed3\u679c\u3002";
-  if (data.answer) return data.answer;
-  return [
-    "\u3010\u7ed3\u8bba\u3011",
-    data.summary ?? data.marketSummary ?? "\u5f53\u524d\u53ea\u9002\u5408\u7814\u7a76\u89c2\u5bdf\uff0c\u4e0d\u5f62\u6210\u786e\u5b9a\u4e70\u5356\u7ed3\u8bba\u3002",
-    "",
-    "\u3010\u4f9d\u636e\u3011",
-    ...asList(data.evidence ?? data.conclusionBasis ?? ["\u884c\u60c5\u3001\u65b0\u95fb\u3001\u516c\u544a\u3001\u8d22\u52a1\u3001\u81ea\u9009\u80a1\u548c\u7528\u6237\u753b\u50cf"]),
-    "",
-    "\u3010\u98ce\u9669\u3011",
-    ...asList(data.risks ?? ["\u6210\u4ea4\u4e0d\u8db3\u3001\u4f30\u503c\u6ce2\u52a8\u3001\u65b0\u95fb\u843d\u7a7a\u6216\u653f\u7b56\u53d8\u5316"]),
-    "",
-    "\u3010\u89c2\u5bdf\u5efa\u8bae\u3011",
-    ...asList(data.followUp ?? data.tomorrowPlan ?? data.opportunities ?? ["\u5173\u6ce8\u4e3b\u7ebf\u6301\u7eed\u6027", "\u7b49\u5f85\u6210\u4ea4\u786e\u8ba4", "\u63a7\u5236\u7ec4\u5408\u96c6\u4e2d\u5ea6"]),
-  ].join("\n");
+function buildRuleInvestmentDecision(input = {}) {
+  const stock = input.stockData ?? input.stockQuote ?? {};
+  const market = input.marketData ?? {};
+  const technical = scoreTechnical(stock);
+  const capital = scoreCapital(stock, market);
+  const fundamental = scoreFundamental(stock);
+  const news = scoreNews(input.newsData ?? input.newsEvents ?? [], stock.announcements ?? []);
+  const environment = scoreMarket(market);
+  const score = clampScore(technical + capital + fundamental + news + environment);
+  return {
+    marketTrend: scoreToTrend(score),
+    rating: scoreToRating(score),
+    score,
+    shortTerm: score >= 70 ? "1-5天偏强观察" : score >= 55 ? "1-5天震荡观察" : "1-5天偏弱观察",
+    midTerm: score >= 70 ? "1-4周关注趋势延续" : score >= 55 ? "1-4周等待方向确认" : "1-4周降低关注",
+    action: scoreToAction(score),
+    positionAdvice: scoreToPosition(score),
+    probability: normalizeProbability(null, score),
+    reasons: [
+      `技术面${technical}/20：参考涨跌幅和趋势。`,
+      `资金面${capital}/20：参考成交额和热点活跃度。`,
+      `基本面${fundamental}/20：参考财务、估值和行业地位。`,
+      `消息面${news}/20：参考新闻和公告方向。`,
+      `市场环境${environment}/20：参考指数、涨跌家数和热点板块。`,
+    ],
+    risks: [
+      ...asList(input.riskData ?? input.risks).slice(0, 3),
+      "市场成交不足会降低判断有效性。",
+      "公告和财务数据需要结合原文复核。",
+      "热点轮动过快可能带来短线回撤。",
+    ].slice(0, 6),
+    watchPoints: [
+      stock.code ? `${stock.name ?? stock.code}成交额和涨跌幅是否延续` : "指数和涨跌家数变化",
+      "热点主线是否明确",
+      "新闻、公告和财报是否出现反向变化",
+    ],
+  };
 }
 
-function buildProfessionalFallbackAnswer(question, context) {
-  const market = context.market?.marketSentiment?.summary ?? "\u5e02\u573a\u6570\u636e\u6682\u672a\u66f4\u65b0";
-  const upDown = `\u4e0a\u6da8${context.market?.marketSentiment?.upCount ?? "\u672a\u77e5"}\u5bb6\uff0c\u4e0b\u8dcc${context.market?.marketSentiment?.downCount ?? "\u672a\u77e5"}\u5bb6`;
-  const hotSectors = (context.market?.hotSectors ?? []).map((item) => item.name).slice(0, 4);
-  const watchlist = (context.watchlist ?? []).map((item) => `${item.name}(${item.changePercent ?? item.change ?? "\u6682\u65e0"})`).slice(0, 4);
-  const stock = context.stockData;
-  const focus = context.profile?.industries?.join("\u3001") ?? "\u81ea\u9009\u65b9\u5411";
-  const news = (context.news ?? []).slice(0, 3).map((item) => `${item.title}\uff1a${item.source ?? "\u65b0\u95fb"}\uff0c${item.impact ?? item.category ?? "\u5f85\u5224\u65ad"}`);
-  const announcements = (stock?.announcements ?? []).slice(0, 3).map((item) => `${item.title}\uff1a${item.analysis?.direction ?? item.impact ?? "\u4e2d\u6027"}`);
-  const financials = stock?.financials ?? {};
-  const stockLine = stock?.code
-    ? `${stock.name}(${stock.code})\uff0c\u73b0\u4ef7 ${stock.price ?? "\u6682\u65e0"}\uff0c\u6da8\u8dcc\u5e45 ${stock.changePercent ?? "\u6682\u65e0"}\uff0c\u6210\u4ea4\u989d ${stock.amount ?? "\u6682\u65e0"}\uff0c\u884c\u4e1a ${stock.industry ?? "\u5f85\u8865\u5145"}`
-    : (watchlist.length ? `\u5173\u6ce8\u80a1\u7968\uff1a${watchlist.join("\u3001")}` : "\u672a\u8bc6\u522b\u5230\u660e\u786e\u4e2a\u80a1\uff0c\u6309\u5e02\u573a\u548c\u884c\u4e1a\u95ee\u9898\u5904\u7406\u3002");
-  const credibility = scoreCredibility({ marketData: context.market, stock, newsEvents: context.news ?? [], riskData: context.risks ?? [] });
+function scoreMarket(market = {}) {
+  const sentiment = market.marketSentiment ?? {};
+  const heat = Number(sentiment.heat ?? 50);
+  const up = Number(sentiment.upCount ?? 0);
+  const down = Number(sentiment.downCount ?? 0);
+  let score = 8;
+  if (heat >= 70) score += 5;
+  else if (heat >= 55) score += 3;
+  if (up > down) score += 4;
+  if ((market.hotSectors ?? []).length >= 3) score += 3;
+  return Math.min(20, score);
+}
 
-  return `\u3010\u7ed3\u8bba\u3011
-\u4f5c\u4e3a\u4e2a\u4ebaA\u80a1\u6295\u8d44\u7814\u7a76\u5206\u6790\u5e08\uff0c\u6211\u7684\u5224\u65ad\u662f\uff1a${market}\u3002\u5f53\u524d\u66f4\u9002\u5408\u505a\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u6392\u67e5\uff0c\u4e0d\u8f93\u51fa\u786e\u5b9a\u4e70\u5356\u7ed3\u8bba\u3002
+function scoreTechnical(stock = {}) {
+  const change = parseFloat(String(stock.changePercent ?? "0").replace("%", ""));
+  if (change >= 3) return 18;
+  if (change >= 1) return 15;
+  if (change >= 0) return 12;
+  if (change > -2) return 9;
+  return 5;
+}
 
-\u3010\u4f9d\u636e\u3011
-\u5e02\u573a\u56e0\u7d20\uff1a${market}\uff0c${upDown}\u3002
-\u884c\u4e1a\u56e0\u7d20\uff1a\u70ed\u70b9\u677f\u5757\u5305\u62ec ${hotSectors.join("\u3001") || "\u6682\u65e0\u660e\u786e\u70ed\u70b9"}\uff1b\u4f60\u7684\u5173\u6ce8\u677f\u5757\u4e3a ${focus}\u3002
-\u516c\u53f8\u56e0\u7d20\uff1a${stockLine}
-\u8d22\u52a1\u56e0\u7d20\uff1a\u8425\u6536 ${financials.revenue ?? "\u6682\u65e0"}\uff0c\u8425\u6536\u540c\u6bd4 ${financials.revenueYoY ?? "\u6682\u65e0"}\uff0c\u51c0\u5229\u6da6 ${financials.netProfit ?? "\u6682\u65e0"}\uff0cROE ${financials.roe ?? "\u6682\u65e0"}\uff0c\u6765\u6e90 ${financials.source ?? "\u6682\u65e0"}\u3002
-\u516c\u544a\u4f9d\u636e\uff1a${announcements.join("\uff1b") || "\u6682\u65e0\u516c\u544a\u8fd4\u56de"}\u3002
-\u65b0\u95fb\u4f9d\u636e\uff1a${news.join("\uff1b") || "\u6682\u65e0\u53ef\u7528\u65b0\u95fb"}\u3002
-\u53ef\u4fe1\u5ea6\uff1a${credibility.level}\uff08${credibility.score}\u5206\uff09\u3002\u539f\u56e0\uff1a${credibility.reason}\u3002
+function scoreCapital(stock = {}, market = {}) {
+  let score = 8;
+  if (/亿|万/.test(String(stock.amount ?? ""))) score += 5;
+  if ((market.hotSectors ?? []).some((item) => String(stock.industry ?? "").includes(item.name) || String(item.name).includes(stock.industry))) score += 5;
+  if (String(stock.dataStatus ?? "").includes("真实")) score += 2;
+  return Math.min(20, score);
+}
 
-\u3010\u98ce\u9669\u3011
-1. \u70ed\u70b9\u8f6e\u52a8\u8fc7\u5feb\uff0c\u8ffd\u9ad8\u5bb9\u6613\u627f\u53d7\u56de\u64a4\u3002
-2. \u5982\u679c\u6210\u4ea4\u989d\u4e0d\u8db3\uff0c\u677f\u5757\u4e0a\u6da8\u6301\u7eed\u6027\u4f1a\u4e0b\u964d\u3002
-3. \u516c\u544a\u548c\u8d22\u52a1\u6570\u636e\u9700\u7ed3\u5408\u539f\u6587\u590d\u6838\uff0c\u907f\u514d\u53ea\u770b\u6807\u9898\u4e0b\u7ed3\u8bba\u3002
+function scoreFundamental(stock = {}) {
+  if (stock.assetType === "ETF") return 12;
+  let score = 8;
+  if (stock.financials?.revenue && !String(stock.financials.revenue).includes("数据源未返回")) score += 4;
+  if (stock.financials?.netProfit && !String(stock.financials.netProfit).includes("数据源未返回")) score += 4;
+  const pe = parseFloat(String(stock.pe ?? "").replace(",", ""));
+  if (Number.isFinite(pe) && pe > 0 && pe < 40) score += 4;
+  return Math.min(20, score);
+}
 
-\u3010\u89c2\u5bdf\u5efa\u8bae\u3011
-\u5173\u6ce8\uff1a\u8ddf\u8e2a${hotSectors[0] ?? focus}\u7684\u6210\u4ea4\u989d\u548c\u9f99\u5934\u8868\u73b0\u3002
-\u7b49\u5f85\uff1a\u7b49\u677f\u5757\u8fde\u7eed\u6027\u3001\u516c\u544a\u548c\u8d22\u62a5\u4fe1\u606f\u8fdb\u4e00\u6b65\u786e\u8ba4\u3002
-\u964d\u4f4e\u98ce\u9669\uff1a\u4f18\u5148\u68c0\u67e5\u4ed3\u4f4d\u5360\u6bd4\u548c\u5355\u4e00\u884c\u4e1a\u96c6\u4e2d\u5ea6\u3002`;
+function scoreNews(news = [], announcements = []) {
+  let score = 10;
+  const text = JSON.stringify([...news, ...announcements]);
+  if (/利好|增长|回购|增持|中标|订单/.test(text)) score += 6;
+  if (/利空|减持|亏损|处罚|下滑/.test(text)) score -= 6;
+  if (news.length || announcements.length) score += 2;
+  return Math.max(0, Math.min(20, score));
+}
+
+function scoreToTrend(score) {
+  if (score >= 80) return "上涨";
+  if (score >= 70) return "震荡偏强";
+  if (score >= 50) return "震荡";
+  return "偏弱";
+}
+
+function scoreToRating(score) {
+  if (score >= 85) return "强烈关注";
+  if (score >= 70) return "积极关注";
+  if (score >= 55) return "中性观察";
+  if (score >= 40) return "等待机会";
+  return "风险较高";
+}
+
+function scoreToAction(score) {
+  if (score >= 75) return "关注";
+  if (score >= 60) return "持有";
+  if (score >= 45) return "等待";
+  if (score >= 30) return "降低仓位";
+  return "回避";
+}
+
+function scoreToPosition(score) {
+  if (score >= 80) return "半仓";
+  if (score >= 65) return "低仓位";
+  if (score >= 50) return "保持当前仓位";
+  return "降低仓位";
+}
+
+function normalizeRating(value) {
+  return ["强烈关注", "积极关注", "中性观察", "等待机会", "风险较高"].includes(value) ? value : "中性观察";
+}
+
+function normalizeAction(value) {
+  return ["关注", "持有", "等待", "降低仓位", "回避"].includes(value) ? value : "等待";
+}
+
+function normalizeProbability(value, score) {
+  if (value && typeof value === "object") return value;
+  const up = Math.max(10, Math.min(75, Math.round(score * 0.7)));
+  const down = Math.max(10, Math.min(60, Math.round((100 - score) * 0.45)));
+  return { up: `${up}%`, flat: `${Math.max(10, 100 - up - down)}%`, down: `${down}%` };
+}
+
+function clampScore(value) {
+  const score = Number(value);
+  if (!Number.isFinite(score)) return 60;
+  return Math.max(0, Math.min(100, Math.round(score)));
 }
 
 function asList(value) {
-  if (Array.isArray(value)) return value.map((item) => typeof item === "string" ? item : JSON.stringify(item));
+  if (Array.isArray(value)) return value.map((item) => typeof item === "string" ? item : item?.message ?? item?.title ?? JSON.stringify(item)).filter(Boolean);
   if (typeof value === "object" && value) return Object.values(value).flatMap(asList);
+  if (!value) return [];
   return [String(value)];
 }
 
 function addAiLog(message, error) {
   addLog({ module: "ai", status: "failed", mode: "cloud-first", source: "aiService", message, error: error.message });
+}
+
+function nowText() {
+  return new Date().toLocaleString("zh-CN", { hour12: false });
 }

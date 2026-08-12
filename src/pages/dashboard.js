@@ -17,10 +17,12 @@ export async function renderDashboard() {
     taskStatus,
     riskSignals,
     refreshStatus,
+    portfolioSummary,
     updatedAt,
     source,
   } = await getDashboardData();
   const activeWatch = watchlist.filter((stock) => stock.alerts?.length > 0).slice(0, 3);
+  const decision = aiSummary.investmentDecision ?? {};
 
   return `
     <div class="dashboard-grid">
@@ -43,6 +45,22 @@ export async function renderDashboard() {
       </section>
 
       <section class="wide-section">
+        <div class="section-head"><h2>今日AI投资经理</h2><span>${aiSummary.source ?? "AI/fallback"}</span></div>
+        <div class="metrics">
+          ${[
+            { label: "市场判断", value: normalizeTrend(decision.marketTrend ?? normalizeMarketState(strategy.state, marketSentiment.summary)), change: decision.rating ?? "中性观察" },
+            { label: "AI评分", value: `${decision.score ?? strategy.score ?? 60}/100`, change: "投资经理模型" },
+            { label: "当前建议仓位", value: positionPercent(decision.positionAdvice ?? strategy.position), change: decision.action ?? "等待" },
+          ].map(metricCard).join("")}
+        </div>
+        <div class="detail-grid compact">
+          <article class="data-card"><strong>今日重点</strong>${tagListSafe((decision.watchPoints ?? aiSummary.opportunities ?? []).slice(0, 5))}</article>
+          <article class="data-card"><strong>今日避免</strong>${tagListSafe((decision.risks ?? aiSummary.risks ?? []).slice(0, 3))}</article>
+          <article class="data-card"><strong>今日策略</strong><p>${decision.shortTerm ?? strategy.summary}</p></article>
+        </div>
+      </section>
+
+      <section class="wide-section">
         <div class="section-head"><h2>今日入口</h2><span>每天打开后先看这组信息</span></div>
         <div class="metrics">
           ${[
@@ -53,7 +71,8 @@ export async function renderDashboard() {
         </div>
         <div class="detail-grid compact">
           <article class="data-card"><strong>今日重点</strong>${tagListSafe([...(aiSummary.opportunities ?? []), ...(hotSectors ?? []).map((item) => item.name)].slice(0, 5))}</article>
-          <article class="data-card"><strong>我的关注</strong><p>${watchlist.slice(0, 5).map((item) => `${item.name} ${item.changePercent ?? item.change ?? ""} ${item.riskLevel ? `(${item.riskLevel})` : ""}`).join("；") || "暂无关注股票"}</p></article>
+          <article class="data-card"><strong>我的关注股票</strong><p>${watchlist.slice(0, 5).map((item) => `${item.name}：${item.aiLevel ?? "观察"}，风险 ${item.riskTips?.[0] ?? item.riskLevel ?? "常规跟踪"}`).join("；") || "暂无关注股票"}</p></article>
+          <article class="data-card"><strong>我的组合</strong><p>风险等级：${portfolioSummary?.aiAnalysis?.riskLevel ?? portfolioSummary?.concentrationRisk?.level ?? "暂无"}；行业集中度：${portfolioSummary?.aiAnalysis?.industryConcentration ?? "暂无持仓"}；最大风险：${portfolioSummary?.aiAnalysis?.maxRiskSource ?? "暂无"}</p></article>
           <article class="data-card"><strong>PWA安装</strong><p>手机浏览器打开后可选择“添加到主屏幕”，用于每天快速查看早报、风险和自选股。</p></article>
         </div>
       </section>
@@ -193,4 +212,17 @@ function normalizeRiskLevel(value = "") {
 function tagListSafe(items = []) {
   const clean = [...new Set(items.filter(Boolean))].slice(0, 5);
   return `<ul class="tag-list">${clean.map((item) => `<li>${item}</li>`).join("") || "<li>暂无</li>"}</ul>`;
+}
+function normalizeTrend(value = "") {
+  if (/上涨|偏强|涓婃定|鍋忓己/.test(value)) return "上涨";
+  if (/下跌|偏弱|回避|涓嬭穼|鍋忓急/.test(value)) return "下跌";
+  return "震荡";
+}
+
+function positionPercent(value = "") {
+  if (/半仓|鍗婁粨/.test(value)) return "50%-60%";
+  if (/低仓位|浣庝粨/.test(value)) return "20%-30%";
+  if (/降低|闄嶄綆/.test(value)) return "0%-20%";
+  if (/%/.test(value)) return value;
+  return "30%-50%";
 }
