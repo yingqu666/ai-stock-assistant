@@ -2,7 +2,7 @@ import { Router } from "express";
 import { getAIFeedback, getAIHistory, getPortfolio, getReports, getSettings, saveAIFeedback, saveAIHistory, saveReport } from "../db/store.js";
 import { requireUser } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/security.js";
-import { answerInvestmentQuestion, buildReportTemplate, generateResearchReport, getAiCallLogs, getAiRuntimeStatus, runResearchTeam } from "../services/aiService.js";
+import { answerInvestmentQuestion, buildReportTemplate, generateFallbackResearchReport, generateResearchReport, getAiCallLogs, getAiRuntimeStatus, runResearchTeam } from "../services/aiService.js";
 import { buildReflection } from "../services/aiReviewService.js";
 import { getResearchData } from "../services/researchDataService.js";
 
@@ -59,13 +59,14 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
     });
     res.json({ ok: true, data: report, report });
   } catch (error) {
+    const fallback = generateFallbackResearchReport(input, `AI本地处理异常：${error.message}`);
     console.info("[stock-ai-report] AI response:", {
       success: false,
       provider: getAiRuntimeStatus().provider,
       mode: getAiRuntimeStatus().aiMode,
       error: error.message,
     });
-    throw error;
+    res.json({ ok: true, data: fallback, report: fallback });
   }
 }));
 

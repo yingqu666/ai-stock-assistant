@@ -2,7 +2,7 @@ const deepseekEndpoint = "https://api.deepseek.com/chat/completions";
 const openAiEndpoint = "https://api.openai.com/v1/chat/completions";
 const defaultDeepseekModel = "deepseek-chat";
 const defaultGenericModel = "gpt-4.1-mini";
-const aiTimeoutMs = Math.min(Number(process.env.AI_TIMEOUT_MS ?? 10000), 10000);
+const aiTimeoutMs = normalizeTimeout(process.env.AI_TIMEOUT_MS, 10000);
 let aiQueue = Promise.resolve();
 
 const reportSchema = {
@@ -100,6 +100,15 @@ export async function generateResearchReport(input) {
     outputSchema: reportSchema,
     fallback: () => fallbackReport(input),
   });
+}
+
+export function generateFallbackResearchReport(input, error = "") {
+  const report = {
+    ...normalizeOutput({}, fallbackReport(input)),
+    source: "fallback",
+  };
+  if (error) report.error = error;
+  return report;
 }
 
 export async function answerInvestmentQuestion(question, input) {
@@ -222,15 +231,23 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
         response_format: { type: "json_object" },
       }),
     });
-    if (!response.ok) throw new Error(`AI HTTP ${response.status}`);
-    const json = await response.json();
+    if (!response.ok) {
+      const responseMessage = await readAiErrorResponse(response);
+      throw new Error(formatAiHttpError(response.status, responseMessage));
+    }
+    let json;
+    try {
+      json = await response.json();
+    } catch (error) {
+      throw new Error(`AI响应JSON解析失败：${error.message}`);
+    }
     const content = json?.choices?.[0]?.message?.content;
     if (!content) throw new Error("AI返回为空");
     const source = config.provider === "deepseek" ? "deepseek" : "openai";
     recordAiCall({ task, model: config.model, startedAt, success: true, source, tokenUsage: json.usage ?? null });
     return { ...normalizeOutput(parseJsonContent(content), fallback()), source, tokenUsage: json.usage ?? null };
   } catch (error) {
-    const message = error.name === "AbortError" ? `AI调用超时 ${timeoutMs}ms` : error.message;
+    const message = describeAiError(error, timeoutMs);
     console.warn("AI provider failed:", config.provider, message);
     recordAiCall({ task, model: config.model, startedAt, success: false, source: config.provider, error: message, tokenUsage: null });
     throw new Error(message);
@@ -258,7 +275,9 @@ function resolveAiConfig() {
 function resolveAiConfigs() {
   const requestedProvider = String(process.env.AI_PROVIDER ?? (process.env.DEEPSEEK_API_KEY ? "deepseek" : "openai-compatible")).trim().toLowerCase();
   const deepseekKey = String(process.env.DEEPSEEK_API_KEY ?? (requestedProvider === "deepseek" && !process.env.OPENAI_API_KEY ? process.env.AI_API_KEY : "") ?? "").trim();
-  const openAiKey = String(process.env.OPENAI_API_KEY ?? (requestedProvider !== "deepseek" ? process.env.AI_API_KEY : "") ?? "").trim();
+  const openAiKey = requestedProvider === "deepseek"
+    ? ""
+    : String(process.env.OPENAI_API_KEY ?? process.env.AI_API_KEY ?? "").trim();
   const configs = [];
   if (deepseekKey) {
     configs.push({
@@ -283,8 +302,8 @@ function resolveAiConfigs() {
 
 function normalizeAiInput(input = {}) {
   const stockData = input.stockData ?? input.stockQuote ?? {};
-  const newsData = input.newsData ?? input.newsEvents ?? input.news ?? [];
-  const announcementData = input.announcementData ?? input.announcements ?? stockData.announcements ?? [];
+  const newsData = asArray(input.newsData ?? input.newsEvents ?? input.news);
+  const announcementData = asArray(input.announcementData ?? input.announcements ?? stockData.announcements);
   return {
     question: input.question,
     marketData: input.marketData ?? input.market ?? {},
@@ -292,10 +311,10 @@ function normalizeAiInput(input = {}) {
     newsData,
     announcementData,
     investmentProfile: input.investmentProfile ?? input.profile ?? input.settings ?? {},
-    riskData: input.riskData ?? input.risks ?? [],
-    portfolio: input.portfolio ?? input.watchlist ?? [],
-    historyReports: input.historyReports ?? input.reports ?? [],
-    aiHistory: input.aiHistory ?? input.history ?? [],
+    riskData: asArray(input.riskData ?? input.risks),
+    portfolio: asArray(input.portfolio ?? input.watchlist),
+    historyReports: asArray(input.historyReports ?? input.reports),
+    aiHistory: asArray(input.aiHistory ?? input.history),
     historicalReflection: input.historicalReflection ?? "",
     aiInputSummary: input.aiInputSummary ?? buildCompactInputSummary(input),
   };
@@ -310,10 +329,10 @@ function compactAiInput(input = {}) {
     newsData: (normalized.newsData ?? []).slice(0, 3).map(compactEvent),
     announcementData: (normalized.announcementData ?? []).slice(0, 3).map(compactEvent),
     investmentProfile: compactPlainObject(normalized.investmentProfile, 8, 200),
-    riskData: (normalized.riskData ?? []).slice(0, 5).map((item) => typeof item === "string" ? trimText(item, 200) : compactPlainObject(item, 6, 180)),
-    portfolio: (normalized.portfolio ?? []).slice(0, 8).map((item) => compactPlainObject(item, 8, 160)),
-    historyReports: (normalized.historyReports ?? []).slice(0, 3).map((item) => compactPlainObject(item, 6, 200)),
-    aiHistory: (normalized.aiHistory ?? []).slice(0, 5).map((item) => compactPlainObject(item, 6, 200)),
+    riskData: asArray(normalized.riskData).slice(0, 5).map((item) => typeof item === "string" ? trimText(item, 200) : compactPlainObject(item, 6, 180)),
+    portfolio: asArray(normalized.portfolio).slice(0, 8).map((item) => compactPlainObject(item, 8, 160)),
+    historyReports: asArray(normalized.historyReports).slice(0, 3).map((item) => compactPlainObject(item, 6, 200)),
+    aiHistory: asArray(normalized.aiHistory).slice(0, 5).map((item) => compactPlainObject(item, 6, 200)),
     historicalReflection: trimText(normalized.historicalReflection, 500),
     aiInputSummary: compactPlainObject(normalized.aiInputSummary, 10, 180),
   };
@@ -321,8 +340,8 @@ function compactAiInput(input = {}) {
 
 function compactMarketData(marketData = {}) {
   return {
-    marketOverview: (marketData.marketOverview ?? marketData.indexes ?? []).slice(0, 6).map((item) => compactPlainObject(item, 8, 160)),
-    hotSectors: (marketData.hotSectors ?? []).slice(0, 5).map((item) => compactPlainObject(item, 8, 160)),
+    marketOverview: asArray(marketData.marketOverview ?? marketData.indexes).slice(0, 6).map((item) => compactPlainObject(item, 8, 160)),
+    hotSectors: asArray(marketData.hotSectors).slice(0, 5).map((item) => compactPlainObject(item, 8, 160)),
     marketSentiment: compactPlainObject(marketData.marketSentiment ?? {}, 8, 160),
     strategy: compactPlainObject(marketData.strategy ?? {}, 6, 160),
   };
@@ -373,6 +392,56 @@ function compactPlainObject(value = {}, maxKeys = 8, maxText = 160) {
     key,
     typeof item === "string" ? trimText(item, maxText) : Array.isArray(item) ? item.slice(0, 5).map((entry) => typeof entry === "string" ? trimText(entry, maxText) : compactPlainObject(entry, 5, maxText)) : item,
   ]));
+}
+
+function asArray(value) {
+  if (Array.isArray(value)) return value;
+  return value === undefined || value === null ? [] : [value];
+}
+
+function normalizeTimeout(value, fallback) {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed) || parsed <= 0) return fallback;
+  return Math.min(parsed, 10000);
+}
+
+async function readAiErrorResponse(response) {
+  try {
+    const text = trimText(await response.text(), 500);
+    if (!text) return "";
+    try {
+      const json = JSON.parse(text);
+      return trimText(json?.error?.message ?? json?.message ?? text, 300);
+    } catch {
+      return text;
+    }
+  } catch {
+    return "";
+  }
+}
+
+function formatAiHttpError(status, detail = "") {
+  const labels = {
+    400: "请求参数错误",
+    401: "API Key无效或鉴权失败",
+    402: "账户余额不足或付费状态异常",
+    403: "API访问被拒绝",
+    408: "DeepSeek请求超时",
+    429: "DeepSeek请求过于频繁或额度受限",
+  };
+  const label = labels[status] ?? (status >= 500 ? "DeepSeek服务器错误" : "DeepSeek API错误");
+  return `AI HTTP ${status}：${label}${detail ? `；${detail}` : ""}`;
+}
+
+function describeAiError(error, timeoutMs) {
+  if (error?.name === "AbortError") return `AI调用超时 ${timeoutMs}ms`;
+  const message = String(error?.message ?? "未知AI错误");
+  if (/AI HTTP|JSON解析失败|AI返回为空/.test(message)) return message;
+  const cause = String(error?.cause?.code ?? error?.cause?.message ?? "");
+  if (/fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket|network/i.test(`${message} ${cause}`)) {
+    return `AI网络连接失败${cause ? `：${trimText(cause, 200)}` : `：${message}`}`;
+  }
+  return `AI本地处理异常：${message}`;
 }
 
 function trimText(value, maxLength = 500) {
