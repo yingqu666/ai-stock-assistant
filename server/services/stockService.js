@@ -63,9 +63,9 @@ export const fallbackStocks = [
   buildFallbackStock({ code: "688981", name: "\u4e2d\u82af\u56fd\u9645", pinyin: "ZXGJ", shortName: "\u4e2d\u82af", industry: "\u534a\u5bfc\u4f53", market: "\u79d1\u521b\u677f", price: "58.73", changePercent: "+2.18%", amount: "67.80\u4ebf", volume: "113.8\u4e07\u624b", turnoverRate: "1.46%", marketCap: "4680\u4ebf", pe: "86.2", pb: "3.1", listingDate: "2020-07-16", companyName: "\u4e2d\u82af\u56fd\u9645\u96c6\u6210\u7535\u8def\u5236\u9020\u6709\u9650\u516c\u53f8", industryPosition: "\u56fd\u5185\u6676\u5706\u4ee3\u5de5\u9f99\u5934\u3002" }),
   buildEtf({ code: "512760", name: "\u82af\u7247ETF", pinyin: "XPETF", aliases: ["AI", "\u82af\u7247", "\u534a\u5bfc\u4f53", "CHIP"], industry: "\u534a\u5bfc\u4f53ETF", trackingIndex: "\u534a\u5bfc\u4f53\u82af\u7247\u884c\u4e1a\u6307\u6570" }),
   buildEtf({ code: "159819", name: "\u4eba\u5de5\u667a\u80fdETF", pinyin: "RGETF", aliases: ["AI", "AIETF", "\u4eba\u5de5\u667a\u80fd", "\u7b97\u529b"], industry: "AI\u4e3b\u9898ETF", trackingIndex: "\u4eba\u5de5\u667a\u80fd\u4e3b\u9898\u6307\u6570" }),
-  buildEtf({ code: "515050", name: "5GETF", pinyin: "5GETF", aliases: ["5G", "\u901a\u4fe1", "515050"], industry: "\u901a\u4fe1ETF", trackingIndex: "5G\u901a\u4fe1\u4e3b\u9898\u6307\u6570" }),
+  buildEtf({ code: "515050", name: "5GETF", pinyin: "TXETF", aliases: ["5GETF", "5G", "\u901a\u4fe1", "\u901a\u4fe1ETF", "515050"], industry: "\u901a\u4fe1ETF", trackingIndex: "5G\u901a\u4fe1\u4e3b\u9898\u6307\u6570" }),
   buildEtf({ code: "512480", name: "\u534a\u5bfc\u4f53ETF", pinyin: "BDTETF", aliases: ["\u534a\u5bfc\u4f53", "\u82af\u7247"], industry: "\u534a\u5bfc\u4f53ETF", trackingIndex: "\u534a\u5bfc\u4f53\u82af\u7247\u6307\u6570" }),
-  buildEtf({ code: "515880", name: "\u901a\u4fe1ETF", pinyin: "TXETF", aliases: ["\u901a\u4fe1", "5G"], industry: "\u901a\u4fe1ETF", trackingIndex: "\u901a\u4fe1\u8bbe\u5907\u6307\u6570" }),
+  buildEtf({ code: "515880", name: "\u901a\u4fe1ETF", pinyin: "TXETF2", aliases: ["\u901a\u4fe1", "5G"], industry: "\u901a\u4fe1ETF", trackingIndex: "\u901a\u4fe1\u8bbe\u5907\u6307\u6570" }),
   buildEtf({ code: "588000", name: "\u79d1\u521b50ETF", pinyin: "KCETF", aliases: ["\u79d1\u521b", "\u79d1\u521b50"], industry: "\u79d1\u521bETF", trackingIndex: "\u79d1\u521b50\u6307\u6570" }),
   buildEtf({ code: "510300", name: "\u6caa\u6df1300ETF", pinyin: "HS300ETF", aliases: ["\u6caa\u6df1300", "300ETF"], industry: "\u5bbd\u57faETF", trackingIndex: "\u6caa\u6df1300\u6307\u6570" }),
   buildEtf({ code: "510500", name: "\u4e2d\u8bc1500ETF", pinyin: "ZZ500ETF", aliases: ["\u4e2d\u8bc1500", "500ETF"], industry: "\u5bbd\u57faETF", trackingIndex: "\u4e2d\u8bc1500\u6307\u6570" }),
@@ -87,10 +87,10 @@ export async function searchStockCandidates(query) {
       ? [{ code: keyword, secid: toSecid(keyword) }]
       : searchEastmoney(keyword).catch(() => []),
     ]);
-    const candidates = dedupeStocks([...universe, ...remote, ...fallbackMatches]);
+    const candidates = sortStockMatches(dedupeStocks([...fallbackMatches, ...universe, ...remote]), keyword);
     if (!candidates.length) return buildSearchResult([], "\u4e1c\u65b9\u8d22\u5bcc\u8bc1\u5238\u5217\u8868", "未命中", keyword);
     const quoted = await Promise.all(candidates.slice(0, 20).map((stock) => fetchQuote(stock).catch((error) => toUnavailableSecurity(stock, error.message))));
-    const combined = dedupeStocks([...quoted, ...candidates.slice(20)]).map((stock) => enrichResearchFields(mergeKnown(stock)));
+    const combined = sortStockMatches(dedupeStocks([...quoted, ...candidates.slice(20)]).map((stock) => enrichResearchFields(mergeKnown(stock))), keyword);
     const hasLiveQuote = combined.some((item) => [STATUS_REAL, STATUS_PARTIAL].includes(item.dataStatus)
       && item.price && ![UNKNOWN, "\u6682\u65e0"].includes(item.price));
     const universeStatus = getSecurityUniverseStatus();
@@ -496,7 +496,7 @@ async function fetchFinancials(stock) {
 
 function mergeKnown(stock) {
   const known = fallbackStocks.find((item) => item.code === stock.code);
-  return { ...pickReferenceMetadata(known), ...stock };
+  return { ...pickReferenceMetadata(known), ...stock, industry: normalizeIndustry(stock.industry ?? known?.industry, (stock.assetType ?? known?.assetType) === "ETF" || isEtfCode(stock.code)) };
 }
 
 function pickReferenceMetadata(stock = {}) {
@@ -638,7 +638,7 @@ function buildResearchReport(stock) {
 }
 
 function buildSearchResult(data, source, status, query, message = "") {
-  const list = dedupeStocks(data).map(enrichResearchFields);
+  const list = sortStockMatches(dedupeStocks(data).map(enrichResearchFields), query);
   return { ok: true, source, status, updatedAt: nowText(), message: list.length ? message : `\u672a\u627e\u5230\u5339\u914d\u6807\u7684\uff1a${query}`, data: list };
 }
 
@@ -649,6 +649,40 @@ function matchFallbackStocks(keyword) {
     || String(stock.shortName ?? "").includes(keyword)
     || String(stock.pinyin ?? "").toUpperCase().includes(upper)
     || (stock.aliases ?? []).some((alias) => String(alias).toUpperCase().includes(upper) || String(alias).includes(keyword)));
+}
+
+function sortStockMatches(stocks, query) {
+  const keyword = normalizeQuery(query);
+  if (!keyword) return stocks;
+  const upper = keyword.toUpperCase();
+  return [...stocks].sort((a, b) => scoreStockMatch(b, keyword, upper) - scoreStockMatch(a, keyword, upper));
+}
+
+function scoreStockMatch(stock, keyword, upper) {
+  const code = String(stock.code ?? "");
+  const name = String(stock.name ?? "");
+  const shortName = String(stock.shortName ?? "");
+  const pinyin = String(stock.pinyin ?? "").toUpperCase();
+  const aliases = (stock.aliases ?? []).map((alias) => String(alias));
+  let score = 0;
+  if (code === keyword) score += 1200;
+  else if (code.startsWith(keyword)) score += 700;
+  else if (code.includes(keyword)) score += 250;
+  if (name === keyword || shortName === keyword) score += 1000;
+  else if (name.startsWith(keyword) || shortName.startsWith(keyword)) score += 650;
+  else if (name.includes(keyword) || shortName.includes(keyword)) score += 250;
+  if (pinyin === upper) score += 950;
+  else if (pinyin.startsWith(upper)) score += 550;
+  else if (pinyin.includes(upper)) score += 120;
+  for (const alias of aliases) {
+    const aliasUpper = alias.toUpperCase();
+    if (aliasUpper === upper || alias === keyword) score += 900;
+    else if (aliasUpper.startsWith(upper) || alias.startsWith(keyword)) score += 500;
+    else if (aliasUpper.includes(upper) || alias.includes(keyword)) score += 100;
+  }
+  if ((stock.assetType === "ETF" || isEtfCode(code)) && /ETF$/i.test(upper)) score += 300;
+  if (name.includes("指数") && !name.includes("ETF")) score -= 350;
+  return score;
 }
 
 function buildFallbackStock(stock) {

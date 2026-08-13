@@ -17,7 +17,7 @@ let universeCache = {
 };
 
 const etfKnowledge = {
-  "512760": { aliases: ["AI", "芯片", "半导体", "CHIP"], trackingIndex: "中证芯片产业指数", components: ["芯片设计", "半导体设备", "材料", "封测"], industry: "半导体ETF" },
+  "512760": { aliases: ["XPETF", "AI", "芯片", "芯片ETF", "半导体", "CHIP"], trackingIndex: "中证芯片产业指数", components: ["芯片设计", "半导体设备", "材料", "封测"], industry: "半导体ETF" },
   "512480": { aliases: ["半导体", "芯片"], trackingIndex: "中证全指半导体产品与设备指数", components: ["芯片设计", "设备", "封测"], industry: "半导体ETF" },
   "515050": { aliases: ["5G", "通信", "通信ETF", "TXETF"], trackingIndex: "中证5G通信主题指数", components: ["通信设备", "光模块", "算力网络"], industry: "通信ETF" },
   "515980": { aliases: ["AI", "AIETF", "人工智能", "算力"], trackingIndex: "中证人工智能主题指数", components: ["算力", "软件", "光模块", "芯片"], industry: "AI主题ETF" },
@@ -70,7 +70,7 @@ export async function searchSecurityUniverse(query, limit = 30) {
   }
   const cache = universeCache;
   const etfRows = buildKnownEtfRows();
-  const source = dedupe([...knownStockAliases, ...cache.data, ...etfRows]);
+  const source = dedupe([...knownStockAliases, ...etfRows, ...cache.data]);
   if (!keyword) return source.slice(0, limit);
   return source
     .filter((item) => item.code.includes(keyword)
@@ -182,7 +182,7 @@ function buildKnownEtfRows() {
     trackingIndex: info.trackingIndex,
     components: info.components ?? [],
     shortName: info.name ?? knownEtfName(code),
-    pinyin: "",
+    pinyin: inferEtfPinyin(code),
     dataSource: "ETF基础资料",
     updatedAt: nowText(),
   }));
@@ -200,6 +200,20 @@ function knownEtfName(code) {
     "510500": "中证500ETF",
   };
   return names[code] ?? `${code}ETF`;
+}
+
+function inferEtfPinyin(code) {
+  const pinyins = {
+    "512760": "XPETF",
+    "512480": "BDTETF",
+    "515050": "TXETF",
+    "515980": "AIETF",
+    "159819": "AIETF",
+    "588000": "KCETF",
+    "510300": "HS300ETF",
+    "510500": "ZZ500ETF",
+  };
+  return pinyins[code] ?? "";
 }
 
 function scoreSearchMatch(item, keyword, upper) {

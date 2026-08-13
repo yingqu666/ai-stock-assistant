@@ -239,13 +239,17 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     try {
       json = await response.json();
     } catch (error) {
+      if (error?.name === "AbortError" || controller.signal.aborted) {
+        throw new Error(`AI调用超时 ${timeoutMs}ms`);
+      }
       throw new Error(`AI响应JSON解析失败：${error.message}`);
     }
     const content = json?.choices?.[0]?.message?.content;
     if (!content) throw new Error("AI返回为空");
     const source = config.provider === "deepseek" ? "deepseek" : "openai";
+    const parsed = parseJsonContent(content);
     recordAiCall({ task, model: config.model, startedAt, success: true, source, tokenUsage: json.usage ?? null });
-    return { ...normalizeOutput(parseJsonContent(content), fallback()), source, tokenUsage: json.usage ?? null };
+    return { ...normalizeOutput(parsed, fallback()), source, tokenUsage: json.usage ?? null };
   } catch (error) {
     const message = describeAiError(error, timeoutMs);
     console.warn("AI provider failed:", config.provider, message);
@@ -808,7 +812,43 @@ function buildTechnicalView(input) {
 }
 
 function parseJsonContent(content) {
-  return JSON.parse(String(content).replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, "").trim());
+  const raw = String(content ?? "");
+  const candidates = [
+    raw,
+    raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, ""),
+    extractJsonObject(raw),
+  ].filter(Boolean);
+  const errors = [];
+  for (const candidate of candidates) {
+    try {
+      return JSON.parse(cleanJsonText(candidate));
+    } catch (error) {
+      errors.push(error.message);
+    }
+  }
+  console.warn("[ai-json-parse-failed]", {
+    length: raw.length,
+    preview: trimText(raw, 500),
+    errors: errors.slice(0, 3),
+  });
+  throw new Error(`AI响应JSON解析失败：${errors[0] ?? "无法解析模型返回"}`);
+}
+
+function extractJsonObject(text) {
+  const source = String(text ?? "");
+  const start = source.indexOf("{");
+  const end = source.lastIndexOf("}");
+  if (start < 0 || end <= start) return "";
+  return source.slice(start, end + 1);
+}
+
+function cleanJsonText(text) {
+  return String(text ?? "")
+    .trim()
+    .replace(/^```json\s*/i, "")
+    .replace(/^```\s*/i, "")
+    .replace(/```$/i, "")
+    .replace(/[\u0000-\u001F\u007F]/g, (char) => ["\n", "\r", "\t"].includes(char) ? char : "");
 }
 
 function recordAiCall({ task, model, startedAt, success, source, error = "", tokenUsage = null }) {
