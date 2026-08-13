@@ -56,6 +56,8 @@ export async function getResearchData(query) {
   const announcements = Array.isArray(detail.announcements) ? detail.announcements : [];
   const financials = isEtf ? buildEtfFinancialUnavailable() : normalizeFinancials(detail.financials, detailResult?.message);
   const security = buildSecurityProfile({ resolved, detail, quote, isEtf });
+  const newsBuckets = buildNewsBuckets(newsResult.data);
+  const dataSources = buildDataSources({ quoteResult: effectiveQuoteResult, newsResult, announcements, financials });
   const researchData = {
     query,
     security,
@@ -63,10 +65,12 @@ export async function getResearchData(query) {
     company: isEtf ? null : buildCompanyProfile(detail, security),
     etf: isEtf ? buildEtfProfile({ resolved, detail, quote }) : null,
     news: newsResult.data,
+    newsBuckets,
     announcements,
     financials,
     marketData,
     dataStatus: buildDataStatus({ quoteResult: effectiveQuoteResult, detailResult, newsResult, announcements, financials }),
+    dataSources,
     sourceTimes: {
       quoteUpdatedAt: quote.updatedAt ?? effectiveQuoteResult.updatedAt ?? nowText(),
       newsUpdatedAt: newsResult.updatedAt ?? nowText(),
@@ -81,18 +85,22 @@ export async function getResearchData(query) {
     && quote.changePercent && quote.changePercent !== DATA_MISSING;
   const aiReport = hasUsableQuote ? await generateResearchReport({
     marketData,
-    stockData: {
-      ...security,
-      ...quote,
-      assetType: isEtf ? "ETF" : "股票",
+    stockData: buildAiStockInput({
+      security,
+      quote,
+      isEtf,
       announcements,
       financials,
       dataStatus: researchData.dataStatus.overall,
-    },
-    newsData: newsResult.data,
+      dataSources,
+      sourceTimes: researchData.sourceTimes,
+    }),
+    newsData: [...newsBuckets.stockRelated, ...newsBuckets.marketGeneral],
+    newsBuckets,
     announcementData: announcements,
     investmentProfile: {},
     riskData: buildRiskData(researchData),
+    dataSources,
   }).catch((error) => {
     latestSourceStatus.ai = { status: "fallback", message: error.message, updatedAt: nowText() };
     return null;
@@ -443,6 +451,59 @@ function buildRiskData(data) {
   if (!data.announcements.length) risks.push({ message: `公告接口未返回最新公告；公告更新时间：${data.sourceTimes?.announcementUpdatedAt ?? nowText()}` });
   if (data.financials.status === "unavailable") risks.push({ message: `财务数据状态：${data.financials.source}` });
   return risks;
+}
+
+function buildAiStockInput({ security, quote, isEtf, announcements, financials, dataStatus, dataSources, sourceTimes }) {
+  return {
+    name: valueOrEmpty(quote.name ?? security.name),
+    code: valueOrEmpty(security.code ?? quote.code),
+    assetType: isEtf ? "ETF" : "股票",
+    market: valueOrEmpty(security.market),
+    industry: valueOrEmpty(security.industry ?? quote.industry),
+    price: valueOrEmpty(quote.price),
+    changePercent: valueOrEmpty(quote.changePercent),
+    changeAmount: valueOrEmpty(quote.changeAmount),
+    volume: valueOrEmpty(quote.volume),
+    amount: valueOrEmpty(quote.amount),
+    turnoverRate: valueOrEmpty(quote.turnoverRate),
+    marketCap: valueOrEmpty(quote.marketCap),
+    pe: valueOrEmpty(quote.pe),
+    pb: valueOrEmpty(quote.pb),
+    dataSource: valueOrEmpty(quote.source ?? quote.dataSource),
+    quoteSource: valueOrEmpty(dataSources.quote),
+    newsSource: valueOrEmpty(dataSources.news),
+    announcementSource: valueOrEmpty(dataSources.announcement),
+    aiSource: dataSources.ai,
+    dataSources,
+    dataStatus,
+    updatedAt: valueOrEmpty(quote.updatedAt ?? sourceTimes?.quoteUpdatedAt),
+    sourceTimes,
+    announcements,
+    financials,
+  };
+}
+
+function buildNewsBuckets(news = []) {
+  const rows = Array.isArray(news) ? news : [];
+  const stockRelated = rows.filter((item) => item.relationType === "stock_related");
+  const marketGeneral = rows.filter((item) => item.relationType !== "stock_related");
+  return { stockRelated, marketGeneral };
+}
+
+function buildDataSources({ quoteResult, newsResult, announcements, financials }) {
+  const newsSources = [...new Set((newsResult.data ?? []).map((item) => item.source).filter(Boolean))];
+  const announcementSources = [...new Set(announcements.map((item) => item.source).filter(Boolean))];
+  return {
+    quote: quoteResult.source || "行情接口未返回",
+    news: newsSources.length ? newsSources.join(" / ") : (newsResult.source || "新闻接口未返回"),
+    announcement: announcementSources.length ? announcementSources.join(" / ") : (announcements.length ? "东方财富公告" : "公告接口未返回"),
+    financial: financials.source || "财务接口未返回",
+    ai: "DeepSeek优先，失败使用规则fallback",
+  };
+}
+
+function valueOrEmpty(value) {
+  return isMissingValue(value) ? "" : value;
 }
 
 function buildUnavailableResearch(query, message) {

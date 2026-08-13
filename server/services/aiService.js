@@ -6,6 +6,34 @@ const aiTimeoutMs = normalizeTimeout(process.env.AI_TIMEOUT_MS, 10000);
 let aiQueue = Promise.resolve();
 
 const reportSchema = {
+  stockBasics: {
+    name: "股票/ETF名称",
+    code: "股票/ETF代码",
+    industry: "所属行业",
+    assetType: "股票或ETF",
+    summary: "股票基本情况",
+  },
+  currentQuote: {
+    price: "当前价格",
+    changePercent: "涨跌幅",
+    volume: "成交量",
+    amount: "成交额",
+    turnoverRate: "换手率",
+    marketCap: "总市值",
+    pe: "PE",
+    pb: "PB",
+  },
+  upsideLogic: ["上涨逻辑或积极因素"],
+  valuationAnalysis: "估值分析",
+  shortTermObservation: "短期观察，1-5天",
+  midLongTermObservation: "中长期观察，1-4周",
+  overallJudgement: "综合判断，不输出确定买卖",
+  dataSources: {
+    quote: "行情来源",
+    announcement: "公告来源",
+    news: "新闻来源",
+    ai: "AI模型来源",
+  },
   companyAnalysis: {
     profile: "公司/标的简介",
     industry: "所属行业",
@@ -249,7 +277,13 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     const source = config.provider === "deepseek" ? "deepseek" : "openai";
     const parsed = parseJsonContent(content);
     recordAiCall({ task, model: config.model, startedAt, success: true, source, tokenUsage: json.usage ?? null });
-    return { ...normalizeOutput(parsed, fallback()), source, tokenUsage: json.usage ?? null };
+    const normalized = normalizeOutput(parsed, fallback());
+    return {
+      ...normalized,
+      dataSources: { ...(normalized.dataSources ?? {}), ai: source === "deepseek" ? "DeepSeek" : source },
+      source,
+      tokenUsage: json.usage ?? null,
+    };
   } catch (error) {
     const message = describeAiError(error, timeoutMs);
     console.warn("AI provider failed:", config.provider, message);
@@ -320,6 +354,8 @@ function normalizeAiInput(input = {}) {
     historyReports: asArray(input.historyReports ?? input.reports),
     aiHistory: asArray(input.aiHistory ?? input.history),
     historicalReflection: input.historicalReflection ?? "",
+    newsBuckets: input.newsBuckets ?? {},
+    dataSources: input.dataSources ?? stockData.dataSources ?? {},
     aiInputSummary: input.aiInputSummary ?? buildCompactInputSummary(input),
   };
 }
@@ -331,6 +367,10 @@ function compactAiInput(input = {}) {
     marketData: compactMarketData(normalized.marketData),
     stockData: compactStockData(normalized.stockData),
     newsData: (normalized.newsData ?? []).slice(0, 3).map(compactEvent),
+    newsBuckets: {
+      stockRelated: asArray(normalized.newsBuckets.stockRelated).slice(0, 3).map(compactEvent),
+      marketGeneral: asArray(normalized.newsBuckets.marketGeneral).slice(0, 3).map(compactEvent),
+    },
     announcementData: (normalized.announcementData ?? []).slice(0, 3).map(compactEvent),
     investmentProfile: compactPlainObject(normalized.investmentProfile, 8, 200),
     riskData: asArray(normalized.riskData).slice(0, 5).map((item) => typeof item === "string" ? trimText(item, 200) : compactPlainObject(item, 6, 180)),
@@ -338,6 +378,7 @@ function compactAiInput(input = {}) {
     historyReports: asArray(normalized.historyReports).slice(0, 3).map((item) => compactPlainObject(item, 6, 200)),
     aiHistory: asArray(normalized.aiHistory).slice(0, 5).map((item) => compactPlainObject(item, 6, 200)),
     historicalReflection: trimText(normalized.historicalReflection, 500),
+    dataSources: compactPlainObject(normalized.dataSources, 8, 160),
     aiInputSummary: compactPlainObject(normalized.aiInputSummary, 10, 180),
   };
 }
@@ -368,6 +409,11 @@ function compactStockData(stock = {}) {
     pe: stock.pe,
     pb: stock.pb,
     dataSource: stock.dataSource,
+    quoteSource: stock.quoteSource,
+    newsSource: stock.newsSource,
+    announcementSource: stock.announcementSource,
+    aiSource: stock.aiSource,
+    dataSources: compactPlainObject(stock.dataSources ?? {}, 8, 160),
     dataStatus: stock.dataStatus,
     updatedAt: stock.updatedAt,
     profile: trimText(stock.profile, 500),
@@ -386,6 +432,8 @@ function compactEvent(event = {}) {
     category: trimText(event.category ?? event.type, 80),
     impact: trimText(event.impact ?? event.analysis?.impact, 300),
     direction: trimText(event.analysis?.direction, 80),
+    relationType: event.relationType,
+    dataStatus: trimText(event.dataStatus, 160),
     link: event.link,
   };
 }
@@ -458,6 +506,12 @@ function buildPrompt({ task, input, outputSchema }) {
   return JSON.stringify({
     task,
     rules: [
+      "股票研究报告固定包含：股票基本情况、当前行情、上涨逻辑、风险因素、估值分析、短期观察、中长期观察、综合判断。",
+      "同时保留兼容字段：companyAnalysis、recentChanges、investmentLogic、riskAnalysis、investmentDecision。",
+      "当前行情必须引用输入中的价格、涨跌幅、成交量、成交额、换手率、总市值、PE、PB和所属行业；缺失字段要明确说明为空或数据源未返回。",
+      "新闻使用优先级：先使用newsBuckets.stockRelated个股相关新闻，再使用newsBuckets.marketGeneral市场通用新闻；禁止把市场新闻说成个股新闻。",
+      "必须保留输入中的真实source名称，不要把东方财富资讯改写成财联社或其它来源。",
+      "报告必须输出dataSources，包含行情来源、公告来源、新闻来源、AI模型来源。",
       "股票研究报告固定包含【公司/标的分析】【近期变化】【投资逻辑】【风险分析】【AI投资判断】。",
       "每日市场报告固定包含【今日A股市场分析】【今日热点方向】【明日市场观察】。",
       "今日热点方向必须根据输入的hotSectors、行业新闻和市场变化选TOP5，不要固定只看AI、半导体、电力。",
@@ -483,6 +537,9 @@ function fallbackReport(input) {
   const evidence = buildEvidence(normalized);
   const investmentDecision = buildInvestmentDecision(normalized);
   const hotDirections = buildHotDirections(market, news);
+  const dataSources = buildReportDataSources(normalized, "fallback");
+  const stockBasics = buildStockBasics(stock);
+  const currentQuote = buildCurrentQuote(stock);
   const companyAnalysis = {
     profile: stock.company?.profile ?? stock.profile ?? (stock.assetType === "ETF" ? `${stock.name ?? stock.code}为ETF标的，重点看跟踪指数、成分方向、规模和流动性。` : "公司简介由公告和年报继续补充。"),
     industry: stock.industry ?? stock.company?.industry ?? "行业由数据源补充",
@@ -505,6 +562,14 @@ function fallbackReport(input) {
     marketRisks: ["市场成交不足", "指数回撤", "高位题材波动放大"],
   };
   return {
+    stockBasics,
+    currentQuote,
+    upsideLogic: investmentDecision.reasons.slice(0, 5),
+    valuationAnalysis: buildValuationAnalysis(stock),
+    shortTermObservation: investmentDecision.shortTerm,
+    midLongTermObservation: investmentDecision.midTerm,
+    overallJudgement: `当前判断：${investmentDecision.rating}，评分${investmentDecision.score}/100，策略为${investmentDecision.action}；仅作为研究观察，不构成确定买卖建议。`,
+    dataSources,
     companyAnalysis,
     recentChanges,
     investmentLogic,
@@ -546,6 +611,14 @@ function normalizeOutput(output, fallback) {
   return {
     ...fallback,
     ...output,
+    stockBasics: output.stockBasics ?? fallback.stockBasics,
+    currentQuote: output.currentQuote ?? fallback.currentQuote,
+    upsideLogic: Array.isArray(output.upsideLogic) ? output.upsideLogic : fallback.upsideLogic,
+    valuationAnalysis: output.valuationAnalysis ?? fallback.valuationAnalysis,
+    shortTermObservation: output.shortTermObservation ?? fallback.shortTermObservation,
+    midLongTermObservation: output.midLongTermObservation ?? fallback.midLongTermObservation,
+    overallJudgement: output.overallJudgement ?? fallback.overallJudgement,
+    dataSources: output.dataSources ?? fallback.dataSources,
     investmentDecision,
     companyAnalysis: output.companyAnalysis ?? fallback.companyAnalysis,
     recentChanges: output.recentChanges ?? fallback.recentChanges,
@@ -581,6 +654,48 @@ function normalizeInvestmentDecision(decision = {}, fallback = {}) {
     reasons: asStringList(source.reasons ?? fallbackDecision.reasons).slice(0, 6),
     risks: asStringList(source.risks ?? fallbackDecision.risks).slice(0, 6),
     watchPoints: asStringList(source.watchPoints ?? fallbackDecision.watchPoints).slice(0, 6),
+  };
+}
+
+function buildStockBasics(stock = {}) {
+  return {
+    name: stock.name ?? "",
+    code: stock.code ?? "",
+    industry: stock.industry ?? "",
+    assetType: stock.assetType ?? "",
+    summary: `${stock.name ?? stock.code ?? "当前标的"}属于${stock.industry || "行业数据暂缺"}，类型为${stock.assetType || "股票/ETF"}。`,
+  };
+}
+
+function buildCurrentQuote(stock = {}) {
+  return {
+    price: stock.price ?? "",
+    changePercent: stock.changePercent ?? "",
+    volume: stock.volume ?? "",
+    amount: stock.amount ?? "",
+    turnoverRate: stock.turnoverRate ?? "",
+    marketCap: stock.marketCap ?? "",
+    pe: stock.pe ?? "",
+    pb: stock.pb ?? "",
+  };
+}
+
+function buildValuationAnalysis(stock = {}) {
+  if (stock.assetType === "ETF") {
+    return `ETF标的不适用公司PE/PB财务估值，重点观察跟踪方向、成交额、基金规模和资金活跃度；当前成交额${stock.amount || "数据源未返回"}。`;
+  }
+  return `估值观察：PE ${stock.pe || "数据源未返回"}，PB ${stock.pb || "数据源未返回"}，总市值${stock.marketCap || "数据源未返回"}；需要结合行业估值和财务质量复核。`;
+}
+
+function buildReportDataSources(input = {}, aiSource = "fallback") {
+  const sources = input.dataSources ?? input.stockData?.dataSources ?? {};
+  const newsSources = [...new Set(asArray(input.newsData).map((item) => item.source).filter(Boolean))];
+  const announcementSources = [...new Set(asArray(input.announcementData).map((item) => item.source).filter(Boolean))];
+  return {
+    quote: sources.quote ?? input.stockData?.quoteSource ?? input.stockData?.dataSource ?? "行情来源未返回",
+    announcement: sources.announcement ?? (announcementSources.length ? announcementSources.join(" / ") : "公告来源未返回"),
+    news: sources.news ?? (newsSources.length ? newsSources.join(" / ") : "新闻来源未返回"),
+    ai: aiSource === "deepseek" ? "DeepSeek" : aiSource,
   };
 }
 
