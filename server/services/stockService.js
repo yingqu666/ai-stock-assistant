@@ -16,6 +16,14 @@ const STATUS_REAL = "\u771f\u5b9e\u6570\u636e";
 const STATUS_PARTIAL = "\u90e8\u5206\u6570\u636e";
 const STATUS_MOCK = "\u6570\u636e\u4e0d\u8db3";
 const UNKNOWN = "\u6570\u636e\u6e90\u672a\u8fd4\u56de";
+const INDUSTRY_MISSING = "\u884c\u4e1a\u6570\u636e\u6682\u7f3a";
+const BOARD_LABELS = new Set(["\u6caa\u5e02\u4e3b\u677f", "\u6df1\u5e02\u4e3b\u677f", "\u521b\u4e1a\u677f", "\u79d1\u521b\u677f", "\u5317\u4ea4\u6240", "\u6caa\u5e02", "\u6df1\u5e02", "A\u80a1"]);
+const BSE_CODE_MAP = {
+  "830799": "920799",
+  "430489": "920489",
+  "832982": "920982",
+  "835185": "920185",
+};
 
 const defaultRiskTips = [
   "\u884c\u60c5\u3001\u4f30\u503c\u548c\u8d22\u52a1\u6570\u636e\u53ef\u80fd\u5b58\u5728\u5ef6\u8fdf\uff0c\u9700\u7ed3\u5408\u4ea4\u6613\u6240\u548c\u516c\u53f8\u516c\u544a\u590d\u6838\u3002",
@@ -134,14 +142,16 @@ export async function getStockDetail(query) {
 }
 
 async function getFastQuoteByCode(code) {
+  const quoteCode = normalizeQuoteCode(code);
   const fallback = fallbackStocks.find((item) => item.code === code);
   const base = enrichResearchFields({
     ...pickReferenceMetadata(fallback),
     code,
-    secid: toSecid(code),
-    market: inferMarket(code),
-    assetType: isEtfCode(code) ? "ETF" : "\u80a1\u7968",
-    industry: fallback?.industry ?? inferIndustryByCode(code),
+    quoteCode,
+    secid: toSecid(quoteCode),
+    market: inferMarket(quoteCode),
+    assetType: isEtfCode(quoteCode) ? "ETF" : "\u80a1\u7968",
+    industry: normalizeIndustry(fallback?.industry ?? inferIndustryByCode(quoteCode), isEtfCode(quoteCode)),
     dataSource: "\u884c\u60c5\u63a5\u53e3",
     dataStatus: STATUS_PARTIAL,
     updatedAt: nowText(),
@@ -183,19 +193,20 @@ async function searchEastmoney(keyword) {
 }
 
 async function fetchQuote(stock) {
+  const normalizedStock = { ...stock, quoteCode: normalizeQuoteCode(stock.quoteCode ?? stock.code) };
   try {
-    return await fetchEastmoneyQuote(stock);
+    return restoreInputCode(await fetchEastmoneyQuote(normalizedStock), stock);
   } catch (eastmoneyError) {
     const [sinaResult, tencentResult] = await Promise.allSettled([
-      fetchSinaQuote(stock),
-      fetchTencentQuote(stock, eastmoneyError.message),
+      fetchSinaQuote(normalizedStock),
+      fetchTencentQuote(normalizedStock, eastmoneyError.message),
     ]);
     if (sinaResult.status === "fulfilled" && tencentResult.status === "fulfilled") {
-      return mergeBackupQuotes(sinaResult.value, tencentResult.value);
+      return restoreInputCode(mergeBackupQuotes(sinaResult.value, tencentResult.value), stock);
     }
-    if (sinaResult.status === "fulfilled") return sinaResult.value;
-    if (tencentResult.status === "fulfilled") return tencentResult.value;
-    return fetchEastmoneyKlineQuote(stock, `${eastmoneyError.message}; ${sinaResult.reason?.message}; ${tencentResult.reason?.message}`);
+    if (sinaResult.status === "fulfilled") return restoreInputCode(sinaResult.value, stock);
+    if (tencentResult.status === "fulfilled") return restoreInputCode(tencentResult.value, stock);
+    return restoreInputCode(await fetchEastmoneyKlineQuote(normalizedStock, `${eastmoneyError.message}; ${sinaResult.reason?.message}; ${tencentResult.reason?.message}`), stock);
   }
 }
 
@@ -217,7 +228,8 @@ function mergeBackupQuotes(sina, tencent) {
 
 async function fetchEastmoneyQuote(stock) {
   const fields = "f12,f14,f2,f3,f4,f5,f6,f8,f20,f100,f162,f167";
-  const url = `${eastmoneyQuoteApi}?fltt=2&fields=${fields}&secids=${stock.secid ?? toSecid(stock.code, stock.market)}`;
+  const quoteCode = normalizeQuoteCode(stock.quoteCode ?? stock.code);
+  const url = `${eastmoneyQuoteApi}?fltt=2&fields=${fields}&secids=${toSecid(quoteCode, stock.market)}`;
   const json = await fetchJson(url);
   const row = json?.data?.diff?.[0];
   if (!row) throw new Error("\u884c\u60c5\u4e3a\u7a7a");
@@ -241,7 +253,7 @@ async function fetchEastmoneyQuote(stock) {
     components: assetType === "ETF" ? stock.components ?? etfInfo.components ?? [] : undefined,
     capitalFlow: assetType === "ETF" ? `\u6210\u4ea4\u989d ${formatAmount(row.f6)}\uff0c\u7528\u4e8e\u89c2\u5bdf\u8d44\u91d1\u6d3b\u8dc3\u5ea6\u3002` : undefined,
     valuationLevel: assetType === "ETF" ? "\u8bf7\u7ed3\u5408\u8ddf\u8e2a\u6307\u6570\u4f30\u503c\u548c\u6298\u6ea2\u4ef7\u89c2\u5bdf" : undefined,
-    industry: row.f100 || stock.industry || etfInfo.industry || (assetType === "ETF" ? "ETF" : UNKNOWN),
+    industry: normalizeIndustry(row.f100 || stock.industry || etfInfo.industry, assetType === "ETF"),
     market: inferMarket(code),
     assetType,
     pe: assetType === "ETF" ? "\u4e0d\u9002\u7528" : formatMetric(row.f162),
@@ -255,7 +267,8 @@ async function fetchEastmoneyQuote(stock) {
 }
 
 async function fetchSinaQuote(stock) {
-  const code = String(stock.code ?? "");
+  const code = String(stock.quoteCode ?? stock.code ?? "");
+  const displayCode = String(stock.code ?? code);
   const symbol = `${quoteMarketPrefix(code)}${code}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1400);
@@ -286,6 +299,7 @@ async function fetchSinaQuote(stock) {
 
   return {
     code,
+    inputCode: displayCode,
     name: fields[0] || stock.name || code,
     price: formatPrice(current),
     changePercent: formatPercent(changePercent),
@@ -301,7 +315,7 @@ async function fetchSinaQuote(stock) {
     components: assetType === "ETF" ? stock.components ?? etfInfo.components ?? [] : undefined,
     capitalFlow: assetType === "ETF" ? `\u6210\u4ea4\u989d ${formatAmount(normalizeNumber(fields[9]))}\uff0c\u7528\u4e8e\u89c2\u5bdf\u8d44\u91d1\u6d3b\u8dc3\u5ea6\u3002` : undefined,
     valuationLevel: assetType === "ETF" ? "\u8bf7\u7ed3\u5408\u8ddf\u8e2a\u6307\u6570\u4f30\u503c\u548c\u6298\u6ea2\u4ef7\u89c2\u5bdf" : undefined,
-    industry: stock.industry || etfInfo.industry || (assetType === "ETF" ? "ETF" : UNKNOWN),
+    industry: normalizeIndustry(stock.industry || etfInfo.industry, assetType === "ETF"),
     market: inferMarket(code),
     assetType,
     pe: assetType === "ETF" ? "\u4e0d\u9002\u7528" : UNKNOWN,
@@ -315,7 +329,8 @@ async function fetchSinaQuote(stock) {
 }
 
 async function fetchTencentQuote(stock, previousError = "") {
-  const code = String(stock.code ?? "");
+  const code = String(stock.quoteCode ?? stock.code ?? "");
+  const displayCode = String(stock.code ?? code);
   const symbol = `${quoteMarketPrefix(code)}${code}`;
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), 1400);
@@ -334,6 +349,7 @@ async function fetchTencentQuote(stock, previousError = "") {
     const etfInfo = assetType === "ETF" ? getEtfKnowledge(code) : {};
     return {
       code,
+      inputCode: displayCode,
       name: fields[1] || stock.name || code,
       price: formatPrice(fields[3]),
       changePercent: formatPercent(fields[32]),
@@ -349,7 +365,7 @@ async function fetchTencentQuote(stock, previousError = "") {
       components: assetType === "ETF" ? stock.components ?? etfInfo.components ?? [] : undefined,
       capitalFlow: assetType === "ETF" ? `\u6210\u4ea4\u989d ${fields[37] ?? UNKNOWN}\u4e07\u5143\uff0c\u7528\u4e8e\u89c2\u5bdf\u8d44\u91d1\u6d3b\u8dc3\u5ea6\u3002` : undefined,
       valuationLevel: assetType === "ETF" ? "\u8bf7\u7ed3\u5408\u8ddf\u8e2a\u6307\u6570\u4f30\u503c\u548c\u6298\u6ea2\u4ef7\u89c2\u5bdf" : undefined,
-      industry: stock.industry || etfInfo.industry || (assetType === "ETF" ? "ETF" : UNKNOWN),
+      industry: normalizeIndustry(stock.industry || etfInfo.industry, assetType === "ETF"),
       market: inferMarket(code),
       assetType,
       pe: assetType === "ETF" ? "\u4e0d\u9002\u7528" : formatMetric(fields[39]),
@@ -366,7 +382,8 @@ async function fetchTencentQuote(stock, previousError = "") {
 }
 
 async function fetchEastmoneyKlineQuote(stock, previousError = "") {
-  const code = String(stock.code ?? "");
+  const code = String(stock.quoteCode ?? stock.code ?? "");
+  const displayCode = String(stock.code ?? code);
   const assetType = isEtfCode(code) ? "ETF" : "\u80a1\u7968";
   const etfInfo = assetType === "ETF" ? getEtfKnowledge(code) : {};
   const secid = stock.secid ?? toSecid(code, stock.market);
@@ -378,6 +395,7 @@ async function fetchEastmoneyKlineQuote(stock, previousError = "") {
   const amount = normalizeNumber(fields[6]);
   return {
     code,
+    inputCode: displayCode,
     name: stock.name || json?.data?.name || code,
     price: formatPrice(fields[2]),
     changePercent: formatPercent(fields[8]),
@@ -393,7 +411,7 @@ async function fetchEastmoneyKlineQuote(stock, previousError = "") {
     components: assetType === "ETF" ? stock.components ?? etfInfo.components ?? [] : undefined,
     capitalFlow: assetType === "ETF" ? `\u6210\u4ea4\u989d ${formatAmount(amount)}\uff0c\u6765\u81ea\u65e5\u7ebf\u5907\u7528\u884c\u60c5\u3002` : undefined,
     valuationLevel: assetType === "ETF" ? "\u8bf7\u7ed3\u5408\u8ddf\u8e2a\u6307\u6570\u4f30\u503c\u548c\u6298\u6ea2\u4ef7\u89c2\u5bdf" : undefined,
-    industry: stock.industry || etfInfo.industry || inferIndustryByCode(code),
+    industry: normalizeIndustry(stock.industry || etfInfo.industry || inferIndustryByCode(code), assetType === "ETF"),
     market: inferMarket(code),
     assetType,
     pe: assetType === "ETF" ? "\u4e0d\u9002\u7528" : stock.pe ?? UNKNOWN,
@@ -534,7 +552,7 @@ function enrichResearchFields(stock) {
   const code = stock.code ?? "";
   const name = stock.name ?? stock.stockName ?? code;
   const assetType = stock.assetType ?? (isEtfCode(code) ? "ETF" : "\u80a1\u7968");
-  const industry = stock.industry ?? (assetType === "ETF" ? "ETF" : UNKNOWN);
+  const industry = normalizeIndustry(stock.industry, assetType === "ETF");
   const base = {
     ...stock,
     code,
@@ -704,11 +722,12 @@ function normalizeQuery(query) {
 
 function isSupportedSecurityCode(code) {
   const text = String(code ?? "");
-  return /^(?:60[0135]\d{3}|688\d{3}|00[0123]\d{3}|30[01]\d{3}|8\d{5}|5\d{5}|1[56]\d{4})$/.test(text);
+  return /^(?:60[0135]\d{3}|688\d{3}|00[0123]\d{3}|30[01]\d{3}|8\d{5}|920\d{3}|5\d{5}|1[56]\d{4})$/.test(text);
 }
 
 function toSecid(code, market) {
   const text = String(code ?? "");
+  if (text.startsWith("8") || text.startsWith("920")) return `0.${text}`;
   if (String(market) === "1" || text.startsWith("6") || text.startsWith("5")) return `1.${text}`;
   return `0.${text}`;
 }
@@ -716,7 +735,7 @@ function toSecid(code, market) {
 function quoteMarketPrefix(code) {
   const text = String(code ?? "");
   if (text.startsWith("6") || text.startsWith("5")) return "sh";
-  if (text.startsWith("8")) return "bj";
+  if (text.startsWith("8") || text.startsWith("920")) return "bj";
   return "sz";
 }
 
@@ -725,7 +744,7 @@ function inferMarket(code) {
   if (isEtfCode(text)) return text.startsWith("5") ? "\u6caa\u5e02ETF" : "\u6df1\u5e02ETF";
   if (text.startsWith("688") || text.startsWith("689")) return "\u79d1\u521b\u677f";
   if (text.startsWith("300") || text.startsWith("301")) return "\u521b\u4e1a\u677f";
-  if (text.startsWith("8")) return "\u5317\u4ea4\u6240";
+  if (text.startsWith("8") || text.startsWith("920")) return "\u5317\u4ea4\u6240";
   if (text.startsWith("6")) return "\u6caa\u5e02";
   if (text.startsWith("0") || text.startsWith("2") || text.startsWith("3")) return "\u6df1\u5e02";
   return UNKNOWN;
@@ -738,12 +757,30 @@ function isEtfCode(code) {
 function inferIndustryByCode(code) {
   const text = String(code ?? "");
   if (isEtfCode(text)) return getEtfKnowledge(text)?.industry || "ETF";
-  if (text.startsWith("688")) return "\u79d1\u521b\u677f";
-  if (text.startsWith("300") || text.startsWith("301")) return "\u521b\u4e1a\u677f";
-  if (text.startsWith("8")) return "\u5317\u4ea4\u6240";
-  if (/^(600|601|603|605)/.test(text)) return "\u6caa\u5e02\u4e3b\u677f";
-  if (/^(000|001|002|003)/.test(text)) return "\u6df1\u5e02\u4e3b\u677f";
-  return UNKNOWN;
+  return INDUSTRY_MISSING;
+}
+
+function normalizeIndustry(value, isEtf = false) {
+  const text = String(value ?? "").trim();
+  if (isEtf) return text && text !== UNKNOWN ? text : "ETF";
+  if (!text || text === UNKNOWN || BOARD_LABELS.has(text)) return INDUSTRY_MISSING;
+  return text;
+}
+
+function normalizeQuoteCode(code) {
+  const text = String(code ?? "");
+  return BSE_CODE_MAP[text] ?? text;
+}
+
+function restoreInputCode(quote, stock = {}) {
+  const inputCode = String(stock.code ?? quote.code ?? "");
+  if (!inputCode || inputCode === quote.code) return quote;
+  return {
+    ...quote,
+    code: inputCode,
+    quoteCode: quote.code,
+    dataMessage: [quote.dataMessage, `北交所行情使用新代码 ${quote.code} 映射`].filter(Boolean).join("；"),
+  };
 }
 
 function withTimeout(promise, timeoutMs, fallbackFactory) {

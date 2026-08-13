@@ -19,13 +19,19 @@ let universeCache = {
 const etfKnowledge = {
   "512760": { aliases: ["AI", "芯片", "半导体", "CHIP"], trackingIndex: "中证芯片产业指数", components: ["芯片设计", "半导体设备", "材料", "封测"], industry: "半导体ETF" },
   "512480": { aliases: ["半导体", "芯片"], trackingIndex: "中证全指半导体产品与设备指数", components: ["芯片设计", "设备", "封测"], industry: "半导体ETF" },
-  "515050": { aliases: ["5G", "通信", "通信ETF"], trackingIndex: "中证5G通信主题指数", components: ["通信设备", "光模块", "算力网络"], industry: "通信ETF" },
-  "515980": { aliases: ["AI", "人工智能", "算力"], trackingIndex: "中证人工智能主题指数", components: ["算力", "软件", "光模块", "芯片"], industry: "AI主题ETF" },
-  "159819": { aliases: ["AI", "人工智能", "算力"], trackingIndex: "中证人工智能主题指数", components: ["算力", "芯片", "应用软件"], industry: "AI主题ETF" },
+  "515050": { aliases: ["5G", "通信", "通信ETF", "TXETF"], trackingIndex: "中证5G通信主题指数", components: ["通信设备", "光模块", "算力网络"], industry: "通信ETF" },
+  "515980": { aliases: ["AI", "AIETF", "人工智能", "算力"], trackingIndex: "中证人工智能主题指数", components: ["算力", "软件", "光模块", "芯片"], industry: "AI主题ETF" },
+  "159819": { aliases: ["AI", "AIETF", "人工智能", "算力"], trackingIndex: "中证人工智能主题指数", components: ["算力", "芯片", "应用软件"], industry: "AI主题ETF" },
   "588000": { aliases: ["科创", "科创50"], trackingIndex: "科创50指数", components: ["科创板核心公司"], industry: "科创ETF" },
   "510300": { aliases: ["沪深300", "300ETF"], trackingIndex: "沪深300指数", components: ["大盘蓝筹"], industry: "宽基ETF" },
   "510500": { aliases: ["中证500", "500ETF"], trackingIndex: "中证500指数", components: ["中盘成长"], industry: "宽基ETF" },
 };
+
+const knownStockAliases = [
+  { code: "601088", name: "中国神华", pinyin: "ZGSH", shortName: "神华", industry: "煤炭", market: "沪市" },
+  { code: "688008", name: "澜起科技", pinyin: "LQKJ", shortName: "澜起", industry: "半导体", market: "科创板" },
+  { code: "688036", name: "传音控股", pinyin: "CYKG", shortName: "传音", industry: "消费电子", market: "科创板" },
+];
 
 export async function getSecurityUniverse({ force = false } = {}) {
   const dateKey = new Date().toISOString().slice(0, 10);
@@ -64,7 +70,7 @@ export async function searchSecurityUniverse(query, limit = 30) {
   }
   const cache = universeCache;
   const etfRows = buildKnownEtfRows();
-  const source = dedupe([...cache.data, ...etfRows]);
+  const source = dedupe([...knownStockAliases, ...cache.data, ...etfRows]);
   if (!keyword) return source.slice(0, limit);
   return source
     .filter((item) => item.code.includes(keyword)
@@ -73,6 +79,7 @@ export async function searchSecurityUniverse(query, limit = 30) {
       || String(item.pinyin ?? "").toUpperCase().includes(upper)
       || (item.aliases ?? []).some((alias) => String(alias).toUpperCase().includes(upper) || String(alias).includes(keyword))
       || String(item.industry ?? "").includes(keyword))
+    .sort((a, b) => scoreSearchMatch(b, keyword, upper) - scoreSearchMatch(a, keyword, upper))
     .slice(0, limit);
 }
 
@@ -193,6 +200,33 @@ function knownEtfName(code) {
     "510500": "中证500ETF",
   };
   return names[code] ?? `${code}ETF`;
+}
+
+function scoreSearchMatch(item, keyword, upper) {
+  const code = String(item.code ?? "");
+  const name = String(item.name ?? "");
+  const shortName = String(item.shortName ?? "");
+  const pinyin = String(item.pinyin ?? "").toUpperCase();
+  const aliases = (item.aliases ?? []).map((alias) => String(alias));
+  let score = 0;
+  if (code === keyword) score += 1000;
+  else if (code.startsWith(keyword)) score += 650;
+  else if (code.includes(keyword)) score += 300;
+  if (name === keyword || shortName === keyword) score += 900;
+  else if (name.startsWith(keyword) || shortName.startsWith(keyword)) score += 550;
+  else if (name.includes(keyword) || shortName.includes(keyword)) score += 250;
+  if (pinyin === upper) score += 850;
+  else if (pinyin.startsWith(upper)) score += 500;
+  else if (pinyin.includes(upper)) score += 180;
+  for (const alias of aliases) {
+    const aliasUpper = alias.toUpperCase();
+    if (aliasUpper === upper || alias === keyword) score += 800;
+    else if (aliasUpper.startsWith(upper) || alias.startsWith(keyword)) score += 450;
+    else if (aliasUpper.includes(upper) || alias.includes(keyword)) score += 120;
+  }
+  if (item.assetType === "ETF" && /ETF$/i.test(upper)) score += 250;
+  if (name.includes("指数") && !name.includes("ETF")) score -= 300;
+  return score;
 }
 
 function dedupe(items) {

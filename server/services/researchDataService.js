@@ -9,6 +9,14 @@ const tencentQuoteApi = "https://qt.gtimg.cn/q=";
 const eastmoneyFastNewsApi = "https://np-listapi.eastmoney.com/comm/web/getFastNews";
 
 const DATA_MISSING = "数据源未返回";
+const INDUSTRY_MISSING = "行业数据暂缺";
+const BOARD_LABELS = new Set(["沪市主板", "深市主板", "创业板", "科创板", "北交所", "沪市", "深市", "A股"]);
+const BSE_CODE_MAP = {
+  "830799": "920799",
+  "430489": "920489",
+  "832982": "920982",
+  "835185": "920185",
+};
 
 const latestSourceStatus = {
   eastmoney: { status: "unknown", message: "尚未检测", updatedAt: "" },
@@ -42,7 +50,7 @@ export async function getResearchData(query) {
 
   const detail = detailResult?.data ?? {};
   const quoteFallback = buildQuoteFromDetail(detail);
-  const effectiveQuoteResult = quoteResult.status === "real" ? quoteResult : quoteFallback ?? quoteResult;
+  const effectiveQuoteResult = mergeQuoteResults(quoteResult, quoteFallback);
   const quote = effectiveQuoteResult.data ?? {};
   const isEtf = isEtfCode(resolved.code);
   const announcements = Array.isArray(detail.announcements) ? detail.announcements : [];
@@ -68,7 +76,7 @@ export async function getResearchData(query) {
     updatedAt: nowText(),
   };
 
-  const hasUsableQuote = effectiveQuoteResult.status === "real"
+  const hasUsableQuote = ["real", "partial"].includes(effectiveQuoteResult.status)
     && quote.price && quote.price !== DATA_MISSING
     && quote.changePercent && quote.changePercent !== DATA_MISSING;
   const aiReport = hasUsableQuote ? await generateResearchReport({
@@ -144,17 +152,38 @@ async function resolveSecurity(query) {
 
 async function fetchQuoteWithFallback(security) {
   const errors = [];
-  for (const provider of [fetchEastmoneyQuote, fetchSinaQuote, fetchTencentQuote]) {
-    try {
-      const data = await provider(security);
-      markSource(data.providerKey, "ok", "真实行情返回");
-      return { status: "real", source: data.source, data, message: "", updatedAt: data.updatedAt };
-    } catch (error) {
-      const key = provider === fetchEastmoneyQuote ? "eastmoney" : provider === fetchSinaQuote ? "sina" : "tencent";
-      markSource(key, "failed", error.message);
-      errors.push(`${key}: ${error.message}`);
-    }
+  try {
+    const data = await fetchEastmoneyQuote(security);
+    markSource(data.providerKey, "ok", "真实行情返回");
+    return { status: "real", source: data.source, data: cleanQuoteIndustry(data), message: "", updatedAt: data.updatedAt };
+  } catch (error) {
+    markSource("eastmoney", "failed", error.message);
+    errors.push(`eastmoney: ${error.message}`);
   }
+
+  const [sinaResult, tencentResult] = await Promise.allSettled([
+    fetchSinaQuote(security),
+    fetchTencentQuote(security),
+  ]);
+  if (sinaResult.status === "fulfilled") markSource("sina", "ok", "真实行情返回");
+  else {
+    markSource("sina", "failed", sinaResult.reason?.message ?? "新浪行情失败");
+    errors.push(`sina: ${sinaResult.reason?.message ?? "新浪行情失败"}`);
+  }
+  if (tencentResult.status === "fulfilled") markSource("tencent", "ok", "真实行情返回");
+  else {
+    markSource("tencent", "failed", tencentResult.reason?.message ?? "腾讯行情失败");
+    errors.push(`tencent: ${tencentResult.reason?.message ?? "腾讯行情失败"}`);
+  }
+
+  const backups = [sinaResult, tencentResult]
+    .filter((result) => result.status === "fulfilled")
+    .map((result) => result.value);
+  if (backups.length) {
+    const data = cleanQuoteIndustry(mergeQuotes(backups));
+    return { status: "partial", source: data.source, data, message: errors.join("；"), updatedAt: data.updatedAt };
+  }
+
   return {
     status: "unavailable",
     source: "none",
@@ -166,7 +195,8 @@ async function fetchQuoteWithFallback(security) {
 
 async function fetchEastmoneyQuote(security) {
   const fields = "f12,f14,f2,f3,f4,f5,f6,f8,f20,f100,f162,f167";
-  const url = `${eastmoneyQuoteApi}?fltt=2&fields=${fields}&secids=${toSecid(security.code)}`;
+  const quoteCode = normalizeQuoteCode(security.code);
+  const url = `${eastmoneyQuoteApi}?fltt=2&fields=${fields}&secids=${toSecid(quoteCode)}`;
   const json = await fetchJson(url, "东方财富行情");
   const row = json?.data?.diff?.[0];
   if (!row || row.f2 === "-" || row.f2 == null) throw new Error("东方财富行情为空");
@@ -174,7 +204,8 @@ async function fetchEastmoneyQuote(security) {
   return {
     providerKey: "eastmoney",
     source: "东方财富",
-    code: row.f12 || security.code,
+    code: security.code,
+    quoteCode: row.f12 || quoteCode,
     name: row.f14 || security.name,
     price: formatPrice(row.f2),
     changePercent: formatPercent(row.f3),
@@ -195,7 +226,8 @@ async function fetchEastmoneyQuote(security) {
 }
 
 async function fetchSinaQuote(security) {
-  const symbol = `${quoteMarketPrefix(security.code)}${security.code}`;
+  const quoteCode = normalizeQuoteCode(security.code);
+  const symbol = `${quoteMarketPrefix(quoteCode)}${quoteCode}`;
   const response = await fetch(`${sinaQuoteApi}${symbol}`, { cache: "no-store", headers: { Referer: "https://finance.sina.com.cn/" } });
   if (!response.ok) throw new Error(`新浪行情 HTTP ${response.status}`);
   const text = new TextDecoder("gb18030").decode(Buffer.from(await response.arrayBuffer()));
@@ -210,6 +242,7 @@ async function fetchSinaQuote(security) {
     providerKey: "sina",
     source: "新浪财经",
     code: security.code,
+    quoteCode,
     name: fields[0] || security.name,
     price: formatPrice(current),
     changePercent: previousClose ? formatPercent((change / previousClose) * 100) : DATA_MISSING,
@@ -228,7 +261,8 @@ async function fetchSinaQuote(security) {
 }
 
 async function fetchTencentQuote(security) {
-  const symbol = `${quoteMarketPrefix(security.code)}${security.code}`;
+  const quoteCode = normalizeQuoteCode(security.code);
+  const symbol = `${quoteMarketPrefix(quoteCode)}${quoteCode}`;
   const response = await fetch(`${tencentQuoteApi}${symbol}`, { cache: "no-store", headers: { Referer: "https://gu.qq.com/" } });
   if (!response.ok) throw new Error(`腾讯财经 HTTP ${response.status}`);
   const text = new TextDecoder("gb18030").decode(Buffer.from(await response.arrayBuffer()));
@@ -239,6 +273,7 @@ async function fetchTencentQuote(security) {
     providerKey: "tencent",
     source: "腾讯财经",
     code: security.code,
+    quoteCode,
     name: fields[1] || security.name,
     price: formatPrice(fields[3]),
     changePercent: formatPercent(fields[32]),
@@ -264,10 +299,11 @@ async function fetchRelatedNews(security) {
     const text = `${item.title ?? ""}${item.summary ?? ""}`;
     return text.includes(security.name)
       || text.includes(security.code)
-      || (security.industry && text.includes(security.industry))
+      || (security.industry && !BOARD_LABELS.has(security.industry) && security.industry !== INDUSTRY_MISSING && text.includes(security.industry))
       || relatedThemes.some((theme) => text.includes(theme));
   });
-  const selected = (related.length ? related : rows.slice(0, 8)).slice(0, 8);
+  const isStockRelated = related.length > 0;
+  const selected = (isStockRelated ? related : rows.slice(0, 8)).slice(0, 8);
   latestSourceStatus.news = {
     status: selected.length ? "ok" : "failed",
     message: selected.length ? "东方财富资讯返回" : "新闻接口未返回",
@@ -290,19 +326,21 @@ async function fetchRelatedNews(security) {
         relatedThemes: themes,
         category: classifyNews(title),
         impact: analyzeImpact(title),
-        dataStatus: related.length ? "相关真实新闻" : "市场真实新闻，未命中个股关键词",
+        relationType: isStockRelated ? "stock_related" : "market_general",
+        dataStatus: isStockRelated ? "个股相关新闻" : "市场通用新闻，未命中个股关键词",
       };
     }),
   };
 }
 
 function buildSecurityProfile({ resolved, detail, quote, isEtf }) {
+  const industry = normalizeIndustry(quote.industry || detail.industry || resolved.industry, isEtf);
   return {
     code: resolved.code,
     name: quote.name ?? detail.name ?? resolved.name,
     assetType: isEtf ? "ETF" : "股票",
     market: detail.market ?? resolved.market ?? inferMarket(resolved.code),
-    industry: quote.industry || detail.industry || resolved.industry || (isEtf ? "ETF" : DATA_MISSING),
+    industry,
     dataSource: quote.source ?? detail.dataSource ?? "",
     updatedAt: quote.updatedAt ?? detail.updatedAt ?? nowText(),
   };
@@ -335,7 +373,7 @@ function buildEtfProfile({ resolved, detail, quote }) {
 }
 
 function normalizeQuote(result, resolved) {
-  if (result.status !== "real") {
+  if (!["real", "partial"].includes(result.status)) {
     return {
       status: "unavailable",
       message: result.message || "行情接口未返回",
@@ -495,6 +533,67 @@ function buildQuoteFromDetail(detail = {}) {
   };
 }
 
+function mergeQuoteResults(primaryResult, detailResult) {
+  const available = [primaryResult, detailResult].filter((result) => result?.data && ["real", "partial"].includes(result.status));
+  if (!available.length) return primaryResult;
+  const mergedData = mergeQuotes(available.map((result) => result.data));
+  const statuses = available.map((result) => result.status);
+  const sources = available.map((result) => result.source).filter(Boolean);
+  return {
+    status: statuses.includes("real") ? "real" : "partial",
+    source: [...new Set(sources)].join(" / "),
+    message: [primaryResult?.message, detailResult?.message].filter(Boolean).join("；"),
+    updatedAt: mergedData.updatedAt ?? available[0].updatedAt ?? nowText(),
+    data: mergedData,
+  };
+}
+
+function mergeQuotes(quotes) {
+  const valid = quotes.filter(Boolean);
+  const merged = {};
+  for (const quote of valid) {
+    for (const [key, value] of Object.entries(quote)) {
+      if (!isMissingValue(value) && (isMissingValue(merged[key]) || key === "source")) {
+        merged[key] = value;
+      }
+    }
+  }
+  merged.source = [...new Set(valid.map((quote) => quote.source).filter(Boolean))].join(" / ");
+  merged.quoteSource = merged.source;
+  merged.dataSource = merged.source;
+  merged.updatedAt = valid.map((quote) => quote.updatedAt).filter(Boolean)[0] ?? nowText();
+  return cleanQuoteIndustry(merged);
+}
+
+function cleanQuoteIndustry(quote = {}) {
+  return {
+    ...quote,
+    industry: normalizeIndustry(quote.industry, isEtfCode(quote.code)),
+  };
+}
+
+function normalizeIndustry(value, isEtf = false) {
+  const text = String(value ?? "").trim();
+  if (isEtf) return text && text !== DATA_MISSING ? text : "ETF";
+  if (!text || text === DATA_MISSING || BOARD_LABELS.has(text)) return INDUSTRY_MISSING;
+  return text;
+}
+
+function isMissingValue(value) {
+  if (value === undefined || value === null) return true;
+  const text = String(value).trim();
+  return !text || [
+    DATA_MISSING,
+    INDUSTRY_MISSING,
+    "暂无",
+    "数据暂不可用",
+    "待接真实数据",
+    "待补充",
+    "undefined",
+    "null",
+  ].includes(text);
+}
+
 function markSource(key, status, message) {
   if (!key) return;
   latestSourceStatus[key] = { status, message, updatedAt: nowText() };
@@ -511,7 +610,7 @@ function buildRelatedThemes(security) {
   if (/AI|人工智能|芯片|半导体|算力|光模块|服务器/.test(text)) themes.push("半导体", "光模块", "算力", "电力", "AI");
   if (/通信|5G|光模块/.test(text)) themes.push("通信", "光模块", "算力");
   if (/电力|储能|新能源/.test(text)) themes.push("电力", "储能", "新能源");
-  return [...new Set([security.industry, ...themes].filter(Boolean))];
+  return [...new Set([security.industry, ...themes].filter((item) => item && item !== INDUSTRY_MISSING && !BOARD_LABELS.has(item)))];
 }
 
 function inferThemes(text, defaults = []) {
@@ -536,13 +635,14 @@ function analyzeImpact(title) {
 }
 
 function toSecid(code) {
-  return `${String(code).startsWith("6") || String(code).startsWith("5") ? "1" : "0"}.${code}`;
+  const text = normalizeQuoteCode(code);
+  return `${String(text).startsWith("6") || String(text).startsWith("5") ? "1" : "0"}.${text}`;
 }
 
 function quoteMarketPrefix(code) {
   const text = String(code ?? "");
   if (text.startsWith("6") || text.startsWith("5")) return "sh";
-  if (text.startsWith("8")) return "bj";
+  if (text.startsWith("8") || text.startsWith("920")) return "bj";
   return "sz";
 }
 
@@ -552,13 +652,18 @@ function inferMarket(code) {
   if (text.startsWith("688") || text.startsWith("689")) return "科创板";
   if (text.startsWith("300") || text.startsWith("301")) return "创业板";
   if (text.startsWith("6")) return "沪市";
-  if (text.startsWith("8")) return "北交所";
+  if (text.startsWith("8") || text.startsWith("920")) return "北交所";
   if (text.startsWith("0") || text.startsWith("2") || text.startsWith("3")) return "深市";
   return "A股";
 }
 
 function isEtfCode(code) {
   return /^(?:5\d{5}|1[56]\d{4})$/.test(String(code ?? ""));
+}
+
+function normalizeQuoteCode(code) {
+  const text = String(code ?? "");
+  return BSE_CODE_MAP[text] ?? text;
 }
 
 function toNumber(value) {
