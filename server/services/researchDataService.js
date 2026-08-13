@@ -18,6 +18,17 @@ const BSE_CODE_MAP = {
   "835185": "920185",
 };
 
+const defaultInvestorProfile = {
+  marketScope: "仅限A股和A股ETF",
+  capitalSize: "几万元",
+  trialCapital: "5000元",
+  style: "成长科技方向",
+  riskLevel: "中",
+  holdingPeriod: "波段观察",
+  focusIndustries: ["AI基础设施", "芯片", "电力", "储能", "资源", "国产替代", "光模块", "光刻机"],
+  preference: "只研究A股，当前以5000元试水，偏成长科技方向，重视AI基础设施、芯片、电力、储能、资源、国产替代、光模块、光刻机。",
+};
+
 const latestSourceStatus = {
   eastmoney: { status: "unknown", message: "尚未检测", updatedAt: "" },
   sina: { status: "unknown", message: "尚未检测", updatedAt: "" },
@@ -58,6 +69,7 @@ export async function getResearchData(query) {
   const security = buildSecurityProfile({ resolved, detail, quote, isEtf });
   const newsBuckets = buildNewsBuckets(newsResult.data);
   const dataSources = buildDataSources({ quoteResult: effectiveQuoteResult, newsResult, announcements, financials });
+  const investmentProfile = buildInvestmentProfile();
   const researchData = {
     query,
     security,
@@ -71,6 +83,7 @@ export async function getResearchData(query) {
     marketData,
     dataStatus: buildDataStatus({ quoteResult: effectiveQuoteResult, detailResult, newsResult, announcements, financials }),
     dataSources,
+    investmentProfile,
     sourceTimes: {
       quoteUpdatedAt: quote.updatedAt ?? effectiveQuoteResult.updatedAt ?? nowText(),
       newsUpdatedAt: newsResult.updatedAt ?? nowText(),
@@ -98,7 +111,7 @@ export async function getResearchData(query) {
     newsData: [...newsBuckets.stockRelated, ...newsBuckets.marketGeneral],
     newsBuckets,
     announcementData: announcements,
-    investmentProfile: {},
+    investmentProfile,
     riskData: buildRiskData(researchData),
     dataSources,
   }).catch((error) => {
@@ -500,6 +513,10 @@ function buildDataSources({ quoteResult, newsResult, announcements, financials }
     financial: financials.source || "财务接口未返回",
     ai: "DeepSeek优先，失败使用规则fallback",
   };
+}
+
+function buildInvestmentProfile() {
+  return { ...defaultInvestorProfile, focus: [...defaultInvestorProfile.focusIndustries] };
 }
 
 function valueOrEmpty(value) {

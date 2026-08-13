@@ -28,6 +28,13 @@ const reportSchema = {
   shortTermObservation: "短期观察，1-5天",
   midLongTermObservation: "中长期观察，1-4周",
   overallJudgement: "综合判断，不输出确定买卖",
+  investorFit: {
+    score: "0-100",
+    level: "高/中/低",
+    reasons: ["与用户投资方向匹配的理由"],
+    riskReminders: ["结合用户资金规模和风格的风险提醒"],
+    positionReference: "仓位参考建议，不输出确定买卖",
+  },
   dataSources: {
     quote: "行情来源",
     announcement: "公告来源",
@@ -512,6 +519,9 @@ function buildPrompt({ task, input, outputSchema }) {
       "新闻使用优先级：先使用newsBuckets.stockRelated个股相关新闻，再使用newsBuckets.marketGeneral市场通用新闻；禁止把市场新闻说成个股新闻。",
       "必须保留输入中的真实source名称，不要把东方财富资讯改写成财联社或其它来源。",
       "报告必须输出dataSources，包含行情来源、公告来源、新闻来源、AI模型来源。",
+      "必须结合investmentProfile输出investorFit，包含与用户投资方向匹配度、关注理由、风险提醒、仓位参考建议。",
+      "用户画像限制：只能A股，资金规模几万元，当前试水资金5000元，投资风格偏成长科技，关注AI基础设施、芯片、电力、储能、资源、国产替代、光模块、光刻机。",
+      "仓位参考只能使用低仓位观察、保持观察仓位、降低暴露、暂不增加仓位等表达，不能输出确定买入或确定卖出。",
       "股票研究报告固定包含【公司/标的分析】【近期变化】【投资逻辑】【风险分析】【AI投资判断】。",
       "每日市场报告固定包含【今日A股市场分析】【今日热点方向】【明日市场观察】。",
       "今日热点方向必须根据输入的hotSectors、行业新闻和市场变化选TOP5，不要固定只看AI、半导体、电力。",
@@ -540,6 +550,7 @@ function fallbackReport(input) {
   const dataSources = buildReportDataSources(normalized, "fallback");
   const stockBasics = buildStockBasics(stock);
   const currentQuote = buildCurrentQuote(stock);
+  const investorFit = buildInvestorFit(normalized);
   const companyAnalysis = {
     profile: stock.company?.profile ?? stock.profile ?? (stock.assetType === "ETF" ? `${stock.name ?? stock.code}为ETF标的，重点看跟踪指数、成分方向、规模和流动性。` : "公司简介由公告和年报继续补充。"),
     industry: stock.industry ?? stock.company?.industry ?? "行业由数据源补充",
@@ -569,6 +580,7 @@ function fallbackReport(input) {
     shortTermObservation: investmentDecision.shortTerm,
     midLongTermObservation: investmentDecision.midTerm,
     overallJudgement: `当前判断：${investmentDecision.rating}，评分${investmentDecision.score}/100，策略为${investmentDecision.action}；仅作为研究观察，不构成确定买卖建议。`,
+    investorFit,
     dataSources,
     companyAnalysis,
     recentChanges,
@@ -618,6 +630,7 @@ function normalizeOutput(output, fallback) {
     shortTermObservation: output.shortTermObservation ?? fallback.shortTermObservation,
     midLongTermObservation: output.midLongTermObservation ?? fallback.midLongTermObservation,
     overallJudgement: output.overallJudgement ?? fallback.overallJudgement,
+    investorFit: output.investorFit ?? fallback.investorFit,
     dataSources: output.dataSources ?? fallback.dataSources,
     investmentDecision,
     companyAnalysis: output.companyAnalysis ?? fallback.companyAnalysis,
@@ -685,6 +698,48 @@ function buildValuationAnalysis(stock = {}) {
     return `ETF标的不适用公司PE/PB财务估值，重点观察跟踪方向、成交额、基金规模和资金活跃度；当前成交额${stock.amount || "数据源未返回"}。`;
   }
   return `估值观察：PE ${stock.pe || "数据源未返回"}，PB ${stock.pb || "数据源未返回"}，总市值${stock.marketCap || "数据源未返回"}；需要结合行业估值和财务质量复核。`;
+}
+
+function buildInvestorFit(input = {}) {
+  const stock = input.stockData ?? {};
+  const profile = input.investmentProfile ?? {};
+  const focuses = asArray(profile.focusIndustries ?? profile.focus ?? profile.industries);
+  const text = `${stock.name ?? ""}${stock.industry ?? ""}${stock.assetType ?? ""}${stock.trackingIndex ?? ""}${asArray(stock.components).join("")}`;
+  const matched = focuses.filter((item) => item && text.includes(item));
+  const themeMatched = focuses.filter((item) => item && inferThemeMatch(text, item));
+  const allMatched = [...new Set([...matched, ...themeMatched])];
+  const score = Math.min(100, 45 + allMatched.length * 12 + (stock.assetType === "ETF" && allMatched.length ? 8 : 0));
+  const level = score >= 75 ? "高" : score >= 55 ? "中" : "低";
+  return {
+    score,
+    level,
+    matchedDirections: allMatched,
+    reasons: allMatched.length
+      ? allMatched.slice(0, 4).map((item) => `标的与用户关注方向“${item}”存在关联，需要结合行情、新闻和公告继续验证。`)
+      : ["当前标的与用户成长科技方向的直接匹配度不高，更多作为分散观察或基本面研究对象。"],
+    riskReminders: [
+      `用户当前试水资金${profile.trialCapital ?? "5000元"}，单一标的不宜过度集中。`,
+      `用户偏${profile.style ?? "成长科技方向"}，需防范题材波动和估值回撤。`,
+      "如果行情、新闻或公告数据不完整，需要降低本次判断权重。",
+    ],
+    positionReference: score >= 75 ? "低仓位观察，等待数据和趋势继续确认" : score >= 55 ? "保持观察仓位，不因单日波动提高暴露" : "暂不增加仓位，优先等待更明确的匹配信号",
+  };
+}
+
+function inferThemeMatch(text, theme) {
+  const source = String(text ?? "");
+  const target = String(theme ?? "");
+  const groups = {
+    "AI基础设施": /AI|人工智能|算力|服务器|光模块|通信|芯片|电力/,
+    "芯片": /芯片|半导体|集成电路|科创半导体/,
+    "电力": /电力|电网|能源|储能/,
+    "储能": /储能|电池|新能源|电力设备/,
+    "资源": /资源|煤炭|有色|石油|化工|玻纤|玻璃/,
+    "国产替代": /国产|替代|半导体|光刻机|芯片|信创/,
+    "光模块": /光模块|光通信|通信|CPO/,
+    "光刻机": /光刻机|半导体设备|芯片设备/,
+  };
+  return groups[target]?.test(source) ?? source.includes(target);
 }
 
 function buildReportDataSources(input = {}, aiSource = "fallback") {
@@ -818,7 +873,14 @@ function buildCompactInputSummary(input = {}) {
     industry: { hotSectors: marketData.hotSectors ?? [] },
     stock: { code: stock.code, name: stock.name, price: stock.price, changePercent: stock.changePercent, amount: stock.amount },
     company: { announcements: stock.announcements ?? [], financials: stock.financials ?? {} },
-    user: { preference: input.investmentProfile ?? input.profile ?? {}, riskData: input.riskData ?? input.risks ?? [] },
+    user: {
+      preference: input.investmentProfile ?? input.profile ?? {},
+      focusIndustries: input.investmentProfile?.focusIndustries ?? input.investmentProfile?.industries ?? [],
+      capitalSize: input.investmentProfile?.capitalSize,
+      trialCapital: input.investmentProfile?.trialCapital,
+      style: input.investmentProfile?.style,
+      riskData: input.riskData ?? input.risks ?? [],
+    },
   };
 }
 
