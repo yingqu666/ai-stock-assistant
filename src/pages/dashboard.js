@@ -1,4 +1,4 @@
-import { metricCard, opportunityCard, riskCard, sectorCard } from "../components/cards.js";
+import { metricCard, opportunityCard, riskCard } from "../components/cards.js";
 import { newsList } from "../components/lists.js";
 import { getDashboardData, refreshWorkbenchData } from "../services/mockService.js";
 
@@ -24,20 +24,26 @@ export async function renderDashboard() {
   } = await getDashboardData();
   const activeWatch = watchlist.filter((stock) => stock.alerts?.length > 0).slice(0, 3);
   const decision = aiSummary.investmentDecision ?? {};
+  const rankedSectors = rankSectors(hotSectors).slice(0, 7);
 
   return `
     <div class="dashboard-grid">
+      <section class="wide-section">
+        <div class="section-head"><h2>今日重点板块</h2><span>综合涨幅、成交额、资金活跃度和市场热度，最多7个</span></div>
+        <div class="card-grid">${rankedSectors.map(enhancedSectorCard).join("")}</div>
+      </section>
+
       <section class="hero-panel">
         <div class="section-head">
           <div>
-            <p class="eyebrow">今日策略</p>
-            <h2>每天 10 分钟研究 A 股</h2>
+            <p class="eyebrow">今日市场状态</p>
+            <h2>${normalizeMarketState(strategy.state, marketSentiment.summary)} · ${marketSentiment.summary}</h2>
           </div>
           <button id="refresh-data-button" type="button">刷新数据</button>
         </div>
         <div class="strategy-grid">
           <div><span>今日市场状态</span><strong>${strategy.state}</strong></div>
-          <div><span>AI综合评分</span><strong>${strategy.score}分</strong></div>
+          <div><span>市场热度</span><strong>${marketSentiment.heat ?? strategy.score}分</strong></div>
           <div><span>建议仓位</span><strong>${strategy.position}</strong></div>
         </div>
         <p class="ai-summary">${strategy.summary}</p>
@@ -46,62 +52,33 @@ export async function renderDashboard() {
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>今日AI投资经理</h2><span>${aiSummary.source ?? "AI/fallback"}</span></div>
-        <div class="metrics">
-          ${[
-            { label: "市场判断", value: normalizeTrend(decision.marketTrend ?? normalizeMarketState(strategy.state, marketSentiment.summary)), change: decision.rating ?? "中性观察" },
-            { label: "AI评分", value: `${decision.score ?? strategy.score ?? 60}/100`, change: "投资经理模型" },
-            { label: "当前建议仓位", value: positionPercent(decision.positionAdvice ?? strategy.position), change: decision.action ?? "等待" },
-          ].map(metricCard).join("")}
-        </div>
+        <div class="section-head"><h2>自选股变化</h2><span>价格、风险、新闻和AI观点</span></div>
         <div class="detail-grid compact">
-          <article class="data-card"><strong>今日重点</strong>${tagListSafe((decision.watchPoints ?? aiSummary.opportunities ?? []).slice(0, 5))}</article>
-          <article class="data-card"><strong>今日避免</strong>${tagListSafe((decision.risks ?? aiSummary.risks ?? []).slice(0, 3))}</article>
-          <article class="data-card"><strong>今日策略</strong><p>${decision.shortTerm ?? strategy.summary}</p></article>
+          ${watchlist.slice(0, 5).map((item) => `
+            <article class="data-card">
+              <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.changePercent ?? "涨跌待更新"}</span></div>
+              <p><b>价格</b>${item.price ?? "数据源未返回"} · <b>AI评级</b>${item.aiRating ?? item.aiLevel ?? "观察"} · <b>风险</b>${item.riskLevel ?? item.riskTips?.[0] ?? "常规跟踪"}</p>
+              <p><b>新闻</b>${item.latestNews ?? "暂无强相关新闻，继续观察公告和行情变化。"}</p>
+              <p><b>AI观点</b>${item.aiOpinion ?? "等待AI结合行情、新闻和公告继续更新。"}</p>
+            </article>
+          `).join("") || `<article class="data-card"><strong>暂无自选股</strong><p>进入“我的关注股票”添加观察标的后，这里会显示变化。</p></article>`}
         </div>
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>今日入口</h2><span>每天打开后先看这组信息</span></div>
-        <div class="metrics">
-          ${[
-            { label: "今日市场状态", value: normalizeMarketState(strategy.state, marketSentiment.summary), change: marketSentiment.summary },
-            { label: "AI综合评分", value: `${strategy.score ?? marketSentiment.heat ?? 0}分`, change: "0-100" },
-            { label: "市场风险等级", value: normalizeRiskLevel(strategy.risk ?? marketSentiment.riskLevel), change: "低 / 中 / 高" },
-          ].map(metricCard).join("")}
-        </div>
-        <div class="detail-grid compact">
-          <article class="data-card"><strong>今日重点</strong>${tagListSafe([...(aiSummary.opportunities ?? []), ...(hotSectors ?? []).map((item) => item.name)].slice(0, 5))}</article>
-          <article class="data-card"><strong>我的关注股票</strong><p>${watchlist.slice(0, 5).map((item) => `${item.name}：${item.aiLevel ?? "观察"}，风险 ${item.riskTips?.[0] ?? item.riskLevel ?? "常规跟踪"}`).join("；") || "暂无关注股票"}</p></article>
-          <article class="data-card"><strong>我的组合</strong><p>风险等级：${portfolioSummary?.aiAnalysis?.riskLevel ?? portfolioSummary?.concentrationRisk?.level ?? "暂无"}；行业集中度：${portfolioSummary?.aiAnalysis?.industryConcentration ?? "暂无持仓"}；最大风险：${portfolioSummary?.aiAnalysis?.maxRiskSource ?? "暂无"}</p></article>
-          <article class="data-card"><strong>PWA安装</strong><p>手机浏览器打开后可选择“添加到主屏幕”，用于每天快速查看早报、风险和自选股。</p></article>
+        <div class="section-head"><h2>AI策略建议</h2><span>${aiSummary.source ?? "AI/fallback"}</span></div>
+        <div class="detail-grid">
+          <article class="data-card"><strong>当前市场判断</strong><p>${decision.marketTrend ?? normalizeMarketState(strategy.state, marketSentiment.summary)}；${decision.shortTerm ?? strategy.summary}</p></article>
+          <article class="data-card"><strong>当前股票参与判断</strong><p>${decision.action ?? "等待"}；仓位参考：${positionPercent(decision.positionAdvice ?? strategy.position)}</p></article>
+          <article class="data-card"><strong>判断依据</strong>${tagListSafe(extractBasis(aiSummary, rankedSectors, marketSentiment).slice(0, 5))}</article>
+          <article class="data-card"><strong>风险因素</strong>${tagListSafe((decision.risks ?? aiSummary.risks ?? []).slice(0, 5))}</article>
+          <article class="data-card"><strong>操作思路</strong><p>${aiSummary.stockAdvice ?? "关注主线持续性，等待成交和新闻确认，不追高。"}</p></article>
         </div>
       </section>
 
       <section class="wide-section">
         <div class="section-head"><h2>市场概况</h2><span>数据更新时间：${updatedAt ?? refreshStatus.updatedAt}</span></div>
         <div class="metrics">${marketOverview.map(metricCard).join("")}</div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>市场情绪</h2><span>${marketSentiment.summary}</span></div>
-        <div class="metrics">
-          ${[
-            { label: "市场热度", value: `${marketSentiment.heat}分`, change: "实时" },
-            { label: "多空情绪", value: marketSentiment.longShort, change: "情绪" },
-            { label: "上涨/下跌", value: `${marketSentiment.upCount}/${marketSentiment.downCount}`, change: marketSentiment.riskLevel },
-          ].map(metricCard).join("")}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>AI市场总结</h2><span>自动分析生成</span></div>
-        <p class="answer">${aiSummary.summary}</p>
-        <div class="detail-grid">
-          <article class="data-card"><strong>关注方向</strong><p>${aiSummary.opportunities.join("、")}</p></article>
-          <article class="data-card"><strong>风险提醒</strong><p>${aiSummary.risks.join("；")}</p></article>
-          <article class="data-card"><strong>研究建议</strong><p>${aiSummary.stockAdvice}</p></article>
-        </div>
       </section>
 
       <section class="wide-section">
@@ -150,11 +127,6 @@ export async function renderDashboard() {
             </article>
           `).join("")}
         </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>热点板块</h2><span>关注状态、原因和风险</span></div>
-        <div class="card-grid">${hotSectors.map(sectorCard).join("")}</div>
       </section>
 
       <section class="wide-section">
@@ -226,4 +198,45 @@ function positionPercent(value = "") {
   if (/降低|闄嶄綆/.test(value)) return "0%-20%";
   if (/%/.test(value)) return value;
   return "30%-50%";
+}
+
+function rankSectors(sectors = []) {
+  return [...sectors].map((sector) => {
+    const changeScore = parseNumber(sector.changePercent ?? sector.change ?? sector.status) * 2;
+    const amountScore = /亿/.test(String(sector.amount ?? sector.turnover ?? sector.flow ?? "")) ? 18 : /万/.test(String(sector.amount ?? sector.turnover ?? sector.flow ?? "")) ? 10 : 6;
+    const activityScore = /流入|活跃|强|上涨|领涨|修复/.test(`${sector.status ?? ""}${sector.reason ?? ""}${sector.flow ?? ""}`) ? 18 : 10;
+    const heatScore = parseNumber(sector.heat ?? sector.score ?? sector.rank) || 10;
+    return { ...sector, compositeScore: Math.round(changeScore + amountScore + activityScore + Math.min(20, heatScore)) };
+  }).sort((a, b) => b.compositeScore - a.compositeScore);
+}
+
+function enhancedSectorCard(sector) {
+  return `
+    <article class="data-card sector-card">
+      <div class="card-head"><strong>${sector.name}</strong><span>综合${sector.compositeScore ?? "--"}分</span></div>
+      <p><b>市场表现</b>${sector.status ?? sector.changePercent ?? "活跃度待确认"}</p>
+      <p><b>成交/资金</b>${sector.amount ?? sector.flow ?? sector.turnover ?? "成交和资金由行情源补充"}</p>
+      <p><b>关注原因</b>${sector.reason ?? "结合涨幅、成交额、资金活跃度和市场热度筛选"}</p>
+      <p><b>风险</b>${sector.risk ?? "短线热度过高时需防止回落"}</p>
+    </article>`;
+}
+
+function extractBasis(aiSummary = {}, sectors = [], sentiment = {}) {
+  const evidence = aiSummary.evidence ?? aiSummary.conclusionBasis ?? {};
+  return [
+    `行业趋势：${sectors.slice(0, 3).map((item) => item.name).join("、") || "热点方向待确认"}`,
+    `市场环境：${sentiment.summary ?? "市场情绪待更新"}，上涨${sentiment.upCount ?? "?"}家/下跌${sentiment.downCount ?? "?"}家`,
+    ...flattenEvidence(evidence).slice(0, 3),
+  ].filter(Boolean);
+}
+
+function flattenEvidence(value) {
+  if (Array.isArray(value)) return value.map(String);
+  if (value && typeof value === "object") return Object.values(value).flatMap(flattenEvidence);
+  return value ? [String(value)] : [];
+}
+
+function parseNumber(value) {
+  const match = String(value ?? "").replace("+", "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : 0;
 }

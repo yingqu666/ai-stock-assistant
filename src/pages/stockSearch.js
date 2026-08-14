@@ -16,6 +16,7 @@ export async function renderStockSearch() {
   const aiStateText = aiPending ? "AI\u751f\u6210\u4e2d" : hasAiDecision ? (aiAnalysis.source ?? "AI") : (aiAnalysis.source ?? "AI\u672a\u751f\u6210");
   const report = buildAiDisplayReport(stockDetail, stockNews, aiAnalysis);
   const breakdown = scoreBreakdown(stockDetail, decision, aiAnalysis);
+  const qualityOpportunity = buildQualityOpportunity(stockDetail, breakdown, decision, aiAnalysis);
   const newsImpact = report.newsImpact
     ?? (stockNews.map((item) => `${item.title}：${item.impact}`).slice(0, 2).join("；") || `新闻更新时间：${stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt ?? empty}`);
 
@@ -56,6 +57,8 @@ export async function renderStockSearch() {
       <div class="metrics">
         ${[
           { label: "AI评级", value: hasAiDecision ? decision.rating : aiStateText, change: hasAiDecision ? `${decision.score}/100` : "尚无AI判断" },
+          { label: "股票质量评分", value: `${qualityOpportunity.quality}/100`, change: qualityOpportunity.qualityLabel },
+          { label: "当前机会评分", value: `${qualityOpportunity.opportunity}/100`, change: qualityOpportunity.opportunityLabel },
           { label: "短期判断", value: hasAiDecision ? decision.shortTerm : aiStateText, change: hasAiDecision ? decision.marketTrend : "等待AI返回" },
           { label: "一周判断", value: hasAiDecision ? decision.midTerm : aiStateText, change: hasAiDecision ? decision.action : "等待AI返回" },
           { label: "仓位建议", value: hasAiDecision ? decision.positionAdvice : "暂不生成", change: hasAiDecision ? `上涨${decision.probability?.up ?? "需观察"}` : "基础行情不受影响" },
@@ -64,8 +67,10 @@ export async function renderStockSearch() {
       <div class="detail-grid compact">
         ${infoCard("已有仓位", decision.action === "降低仓位" || decision.action === "回避" ? "降低仓位并观察风险变化" : "继续持有观察，跟踪成交和公告变化")}
         ${infoCard("没有仓位", decision.action === "关注" ? "关注回调后的研究机会" : "等待更明确的价格、成交和消息确认")}
+        ${infoCard("判断依据", buildDecisionBasis(stockDetail, stockNews, financials, breakdown).join("；"))}
         ${infoCard("核心原因", (decision.reasons ?? []).join("；"))}
         ${infoCard("风险", ensureAtLeast(decision.risks, ["行情波动", "数据延迟", "行业预期变化"], 3).join("；"))}
+        ${infoCard("操作思路", buildOperationIdea(qualityOpportunity, decision))}
       </div>
     </section>
 
@@ -133,7 +138,9 @@ export async function renderStockSearch() {
           <span>${item.time ?? item.date ?? stockDetail.sourceTimes?.newsUpdatedAt ?? empty}</span>
           <div>
             <strong>${linkOrText(item.title, item.link)}</strong>
-            <p>${item.source ?? "新闻"} | ${item.category ?? "新闻"} | 影响：${item.impact ?? "中性"}</p>
+            <p>${item.source ?? "新闻"} | ${item.category ?? "新闻"} | 影响：${normalizeImpact(item.impact ?? item.category)}</p>
+            <p><b>短期影响</b>${shortTermNewsImpact(item, stockDetail)}</p>
+            <p><b>长期影响</b>${longTermNewsImpact(item, stockDetail)}</p>
             ${(item.relatedIndustries ?? item.relatedThemes ?? []).length ? `<p>关联方向：${(item.relatedIndustries ?? item.relatedThemes).join("、")}</p>` : ""}
           </div>
         </article>
@@ -322,6 +329,97 @@ function scoreBreakdown(stock, decision = {}, aiAnalysis = {}) {
   const news = Math.min(20, 10 + ((stock.announcements ?? []).length * 2));
   const market = Math.max(5, Math.min(20, total - technical - capital - fundamental - news));
   return { total, technical, capital, fundamental, news, market };
+}
+
+function buildQualityOpportunity(stock, breakdown, decision = {}, aiAnalysis = {}) {
+  const financialReview = aiAnalysis.financialReview ?? {};
+  const valuationReview = aiAnalysis.valuationReview ?? {};
+  const quality = stock.assetType === "ETF"
+    ? clamp(Math.round(breakdown.fundamental * 3 + breakdown.capital * 2 + 24))
+    : clamp(Math.round(breakdown.fundamental * 3 + scoreFinancialQuality(stock, financialReview) + scoreValuationQuality(stock, valuationReview)));
+  const opportunity = clamp(Math.round(
+    breakdown.technical * 2
+    + breakdown.capital * 2
+    + breakdown.news
+    + breakdown.market
+    + (Number(decision.score) || breakdown.total) * 0.2,
+  ));
+  return {
+    quality,
+    opportunity,
+    qualityLabel: quality >= 75 ? "标的质量较好" : quality >= 55 ? "质量中等，继续验证" : "质量数据不足或偏弱",
+    opportunityLabel: opportunity >= 75 ? "当前机会较强" : opportunity >= 55 ? "适合观察等待" : "当前参与性偏弱",
+  };
+}
+
+function buildDecisionBasis(stock, news = [], financials = {}, breakdown = {}) {
+  return [
+    `行业趋势：${stock.industry ?? "行业数据暂缺"}`,
+    `市场环境：成交额${stock.amount ?? empty}，涨跌幅${stock.changePercent ?? empty}`,
+    stock.assetType === "ETF"
+      ? "财务数据：ETF不适用公司财务，重点看跟踪指数和资金变化"
+      : `财务数据：营收${financials.revenue ?? empty}，净利润${financials.netProfit ?? empty}，ROE${financials.roe ?? empty}`,
+    `新闻事件：${news[0]?.title ?? "暂无强相关新闻"}`,
+    `技术走势：技术面${breakdown.technical ?? "--"}/20，资金面${breakdown.capital ?? "--"}/20`,
+  ];
+}
+
+function buildOperationIdea(scores, decision = {}) {
+  if (scores.quality >= 70 && scores.opportunity >= 70) return `标的质量和当前机会都较好，适合放入重点观察，策略为${decision.action ?? "关注"}，但仍需等待成交和风险确认。`;
+  if (scores.quality >= 70 && scores.opportunity < 60) return "标的质量较好，但当前机会不足，更适合等待回调、缩量企稳或板块重新走强。";
+  if (scores.quality < 60 && scores.opportunity >= 70) return "短线机会较活跃，但标的质量或数据完整度不足，需要降低仓位预期并控制追高风险。";
+  return "质量和机会都需要继续验证，当前以观察和风险控制为主。";
+}
+
+function scoreFinancialQuality(stock, review = {}) {
+  if (stock.assetType === "ETF") return 20;
+  const financials = stock.financials ?? {};
+  let score = 10;
+  if (financials.netProfit && !String(financials.netProfit).includes("未返回")) score += 8;
+  if (financials.roe && !String(financials.roe).includes("未返回")) score += 8;
+  if (financials.grossMargin && !String(financials.grossMargin).includes("未返回")) score += 6;
+  if (/真实|partial/.test(String(review.status ?? financials.status ?? ""))) score += 4;
+  return Math.min(35, score);
+}
+
+function scoreValuationQuality(stock, review = {}) {
+  if (stock.assetType === "ETF") return 15;
+  const pe = Number(String(stock.pe ?? "").replace(",", ""));
+  const pb = Number(String(stock.pb ?? "").replace(",", ""));
+  let score = 12;
+  if (Number.isFinite(pe) && pe > 0 && pe < 35) score += 10;
+  if (Number.isFinite(pb) && pb > 0 && pb < 4) score += 8;
+  if (/偏高/.test(String(review.level ?? stock.valuationStatus ?? ""))) score -= 8;
+  return Math.max(0, Math.min(30, score));
+}
+
+function normalizeImpact(value = "") {
+  const text = String(value);
+  if (/利好|增长|回购|增持|中标|订单|向好/.test(text)) return "利好";
+  if (/利空|下滑|减持|亏损|处罚|风险/.test(text)) return "利空";
+  return "中性";
+}
+
+function shortTermNewsImpact(item = {}, stock = {}) {
+  const impact = normalizeImpact(item.impact ?? item.category);
+  const title = item.title ?? "该新闻";
+  if (impact === "利好") return `${title}短期可能提升${stock.name ?? "标的"}关注度，重点看成交额、涨跌幅和板块联动是否同步放大。`;
+  if (impact === "利空") return `${title}短期可能压制风险偏好，需观察价格是否放量走弱以及同行业是否扩散。`;
+  return `${title}短期影响偏中性，更多体现为信息补充，需等待行情和后续公告确认。`;
+}
+
+function longTermNewsImpact(item = {}, stock = {}) {
+  const impact = normalizeImpact(item.impact ?? item.category);
+  const industry = stock.industry ?? "相关行业";
+  if (impact === "利好") return `长期看需验证该事件能否转化为${industry}景气改善、订单增长或盈利质量提升，不能只依据单条新闻判断。`;
+  if (impact === "利空") return `长期看需跟踪该事件是否影响${industry}需求、盈利能力或估值中枢，若连续出现同类信息需降低预期。`;
+  return `长期影响取决于事件后续是否持续发酵，并与财务、公告和行业趋势相互验证。`;
+}
+
+function clamp(value) {
+  const n = Number(value);
+  if (!Number.isFinite(n)) return 60;
+  return Math.max(0, Math.min(100, Math.round(n)));
 }
 
 function scoreByChange(value) {
