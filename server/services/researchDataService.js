@@ -101,6 +101,7 @@ export async function getResearchData(query) {
     stockData: buildAiStockInput({
       security,
       quote,
+      detail,
       isEtf,
       announcements,
       financials,
@@ -415,6 +416,7 @@ function normalizeQuote(result, resolved) {
 }
 
 function normalizeFinancials(financials = {}, message = "") {
+  if (isRealStatus(financials.status)) return financials;
   if (financials.status === "真实数据") return financials;
   return {
     revenue: DATA_MISSING,
@@ -422,6 +424,7 @@ function normalizeFinancials(financials = {}, message = "") {
     netProfit: DATA_MISSING,
     netProfitYoY: DATA_MISSING,
     grossMargin: DATA_MISSING,
+    netMargin: DATA_MISSING,
     roe: DATA_MISSING,
     debtRatio: DATA_MISSING,
     cashFlow: DATA_MISSING,
@@ -444,6 +447,7 @@ function buildDataStatus({ quoteResult, detailResult, newsResult, announcements,
   if (newsResult.status === "real") sources.push(newsResult.source ?? "\u65b0\u95fb\u63a5\u53e3");
   if (announcements.length) sources.push("\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a");
   if (financials.status === "\u771f\u5b9e\u6570\u636e") sources.push(financials.source);
+  if (isRealStatus(financials.status)) sources.push(financials.source);
   const required = [quoteAvailable, Boolean(detailResult?.data), newsResult.status === "real"];
   const realCount = required.filter(Boolean).length;
   return {
@@ -466,13 +470,18 @@ function buildRiskData(data) {
   return risks;
 }
 
-function buildAiStockInput({ security, quote, isEtf, announcements, financials, dataStatus, dataSources, sourceTimes }) {
+function buildAiStockInput({ security, quote, detail = {}, isEtf, announcements, financials, dataStatus, dataSources, sourceTimes }) {
   return {
     name: valueOrEmpty(quote.name ?? security.name),
     code: valueOrEmpty(security.code ?? quote.code),
     assetType: isEtf ? "ETF" : "股票",
     market: valueOrEmpty(security.market),
     industry: valueOrEmpty(security.industry ?? quote.industry),
+    companyName: valueOrEmpty(detail.companyName ?? detail.name ?? security.name),
+    listingDate: valueOrEmpty(detail.listingDate),
+    profile: valueOrEmpty(detail.profile),
+    mainBusiness: valueOrEmpty(detail.mainBusiness),
+    industryPosition: valueOrEmpty(detail.industryPosition),
     price: valueOrEmpty(quote.price),
     changePercent: valueOrEmpty(quote.changePercent),
     changeAmount: valueOrEmpty(quote.changeAmount),
@@ -482,6 +491,14 @@ function buildAiStockInput({ security, quote, isEtf, announcements, financials, 
     marketCap: valueOrEmpty(quote.marketCap),
     pe: valueOrEmpty(quote.pe),
     pb: valueOrEmpty(quote.pb),
+    valuationStatus: valueOrEmpty(detail.valuationStatus),
+    valuationRange: detail.valuationRange ?? {},
+    trackingIndex: valueOrEmpty(detail.trackingIndex ?? quote.trackingIndex),
+    fundScale: valueOrEmpty(detail.fundScale ?? quote.fundScale ?? quote.marketCap),
+    inceptionDate: valueOrEmpty(detail.inceptionDate),
+    fundManager: valueOrEmpty(detail.fundManager),
+    components: Array.isArray(detail.components) && detail.components.length ? detail.components : (quote.components ?? []),
+    capitalFlow: valueOrEmpty(detail.capitalFlow ?? quote.capitalFlow),
     dataSource: valueOrEmpty(quote.source ?? quote.dataSource),
     quoteSource: valueOrEmpty(dataSources.quote),
     newsSource: valueOrEmpty(dataSources.news),
@@ -492,7 +509,25 @@ function buildAiStockInput({ security, quote, isEtf, announcements, financials, 
     updatedAt: valueOrEmpty(quote.updatedAt ?? sourceTimes?.quoteUpdatedAt),
     sourceTimes,
     announcements,
-    financials,
+    financials: normalizeAiFinancials(financials),
+  };
+}
+
+function normalizeAiFinancials(financials = {}) {
+  return {
+    revenue: valueOrEmpty(financials.revenue),
+    revenueYoY: valueOrEmpty(financials.revenueYoY),
+    netProfit: valueOrEmpty(financials.netProfit),
+    netProfitYoY: valueOrEmpty(financials.netProfitYoY),
+    grossMargin: valueOrEmpty(financials.grossMargin),
+    netMargin: valueOrEmpty(financials.netMargin),
+    roe: valueOrEmpty(financials.roe),
+    debtRatio: valueOrEmpty(financials.debtRatio),
+    cashFlow: valueOrEmpty(financials.cashFlow),
+    reportDate: valueOrEmpty(financials.reportDate),
+    source: valueOrEmpty(financials.source),
+    status: financials.status ?? "unavailable",
+    credibility: financials.credibility ?? {},
   };
 }
 
@@ -517,6 +552,10 @@ function buildDataSources({ quoteResult, newsResult, announcements, financials }
 
 function buildInvestmentProfile() {
   return { ...defaultInvestorProfile, focus: [...defaultInvestorProfile.focusIndustries] };
+}
+
+function isRealStatus(status) {
+  return ["真实数据", "real", "鐪熷疄鏁版嵁"].includes(String(status ?? ""));
 }
 
 function valueOrEmpty(value) {

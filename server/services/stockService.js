@@ -116,10 +116,10 @@ export async function getStockDetail(query) {
   }
 
   const [announcements, financials] = await Promise.all([
-    withTimeout(fetchAnnouncements(stock.code).catch(() => []), 700, () => []),
+    withTimeout(fetchAnnouncements(stock.code).catch(() => []), 1200, () => []),
     withTimeout(
       fetchFinancials(stock).catch(() => buildUnavailableFinancials(stock, "\u8d22\u52a1\u63a5\u53e3\u672a\u8fd4\u56de\uff0c\u4e0d\u5f71\u54cd\u57fa\u7840\u884c\u60c5\u5c55\u793a")),
-      700,
+      1200,
       () => buildUnavailableFinancials(stock, "\u8d22\u52a1\u63a5\u53e3\u54cd\u5e94\u8d85\u65f6\uff0c\u4e0d\u5f71\u54cd\u57fa\u7840\u884c\u60c5\u5c55\u793a"),
     ),
   ]);
@@ -452,14 +452,15 @@ async function fetchFinancials(stock) {
     "SECURITY_CODE",
     "REPORT_DATE",
     "REPORT_TYPE",
-    "TOTAL_OPERATE_INCOME",
-    "TOTAL_OPERATE_INCOME_YOY",
-    "PARENT_NETPROFIT",
-    "PARENT_NETPROFIT_YOY",
-    "GROSS_PROFIT_RATIO",
-    "ROE_WEIGHT",
-    "ASSET_LIAB_RATIO",
-    "NETCASH_OPERATE",
+    "TOTALOPERATEREVE",
+    "TOTALOPERATEREVETZ",
+    "PARENTNETPROFIT",
+    "PARENTNETPROFITTZ",
+    "XSMLL",
+    "XSJLL",
+    "ROEJQ",
+    "ZCFZL",
+    "NETCASH_OPERATE_PK",
     "NOTICE_DATE",
   ].join(",");
   const params = new URLSearchParams({
@@ -471,21 +472,22 @@ async function fetchFinancials(stock) {
     pageSize: "1",
     sortTypes: "-1",
     sortColumns: "REPORT_DATE",
-    source: "HSF10",
-    client: "PC",
+    source: "WEB",
+    client: "WEB",
   });
   const json = await fetchJson(`${eastmoneyFinanceApi}?${params.toString()}`);
   const row = json?.result?.data?.[0] ?? json?.data?.[0];
   if (!row) return buildUnavailableFinancials(stock);
   return {
-    revenue: formatAmount(row.TOTAL_OPERATE_INCOME),
-    revenueYoY: formatPercent(row.TOTAL_OPERATE_INCOME_YOY),
-    netProfit: formatAmount(row.PARENT_NETPROFIT),
-    netProfitYoY: formatPercent(row.PARENT_NETPROFIT_YOY),
-    grossMargin: formatPercent(row.GROSS_PROFIT_RATIO),
-    roe: formatPercent(row.ROE_WEIGHT),
-    debtRatio: formatPercent(row.ASSET_LIAB_RATIO),
-    cashFlow: formatAmount(row.NETCASH_OPERATE),
+    revenue: formatAmount(row.TOTALOPERATEREVE),
+    revenueYoY: formatPercent(row.TOTALOPERATEREVETZ),
+    netProfit: formatAmount(row.PARENTNETPROFIT),
+    netProfitYoY: formatPercent(row.PARENTNETPROFITTZ),
+    grossMargin: formatPercent(row.XSMLL),
+    netMargin: formatPercent(row.XSJLL),
+    roe: formatPercent(row.ROEJQ),
+    debtRatio: formatPercent(row.ZCFZL),
+    cashFlow: formatAmount(row.NETCASH_OPERATE_PK),
     reportDate: String(row.REPORT_DATE ?? row.NOTICE_DATE ?? "").slice(0, 10) || UNKNOWN,
     source: "\u4e1c\u65b9\u8d22\u5bccF10\u8d22\u52a1",
     updatedAt: nowText(),
@@ -607,6 +609,7 @@ function buildUnavailableFinancials(stock, reason = "\u8d22\u52a1\u63a5\u53e3\u6
     netProfit: notAvailable,
     netProfitYoY: notAvailable,
     grossMargin: notAvailable,
+    netMargin: notAvailable,
     roe: notAvailable,
     debtRatio: notAvailable,
     cashFlow: notAvailable,
@@ -838,7 +841,15 @@ async function fetchJson(url) {
     const controller = new AbortController();
       const timeout = setTimeout(() => controller.abort(), 1200);
     try {
-      const response = await fetch(target, { cache: "no-store", signal: controller.signal, headers: { Referer: "https://quote.eastmoney.com/" } });
+      const response = await fetch(target, {
+        cache: "no-store",
+        signal: controller.signal,
+        headers: {
+          Accept: "application/json,text/plain,*/*",
+          "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/126 Safari/537.36",
+          Referer: target.includes("datacenter.eastmoney.com") ? "https://emweb.securities.eastmoney.com/" : "https://quote.eastmoney.com/",
+        },
+      });
       if (!response.ok) throw new Error(`HTTP ${response.status}`);
       return await response.json();
     } catch (error) {
@@ -901,7 +912,9 @@ function analyzeAnnouncementImpact(title, code) {
 }
 
 function toFinanceSecuCode(code) {
-  return `${code}.${String(code).startsWith("6") ? "SH" : "SZ"}`;
+  const text = String(code ?? "");
+  if (text.startsWith("8") || text.startsWith("920")) return `${text}.BJ`;
+  return `${text}.${text.startsWith("6") || text.startsWith("5") ? "SH" : "SZ"}`;
 }
 
 function scoreStock(stock) {
