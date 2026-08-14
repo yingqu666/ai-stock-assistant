@@ -87,6 +87,8 @@ export async function renderDailyReport() {
             <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.assetType}</span></div>
             <p><b>AI评分：</b>${item.score}/100 · <b>当前判断：</b>${item.rating}</p>
             <p><b>短期：</b>${item.shortTerm} · <b>一周趋势：</b>${item.weekTrend} · <b>明日策略：</b>${item.action}</p>
+            <p><b>风险等级：</b>${item.riskLevel ?? "中"} · <b>最近新闻：</b>${item.latestNews ?? "暂无强相关新闻"}</p>
+            <p><b>AI观点：</b>${item.aiOpinion ?? "继续观察行情、公告和行业热度变化。"}</p>
             <p><b>核心原因：</b>${(item.reasons ?? []).slice(0, 3).join("；")}</p>
             <p><b>风险：</b>${(item.risks ?? []).slice(0, 3).join("；")}</p>
           </article>

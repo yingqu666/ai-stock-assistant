@@ -566,6 +566,7 @@ function compactOutputSchema() {
     industryLogic: { industry: "行业", logic: "行业逻辑", catalysts: ["催化因素"], marketReference: ["市场参考"] },
     financialReview: { status: "状态", source: "财务来源", revenue: "营收", netProfit: "净利润", roe: "ROE", grossMargin: "毛利率", netMargin: "净利率", debtRatio: "资产负债率", cashFlow: "现金流", summary: "财务评价" },
     valuationReview: { pe: "PE", pb: "PB", level: "估值状态", summary: "估值评价" },
+    scoreBreakdown: { industryTrend: "行业趋势0-20", financialQuality: "财务质量0-20", valuationLevel: "估值水平0-20", marketAttention: "市场关注0-20", riskControl: "风险控制0-20", total: "综合0-100", classification: "成长/价值/周期/ETF/综合" },
     riskLevel: "低/中/高",
     investorMatch: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
     upsideLogic: ["看好逻辑，最多3条"],
@@ -598,6 +599,7 @@ function fallbackReport(input) {
   const industryLogic = buildIndustryLogic(stock, market, news);
   const financialReview = buildFinancialReview(stock);
   const valuationReview = buildValuationReview(stock);
+  const scoreBreakdown = buildScoreBreakdown(normalized, investmentDecision.score);
   const companyAnalysis = {
     profile: stock.company?.profile ?? stock.profile ?? (stock.assetType === "ETF" ? `${stock.name ?? stock.code}为ETF标的，重点看跟踪指数、成分方向、规模和流动性。` : "公司简介由公告和年报继续补充。"),
     industry: stock.industry ?? stock.company?.industry ?? "行业由数据源补充",
@@ -626,6 +628,7 @@ function fallbackReport(input) {
     industryLogic,
     financialReview,
     valuationReview,
+    scoreBreakdown,
     riskLevel: buildRiskLevel(investmentDecision.score, riskAnalysis),
     investorMatch: investorFit,
     upsideLogic: investmentDecision.reasons.slice(0, 5),
@@ -682,6 +685,7 @@ function normalizeOutput(output, fallback) {
     industryLogic: output.industryLogic ?? fallback.industryLogic,
     financialReview: output.financialReview ?? fallback.financialReview,
     valuationReview: output.valuationReview ?? fallback.valuationReview,
+    scoreBreakdown: output.scoreBreakdown ?? fallback.scoreBreakdown,
     riskLevel: output.riskLevel ?? fallback.riskLevel,
     investorMatch: output.investorMatch ?? output.investorFit ?? fallback.investorMatch ?? fallback.investorFit,
     upsideLogic: Array.isArray(output.upsideLogic) ? output.upsideLogic : fallback.upsideLogic,
@@ -841,6 +845,44 @@ function buildRiskLevel(score, riskAnalysis = {}) {
   if (score < 55 || riskCount >= 7) return "高";
   if (score < 70 || riskCount >= 4) return "中";
   return "低";
+}
+
+function buildScoreBreakdown(input = {}, totalScore = 60) {
+  const stock = input.stockData ?? {};
+  const industryTrend = scoreIndustryTrend(stock, input.marketData);
+  const financialQuality = scoreFundamental(stock);
+  const valuationLevel = scoreValuation(stock);
+  const marketAttention = scoreCapital(stock, input.marketData);
+  const riskControl = Math.max(0, Math.min(20, 20 - asArray(input.riskData).length * 3));
+  return {
+    industryTrend,
+    financialQuality,
+    valuationLevel,
+    marketAttention,
+    riskControl,
+    total: clampScore(totalScore),
+    classification: classifyStockStyle(stock),
+  };
+}
+
+function scoreIndustryTrend(stock = {}, market = {}) {
+  const industry = String(stock.industry ?? "");
+  const matched = asArray(market.hotSectors).some((item) => industry && (String(item.name).includes(industry) || industry.includes(item.name)));
+  if (matched) return 17;
+  if (/半导体|芯片|AI|人工智能|电池|新能源|软件|通信|煤炭|白酒|银行/.test(industry)) return 13;
+  return 10;
+}
+
+function scoreValuation(stock = {}) {
+  if (stock.assetType === "ETF") return 12;
+  const pe = parseNumeric(stock.pe);
+  const pb = parseNumeric(stock.pb);
+  let score = 10;
+  if (Number.isFinite(pe) && pe > 0 && pe < 35) score += 5;
+  if (Number.isFinite(pb) && pb > 0 && pb < 4) score += 4;
+  if (Number.isFinite(pe) && pe > 80) score -= 4;
+  if (Number.isFinite(pb) && pb > 8) score -= 3;
+  return Math.max(0, Math.min(20, score));
 }
 
 function buildValuationAnalysis(stock = {}) {

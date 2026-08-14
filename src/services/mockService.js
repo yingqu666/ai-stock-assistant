@@ -12,7 +12,7 @@ import {
   stockDatabase,
   userPortfolio,
 } from "../data.js";
-import { buildAiResearchInput, buildPrompt, generateAiAnalysis, generateDailyReports } from "./aiService.js";
+import { buildAiResearchInput, buildPrompt, generateAiAnalysis, generateDailyReports, getAiStatus } from "./aiService.js";
 import { answerInvestmentQuestion } from "./aiService.js";
 import { getAiAccuracyStats, getAiHistoryRecords } from "./historyService.js";
 import { getMarketSnapshot } from "./marketService.js";
@@ -87,11 +87,12 @@ function getPortfolioKey() {
 }
 
 export async function getDashboardData() {
-  const [market, newsSnapshot, syncedWatchlist, portfolio] = await Promise.all([
+  const [market, newsSnapshot, syncedWatchlist, portfolio, aiStatus] = await Promise.all([
     getCachedMarketData(),
     getCachedNewsData(),
     getSyncedWatchlist(),
     getPortfolioSummary().catch(() => null),
+    getAiStatus().catch(() => ({ label: "Fallback模式", connected: false, provider: "fallback" })),
   ]);
   const watchlistSnapshot = syncedWatchlist.items ?? [];
   const risks = analyzeRisks({ watchlist: watchlistSnapshot, newsEvents: newsSnapshot.stockNews, marketData: market });
@@ -109,6 +110,7 @@ export async function getDashboardData() {
     watchlist: watchlistSnapshot,
     portfolioSummary: portfolio,
     aiSummary,
+    aiStatus,
     taskStatus: getTaskStatus(),
     riskSignals: risks,
     refreshStatus: getRefreshStatus(),

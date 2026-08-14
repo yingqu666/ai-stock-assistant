@@ -14,6 +14,7 @@ export async function renderDashboard() {
     riskAlerts,
     watchlist,
     aiSummary,
+    aiStatus,
     taskStatus,
     riskSignals,
     refreshStatus,
@@ -120,7 +121,7 @@ export async function renderDashboard() {
           ${[
             { label: "行情", value: source?.includes("模拟") ? "🟡 部分回退" : "🟢 东方财富真实数据", change: updatedAt ?? refreshStatus.updatedAt },
             { label: "新闻", value: refreshStatus.newsOk ? "🟢 东方财富公告/快讯" : "🟡 备用新闻", change: refreshStatus.updatedAt },
-            { label: "AI", value: "🟡 fallback模式", change: "可在设置中切API" },
+            { label: "AI", value: aiStatus?.connected ? "🟢 真实AI模型" : "🟡 fallback模式", change: aiStatus?.provider ?? aiStatus?.label ?? "AI状态" },
           ].map(metricCard).join("")}
         </div>
       </section>

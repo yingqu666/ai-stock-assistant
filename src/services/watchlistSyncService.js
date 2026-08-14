@@ -138,7 +138,11 @@ async function enrichWatchlistQuotes(items) {
       id: item.id,
       groupName: item.groupName,
       reason: item.reason,
-      aiLevel: item.aiLevel,
+      aiLevel: stock.aiReport?.investmentDecision?.rating ?? stock.aiRating ?? item.aiLevel,
+      aiRating: stock.aiReport?.investmentDecision?.rating ?? stock.aiRating ?? item.aiRating,
+      riskLevel: stock.aiReport?.riskLevel ?? stock.riskLevel ?? item.riskLevel,
+      latestNews: stock.stockNews?.[0]?.title ?? stock.latestNews ?? item.latestNews,
+      aiOpinion: stock.aiReport?.overallJudgement ?? stock.aiReport?.stockAnalysis ?? stock.aiOpinion ?? item.aiOpinion,
       addedAt: item.addedAt,
       stockCode: item.code,
       stockName: stock.name ?? item.name,
@@ -228,12 +232,16 @@ function normalizeItems(items) {
 }
 
 function normalizeItem(item) {
+  const code = item.code ?? item.stockCode;
+  const name = item.name ?? item.stockName;
+  const riskLevel = item.riskLevel ?? deriveRiskLevel(item);
+  const aiLevel = item.aiLevel ?? item.aiRating ?? "观察";
   return {
     id: item.id,
-    code: item.code ?? item.stockCode,
-    stockCode: item.stockCode ?? item.code,
-    name: item.name ?? item.stockName,
-    stockName: item.stockName ?? item.name,
+    code,
+    stockCode: item.stockCode ?? code,
+    name,
+    stockName: item.stockName ?? name,
     assetType: item.assetType ?? "股票",
     market: item.market ?? "待补充",
     industry: item.industry ?? "待补充",
@@ -249,8 +257,32 @@ function normalizeItem(item) {
     groupName: item.groupName ?? "长期观察",
     addedAt: item.addedAt ?? item.createdAt ?? new Date().toLocaleString("zh-CN", { hour12: false }),
     reason: item.reason ?? "",
-    aiLevel: item.aiLevel ?? "观察",
+    aiLevel,
+    aiRating: item.aiRating ?? aiLevel,
+    riskLevel,
+    latestNews: item.latestNews ?? pickLatestNews(item),
+    aiOpinion: item.aiOpinion ?? buildWatchlistOpinion({ ...item, code, name, aiLevel, riskLevel }),
     riskTips: item.riskTips ?? [],
     researchReport: item.researchReport,
   };
+}
+
+function pickLatestNews(item) {
+  const first = item.stockNews?.[0] ?? item.news?.[0] ?? item.announcements?.[0];
+  return first?.title ?? "暂无强相关新闻，继续观察公告和行情变化。";
+}
+
+function buildWatchlistOpinion(item) {
+  const name = item.name ?? item.code ?? "该标的";
+  const rating = item.aiLevel ?? item.aiRating ?? "观察";
+  const risk = item.riskLevel ?? "中";
+  return `${name}当前AI评级为${rating}，风险等级${risk}，重点跟踪涨跌幅、成交额、新闻公告和行业热度变化。`;
+}
+
+function deriveRiskLevel(item) {
+  const change = Number(String(item.changePercent ?? item.change ?? "").replace("%", "").replace("+", ""));
+  if (Number.isFinite(change) && Math.abs(change) >= 5) return "高";
+  if ((item.riskTips ?? []).length >= 2 || /风险|回避|降低/.test(String(item.aiLevel ?? item.aiRating ?? ""))) return "高";
+  if (Number.isFinite(change) && Math.abs(change) >= 2) return "中";
+  return "中";
 }

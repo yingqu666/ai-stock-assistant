@@ -210,8 +210,20 @@ export function generateRuleBasedAnalysis(input) {
   const evidence = buildEvidence(input);
   const credibility = scoreCredibility({ marketData: input.marketData, stock, newsEvents, riskData: input.riskData });
   const investmentDecision = buildRuleInvestmentDecision(input);
+  const assetProfile = buildAssetProfile(stock);
+  const financialReview = buildFinancialReview(stock);
+  const valuationReview = buildValuationReview(stock);
+  const scoreBreakdown = buildScoreBreakdown(input, investmentDecision.score);
+  const investorMatch = buildInvestorMatch(input, investmentDecision.score);
+  const riskLevel = buildRiskLevel(investmentDecision.score, input.riskData);
 
   return {
+    assetProfile,
+    financialReview,
+    valuationReview,
+    scoreBreakdown,
+    investorMatch,
+    riskLevel,
     companyAnalysis: {
       profile: stock.profile ?? (stock.assetType === "ETF" ? `${stockName}为ETF标的，重点看跟踪指数、规模、流动性和成分方向。` : "公司简介由公告和年报继续补充。"),
       industry: stock.industry ?? missing,
@@ -324,6 +336,12 @@ function normalizeAiOutput(output, input, source) {
     ...output,
     investmentDecision: normalizeInvestmentDecision(output.investmentDecision ?? fallback.investmentDecision, input),
     companyAnalysis: output.companyAnalysis ?? fallback.companyAnalysis,
+    assetProfile: output.assetProfile ?? fallback.assetProfile,
+    financialReview: output.financialReview ?? fallback.financialReview,
+    valuationReview: output.valuationReview ?? fallback.valuationReview,
+    scoreBreakdown: output.scoreBreakdown ?? fallback.scoreBreakdown,
+    investorMatch: output.investorMatch ?? output.investorFit ?? fallback.investorMatch,
+    riskLevel: output.riskLevel ?? fallback.riskLevel,
     recentChanges: output.recentChanges ?? fallback.recentChanges,
     investmentLogic: output.investmentLogic ?? fallback.investmentLogic,
     riskAnalysis: output.riskAnalysis ?? fallback.riskAnalysis,
@@ -563,6 +581,134 @@ function scoreFundamental(stock = {}) {
   const pe = parseFloat(String(stock.pe ?? "").replace(",", ""));
   if (Number.isFinite(pe) && pe > 0 && pe < 40) score += 4;
   return Math.min(20, score);
+}
+
+function buildAssetProfile(stock = {}) {
+  const classification = classifyStockStyle(stock);
+  return {
+    assetType: stock.assetType ?? "股票",
+    stockStyle: classification,
+    industry: stock.industry ?? missing,
+    summary: `${stock.name ?? stock.code ?? "当前标的"}类型为${classification}，行业为${stock.industry ?? missing}。`,
+  };
+}
+
+function classifyStockStyle(stock = {}) {
+  if (stock.assetType === "ETF") return "ETF";
+  const text = `${stock.name ?? ""}${stock.industry ?? ""}${stock.mainBusiness ?? ""}`;
+  if (/煤炭|石油|有色|钢铁|化工|玻璃|玻纤|资源/.test(text)) return "周期";
+  if (/银行|保险|白酒|消费|公用事业|高速|电力/.test(text)) return "价值";
+  if (/半导体|芯片|软件|电池|新能源|通信|AI|人工智能|光模块|创新|算力/.test(text)) return "成长";
+  const pe = parseNumeric(stock.pe);
+  const pb = parseNumeric(stock.pb);
+  if (Number.isFinite(pe) && pe > 45) return "成长";
+  if (Number.isFinite(pb) && pb < 1.2) return "价值";
+  return "综合";
+}
+
+function buildFinancialReview(stock = {}) {
+  const f = stock.financials ?? {};
+  if (stock.assetType === "ETF") {
+    return { status: "not_applicable", summary: "ETF不适用公司财务指标，重点观察跟踪指数、规模、流动性和成分方向。" };
+  }
+  const available = ["revenue", "netProfit", "roe", "grossMargin", "netMargin", "debtRatio", "cashFlow"].filter((key) => !isMissingField(f[key]));
+  return {
+    status: f.status ?? (available.length ? "partial" : "unavailable"),
+    source: f.source ?? missing,
+    reportDate: f.reportDate ?? "",
+    revenue: f.revenue ?? "",
+    netProfit: f.netProfit ?? "",
+    roe: f.roe ?? "",
+    grossMargin: f.grossMargin ?? "",
+    netMargin: f.netMargin ?? "",
+    debtRatio: f.debtRatio ?? "",
+    cashFlow: f.cashFlow ?? "",
+    summary: available.length
+      ? `财务可用字段${available.length}/7：营收${f.revenue ?? missing}，净利润${f.netProfit ?? missing}，ROE${f.roe ?? missing}。`
+      : "财务数据缺失，AI分析会降低基本面权重。",
+  };
+}
+
+function buildValuationReview(stock = {}) {
+  if (stock.assetType === "ETF") {
+    return { status: "not_applicable", summary: "ETF不使用公司PE/PB作为核心估值，重点看跟踪指数估值和资金流向。" };
+  }
+  const pe = parseNumeric(stock.pe);
+  const pb = parseNumeric(stock.pb);
+  const peLabel = Number.isFinite(pe) ? (pe > 60 ? "偏高" : pe < 12 ? "偏低" : "中性") : "缺失";
+  const pbLabel = Number.isFinite(pb) ? (pb > 6 ? "偏高" : pb < 1.2 ? "偏低" : "中性") : "缺失";
+  return {
+    pe: stock.pe ?? "",
+    pb: stock.pb ?? "",
+    level: peLabel === "偏高" || pbLabel === "偏高" ? "偏高" : peLabel === "缺失" && pbLabel === "缺失" ? "数据不足" : "可观察",
+    summary: `PE ${stock.pe ?? "缺失"}（${peLabel}），PB ${stock.pb ?? "缺失"}（${pbLabel}）。`,
+  };
+}
+
+function buildScoreBreakdown(input = {}, totalScore = 60) {
+  const stock = input.stockData ?? input.stockQuote ?? {};
+  return {
+    industryTrend: scoreIndustryTrend(stock, input.marketData),
+    financialQuality: scoreFundamental(stock),
+    valuationLevel: scoreValuation(stock),
+    marketAttention: scoreCapital(stock, input.marketData),
+    riskControl: Math.max(0, Math.min(20, 20 - asList(input.riskData ?? input.risks).length * 3)),
+    total: clampScore(totalScore),
+    classification: classifyStockStyle(stock),
+  };
+}
+
+function buildInvestorMatch(input = {}, score = 60) {
+  const stock = input.stockData ?? input.stockQuote ?? {};
+  const profile = input.investmentProfile ?? {};
+  const focus = profile.focusIndustries ?? profile.focus ?? [];
+  const text = `${stock.industry ?? ""}${stock.name ?? ""}${stock.mainBusiness ?? ""}`;
+  const matched = asList(focus).filter((item) => text.includes(item));
+  const matchScore = clampScore(score + matched.length * 5 - (stock.assetType === "ETF" ? 0 : 5));
+  return {
+    score: matchScore,
+    level: matchScore >= 75 ? "高" : matchScore >= 55 ? "中" : "低",
+    reasons: matched.length ? matched.map((item) => `匹配用户关注方向：${item}`) : ["与用户画像暂无强匹配，需要降低结论置信度。"],
+    riskReminders: ["资金规模较小，单一标的不宜过度集中。", "成长科技方向波动较大，需要控制追高风险。"],
+    positionReference: scoreToPosition(matchScore),
+  };
+}
+
+function buildRiskLevel(score, risks = []) {
+  const count = asList(risks).length;
+  if (score < 55 || count >= 4) return "高";
+  if (score < 70 || count >= 2) return "中";
+  return "低";
+}
+
+function scoreIndustryTrend(stock = {}, market = {}) {
+  const industry = String(stock.industry ?? "");
+  const matched = (market.hotSectors ?? []).some((item) => industry && (String(item.name).includes(industry) || industry.includes(item.name)));
+  if (matched) return 17;
+  if (/半导体|芯片|AI|人工智能|电池|新能源|软件|通信|煤炭|白酒|银行/.test(industry)) return 13;
+  return 10;
+}
+
+function scoreValuation(stock = {}) {
+  if (stock.assetType === "ETF") return 12;
+  const pe = parseNumeric(stock.pe);
+  const pb = parseNumeric(stock.pb);
+  let score = 10;
+  if (Number.isFinite(pe) && pe > 0 && pe < 35) score += 5;
+  if (Number.isFinite(pb) && pb > 0 && pb < 4) score += 4;
+  if (Number.isFinite(pe) && pe > 80) score -= 4;
+  if (Number.isFinite(pb) && pb > 8) score -= 3;
+  return Math.max(0, Math.min(20, score));
+}
+
+function parseNumeric(value) {
+  const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : NaN;
+}
+
+function isMissingField(value) {
+  const text = String(value ?? "").trim();
+  return !text || /暂无|缺失|未返回|不适用|接口异常|数据源未返回/.test(text);
 }
 
 function scoreNews(news = [], announcements = []) {

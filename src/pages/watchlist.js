@@ -20,7 +20,8 @@ function portfolioRow(stock, groups) {
         <strong>${stock.name}</strong>
         <small>${stock.code} · ${stock.assetType ?? "股票"} · ${stock.groupName ?? "长期观察"} · ${stock.industry ?? "行业待补充"}</small>
         <p>${stock.reason || "已加入长期观察，等待行情、新闻和公告继续验证。"}</p>
-        <p><b>价格：</b>${stock.price ?? "暂无"} · <b>涨跌幅：</b>${stock.changePercent ?? "暂无"} · <b>风险：</b>${stock.riskText ?? firstRisk(stock)}</p>
+        <p><b>价格：</b>${stock.price ?? "暂无"} · <b>涨跌幅：</b>${stock.changePercent ?? "暂无"} · <b>AI评级：</b>${stock.aiRating ?? stock.aiLevel ?? "观察"} · <b>风险：</b>${stock.riskLevel ?? stock.riskText ?? firstRisk(stock)}</p>
+        <p><b>最近新闻：</b>${stock.latestNews ?? "暂无强相关新闻，继续观察公告和行情变化。"}</p>
       </div>
       <span>${stock.aiLevel}</span>
       <div class="row-actions">
@@ -45,7 +46,10 @@ function stockDetailCard(stock) {
         <p><b>行业</b>${stock.industry ?? "待补充"}</p>
         <p><b>成交额</b>${stock.amount ?? "暂无"}</p>
         <p><b>换手率</b>${stock.turnoverRate ?? "暂无"}</p>
-        <p><b>AI关注等级</b>${stock.aiLevel ?? "观察"}</p>
+        <p><b>AI评级</b>${stock.aiRating ?? stock.aiLevel ?? "观察"}</p>
+        <p><b>风险等级</b>${stock.riskLevel ?? "中"}</p>
+        <p><b>AI观点</b>${stock.aiOpinion ?? "等待AI结合行情、新闻和公告继续更新。"}</p>
+        <p><b>最近新闻</b>${stock.latestNews ?? "暂无强相关新闻。"}</p>
         <p><b>数据来源</b>${stock.dataSource ?? "云端/本地"} · ${stock.dataStatus ?? "部分真实"}</p>
       </div>
     </article>`;
