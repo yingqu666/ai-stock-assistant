@@ -64,7 +64,7 @@ const reportSchema = {
   },
   investmentDecision: {
     score: "0-100",
-    rating: "强烈关注/积极关注/中性观察/等待机会/风险较高",
+    rating: "重点关注/可以观察/等待机会/暂不参与/风险较高",
     marketTrend: "上涨/震荡偏强/震荡/偏弱/下跌",
     shortTerm: "1-5天趋势判断",
     midTerm: "1-4周趋势判断",
@@ -519,7 +519,8 @@ function buildPrompt({ task, input, outputSchema }) {
       "必须引用当前价格、涨跌幅、成交额、PE、PB、行业；如果财务字段存在，也要引用ROE和净利润。",
       "新闻最多使用输入中的3条，公告最多使用3条，优先个股相关新闻，保留真实来源名称。",
       "结合投资者画像输出匹配度、关注理由、风险提醒和仓位参考。",
-      "评级只能使用：强烈关注、积极关注、中性观察、等待机会、风险较高。",
+      "评级只能使用：重点关注、可以观察、等待机会、暂不参与、风险较高。",
+      "评分只能作为辅助信息，必须先给当前判断，再说明行业、行情、财务、新闻、公告和风险依据。",
       "action只能使用：关注、等待、持有、降低仓位、回避。",
       "禁止确定买入、确定卖出、保证收益。没有数据时明确写数据缺失。",
     ],
@@ -546,7 +547,8 @@ function buildLegacyPrompt({ task, input, outputSchema }) {
       "每日市场报告固定包含【今日A股市场分析】【今日热点方向】【明日市场观察】。",
       "今日热点方向必须根据输入的hotSectors、行业新闻和市场变化选TOP5，不要固定只看AI、半导体、电力。",
       "AI投资判断必须包含综合评分、评级、短期趋势、中期趋势、关注条件、风险条件。",
-      "评级只能使用：强烈关注、积极关注、中性观察、等待机会、风险较高。",
+      "评级只能使用：重点关注、可以观察、等待机会、暂不参与、风险较高。",
+      "评分只能作为辅助信息，必须先给当前判断，再说明行业、行情、财务、新闻、公告和风险依据。",
       "action只能使用：关注、等待、持有、降低仓位、回避。",
       "每个结论必须引用依据来源，例如东方财富行情、东方财富快讯、东方财富公告、财务接口、用户自选股。",
       "没有实时数据时，不要生成虚假分析，必须说明数据源未返回和更新时间。",
@@ -574,7 +576,7 @@ function compactOutputSchema() {
     shortTermObservation: "短期观察，1-5天",
     midLongTermObservation: "长期观察，1-4周",
     riskAnalysis: { industryRisks: ["行业风险"], companyRisks: ["公司/标的风险"], marketRisks: ["市场风险"] },
-    investmentDecision: { score: "0-100", rating: "评级", action: "关注/等待/持有/降低仓位/回避", positionAdvice: "仓位参考", reasons: ["依据"], risks: ["风险"], watchPoints: ["观察条件"] },
+    investmentDecision: { score: "0-100辅助分", rating: "重点关注/可以观察/等待机会/暂不参与/风险较高", action: "关注/等待/持有/降低仓位/回避", positionAdvice: "仓位参考", reasons: ["必须引用行业/行情/财务/新闻/公告依据"], risks: ["风险"], watchPoints: ["观察条件"] },
     investorFit: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
     dataSources: { quote: "行情来源", announcement: "公告来源", news: "新闻来源", ai: "DeepSeek" },
     evidence: { stock: ["行情/行业依据"], news: ["新闻依据"], announcement: ["公告依据"], financial: ["财务依据"], risk: ["风险依据"] },
@@ -635,7 +637,7 @@ function fallbackReport(input) {
     valuationAnalysis: buildValuationAnalysis(stock),
     shortTermObservation: investmentDecision.shortTerm,
     midLongTermObservation: investmentDecision.midTerm,
-    overallJudgement: `当前判断：${investmentDecision.rating}，评分${investmentDecision.score}/100，策略为${investmentDecision.action}；仅作为研究观察，不构成确定买卖建议。`,
+    overallJudgement: `当前判断：${investmentDecision.rating}；综合评分${investmentDecision.score}/100仅作辅助。策略为${investmentDecision.action}，需结合行业、行情、财务、新闻公告和风险变化复核。`,
     investorFit,
     dataSources,
     companyAnalysis,
@@ -646,7 +648,7 @@ function fallbackReport(input) {
     marketSummary: buildMarketSummary(market),
     coreLogic: "结合指数表现、成交额、涨跌家数、热点行业、新闻公告和用户关注标的进行结构化研究。",
     industryAnalysis: formatHotDirections(hotDirections),
-    stockAnalysis: `${stock.name ?? stock.code ?? "当前标的"}：当前评级 ${investmentDecision.rating}，评分 ${investmentDecision.score}/100，需继续跟踪行情、新闻、公告和财务变化。`,
+    stockAnalysis: `${stock.name ?? stock.code ?? "当前标的"}：当前判断 ${investmentDecision.rating}，综合评分 ${investmentDecision.score}/100仅作辅助，核心依据来自行情、行业、新闻公告和财务变化。`,
     hotDirections,
     opportunities: hotDirections.map((item) => item.name).slice(0, 5),
     risks: flattenRiskAnalysis({ riskAnalysis, investmentDecision }).slice(0, 8),
@@ -655,7 +657,7 @@ function fallbackReport(input) {
       ...hotDirections.slice(0, 3).map((item) => `跟踪${item.name}持续性`),
       stock.code ? `复核${stock.name ?? stock.code}公告、新闻和成交变化` : "检查自选股公告和新闻变化",
     ].slice(0, 6),
-    conclusion: `当前AI判断：${investmentDecision.rating}，评分${investmentDecision.score}/100，策略为${investmentDecision.action}。`,
+    conclusion: `当前AI判断：${investmentDecision.rating}；综合评分${investmentDecision.score}/100仅作辅助，策略为${investmentDecision.action}。`,
     basis: flattenEvidence(evidence),
     evidence,
   };
@@ -1138,17 +1140,22 @@ function scoreAiQuality(result, input = {}) {
 
 function formatStructuredAnswer(result) {
   const decision = result.investmentDecision ?? {};
+  const evidence = result.evidence ?? {};
   return [
     "【AI投资判断】",
-    `评级：${decision.rating ?? "中性观察"}`,
-    `评分：${decision.score ?? 60}/100`,
+    `当前判断：${decision.rating ?? "可以观察"}`,
+    `综合评分：${decision.score ?? 60}/100（辅助参考，不代表可以买）`,
     `趋势：${decision.marketTrend ?? "震荡"}`,
     `短期：${decision.shortTerm ?? "1-5天观察"}`,
     `中期：${decision.midTerm ?? "1-4周观察"}`,
     `策略：${decision.action ?? "等待"}，${decision.positionAdvice ?? "保持当前仓位"}`,
     "",
     "【依据】",
-    ...flattenEvidence(result.basis ?? result.evidence ?? []).slice(0, 8),
+    `行业：${flattenEvidence(evidence.industry ?? result.industryLogic?.marketReference ?? []).slice(0, 2).join("；") || "行业数据不足"}`,
+    `行情：${flattenEvidence(evidence.stock ?? result.currentQuote ?? []).slice(0, 3).join("；") || "行情数据不足"}`,
+    `财务：${flattenEvidence(evidence.financial ?? result.financialReview?.summary ?? []).slice(0, 2).join("；") || "财务数据不足"}`,
+    `新闻：${flattenEvidence(evidence.news ?? []).slice(0, 2).join("；") || "新闻数据不足"}`,
+    `公告：${flattenEvidence(evidence.announcement ?? []).slice(0, 2).join("；") || "公告数据不足"}`,
     "",
     "【风险】",
     ...(result.risks ?? flattenRiskAnalysis(result)).slice(0, 6),
@@ -1235,7 +1242,15 @@ function recordAiCall({ task, model, startedAt, success, source, error = "", tok
 }
 
 function normalizeRating(value) {
-  return ["强烈关注", "积极关注", "中性观察", "等待机会", "风险较高"].includes(value) ? value : scoreToRating(60);
+  const mapped = {
+    强烈关注: "重点关注",
+    积极关注: "重点关注",
+    中性观察: "可以观察",
+    降低关注: "暂不参与",
+    回避: "风险较高",
+  };
+  const normalized = mapped[value] ?? value;
+  return ["重点关注", "可以观察", "等待机会", "暂不参与", "风险较高"].includes(normalized) ? normalized : scoreToRating(60);
 }
 
 function normalizeAction(value) {
@@ -1251,10 +1266,10 @@ function scoreToTrend(score) {
 }
 
 function scoreToRating(score) {
-  if (score >= 85) return "强烈关注";
-  if (score >= 70) return "积极关注";
-  if (score >= 55) return "中性观察";
+  if (score >= 78) return "重点关注";
+  if (score >= 62) return "可以观察";
   if (score >= 40) return "等待机会";
+  if (score >= 25) return "暂不参与";
   return "风险较高";
 }
 

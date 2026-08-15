@@ -56,7 +56,7 @@ export async function renderStockSearch() {
       <div class="section-head"><h2>AI投资经理判断</h2><span>${stockDetail.name ?? ""} ${stockDetail.code ?? ""}</span></div>
       <div class="metrics">
         ${[
-          { label: "AI评级", value: hasAiDecision ? decision.rating : aiStateText, change: hasAiDecision ? `${decision.score}/100` : "尚无AI判断" },
+          { label: "当前判断", value: hasAiDecision ? decision.rating : aiStateText, change: hasAiDecision ? `综合评分${decision.score}/100` : "尚无AI判断" },
           { label: "股票质量评分", value: `${qualityOpportunity.quality}/100`, change: qualityOpportunity.qualityLabel },
           { label: "当前机会评分", value: `${qualityOpportunity.opportunity}/100`, change: qualityOpportunity.opportunityLabel },
           { label: "短期判断", value: hasAiDecision ? decision.shortTerm : aiStateText, change: hasAiDecision ? decision.marketTrend : "等待AI返回" },
@@ -133,18 +133,7 @@ export async function renderStockSearch() {
 
     <section class="wide-section">
       <div class="section-head"><h2>新闻时间线</h2><span>公司、行业和政策消息</span></div>
-      ${stockNews.map((item) => `
-        <article class="timeline-row">
-          <span>${item.time ?? item.date ?? stockDetail.sourceTimes?.newsUpdatedAt ?? empty}</span>
-          <div>
-            <strong>${linkOrText(item.title, item.link)}</strong>
-            <p>${item.source ?? "新闻"} | ${item.category ?? "新闻"} | 影响：${normalizeImpact(item.impact ?? item.category)}</p>
-            <p><b>短期影响</b>${shortTermNewsImpact(item, stockDetail)}</p>
-            <p><b>长期影响</b>${longTermNewsImpact(item, stockDetail)}</p>
-            ${(item.relatedIndustries ?? item.relatedThemes ?? []).length ? `<p>关联方向：${(item.relatedIndustries ?? item.relatedThemes).join("、")}</p>` : ""}
-          </div>
-        </article>
-      `).join("") || `<article class="data-card"><strong>新闻接口状态</strong><p>新闻接口本次未返回记录；新闻更新时间：${stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt ?? empty}</p></article>`}
+      ${renderCompanyNews(stockNews, stockDetail)}
     </section>
 
     <section class="wide-section">
@@ -261,6 +250,36 @@ function infoCard(title, value) {
 function linkOrText(title, link) {
   const safeTitle = escapeHtml(title || empty);
   return link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${safeTitle}</a>` : safeTitle;
+}
+
+function renderCompanyNews(news = [], stockDetail = {}) {
+  if (!news.length) {
+    return `<article class="data-card"><strong>新闻接口状态</strong><p>新闻接口本次未返回记录；新闻更新时间：${stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt ?? empty}</p></article>`;
+  }
+  const latest = news.slice(0, 3).map((item) => newsRow(item, stockDetail)).join("");
+  const rest = news.slice(3);
+  return `
+    ${latest}
+    ${rest.length ? `
+      <details class="data-card">
+        <summary>查看更多公司相关新闻（${rest.length}条）</summary>
+        ${rest.map((item) => newsRow(item, stockDetail)).join("")}
+      </details>
+    ` : ""}`;
+}
+
+function newsRow(item, stockDetail) {
+  return `
+    <article class="timeline-row">
+      <span>${item.time ?? item.date ?? stockDetail.sourceTimes?.newsUpdatedAt ?? empty}</span>
+      <div>
+        <strong>${linkOrText(item.title, item.link)}</strong>
+        <p>${item.source ?? "新闻"} | ${item.category ?? "新闻"} | 影响：${normalizeImpact(item.impact ?? item.category)}</p>
+        <p><b>短期影响</b>${shortTermNewsImpact(item, stockDetail)}</p>
+        <p><b>长期影响</b>${longTermNewsImpact(item, stockDetail)}</p>
+        ${(item.relatedIndustries ?? item.relatedThemes ?? []).length ? `<p>关联方向：${(item.relatedIndustries ?? item.relatedThemes).join("、")}</p>` : ""}
+      </div>
+    </article>`;
 }
 
 function escapeHtml(value) {
@@ -403,17 +422,17 @@ function normalizeImpact(value = "") {
 function shortTermNewsImpact(item = {}, stock = {}) {
   const impact = normalizeImpact(item.impact ?? item.category);
   const title = item.title ?? "该新闻";
-  if (impact === "利好") return `${title}短期可能提升${stock.name ?? "标的"}关注度，重点看成交额、涨跌幅和板块联动是否同步放大。`;
-  if (impact === "利空") return `${title}短期可能压制风险偏好，需观察价格是否放量走弱以及同行业是否扩散。`;
-  return `${title}短期影响偏中性，更多体现为信息补充，需等待行情和后续公告确认。`;
+  if (impact === "利好") return `${title}短期可能提升${stock.name ?? "标的"}关注度，但不等于趋势已经确立。重点看成交额、涨跌幅和板块联动是否同步放大，若无量上涨则持续性需要打折。`;
+  if (impact === "利空") return `${title}短期可能压制风险偏好，但影响大小需要看市场是否已经提前反映。需观察价格是否放量走弱，以及同行业是否出现扩散。`;
+  return `${title}短期影响偏中性，更多体现为信息补充。需要等待行情、成交额、公告原文和后续新闻确认，不单独作为参与依据。`;
 }
 
 function longTermNewsImpact(item = {}, stock = {}) {
   const impact = normalizeImpact(item.impact ?? item.category);
   const industry = stock.industry ?? "相关行业";
-  if (impact === "利好") return `长期看需验证该事件能否转化为${industry}景气改善、订单增长或盈利质量提升，不能只依据单条新闻判断。`;
-  if (impact === "利空") return `长期看需跟踪该事件是否影响${industry}需求、盈利能力或估值中枢，若连续出现同类信息需降低预期。`;
-  return `长期影响取决于事件后续是否持续发酵，并与财务、公告和行业趋势相互验证。`;
+  if (impact === "利好") return `长期看需验证该事件能否转化为${industry}景气改善、订单增长、利润率提升或现金流改善。单条新闻只能作为跟踪线索，不能直接推导长期结论。`;
+  if (impact === "利空") return `长期看需跟踪该事件是否影响${industry}需求、盈利能力、现金流或估值中枢。若后续公告和财务也验证负面变化，需要降低预期。`;
+  return `长期影响取决于事件是否持续发酵，并与财务数据、公司公告、行业趋势和市场表现相互验证。若缺少后续证据，应维持中性观察。`;
 }
 
 function clamp(value) {

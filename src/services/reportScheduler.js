@@ -211,7 +211,7 @@ function buildWatchlistDailyAnalysis(watchlist = [], marketData = {}, newsEvents
       rating: stock.aiRating ?? stock.aiLevel ?? scoreToRating(score),
       riskLevel: stock.riskLevel ?? (score >= 70 ? "中" : "高"),
       latestNews: stock.latestNews ?? relatedNews[0]?.title ?? "暂无强相关新闻，继续观察公告和行情变化。",
-      aiOpinion: stock.aiOpinion ?? `${stock.name}当前评分${score}/100，重点跟踪成交额、涨跌幅、新闻公告和行业热度。`,
+      aiOpinion: stock.aiOpinion ?? `${stock.name}当前判断为${scoreToRating(score)}，评分${score}/100仅作辅助，重点跟踪成交额、涨跌幅、新闻公告和行业热度。`,
       shortTerm: score >= 70 ? "1-5天偏强观察" : score >= 50 ? "1-5天震荡观察" : "1-5天偏弱观察",
       weekTrend: score >= 70 ? "上涨" : score >= 50 ? "震荡" : "下跌",
       action: score >= 75 ? "关注" : score >= 60 ? "持有" : score >= 45 ? "等待" : "降低仓位",
@@ -241,10 +241,10 @@ function scoreByChange(value) {
 }
 
 function scoreToRating(score) {
-  if (score >= 85) return "强烈关注";
-  if (score >= 70) return "积极关注";
-  if (score >= 55) return "中性观察";
+  if (score >= 78) return "重点关注";
+  if (score >= 62) return "可以观察";
   if (score >= 40) return "等待机会";
+  if (score >= 25) return "暂不参与";
   return "风险较高";
 }
 

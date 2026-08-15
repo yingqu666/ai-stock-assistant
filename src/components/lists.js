@@ -45,13 +45,13 @@ function normalizeImpact(value = "") {
 
 function shortTermImpact(item, impact) {
   const title = item.title ?? "该事件";
-  if (impact === "利好") return `${title}可能短期提升相关方向关注度，重点看成交和板块联动。`;
-  if (impact === "利空") return `${title}可能短期压制风险偏好，需要观察是否扩散到相关行业。`;
-  return `${title}短期影响偏中性，等待行情和后续消息确认。`;
+  if (impact === "利好") return `${title}可能短期提升相关方向关注度，但需要观察成交额、龙头表现和板块联动，不能仅凭单条新闻判断持续性。`;
+  if (impact === "利空") return `${title}可能短期压制风险偏好，需要观察是否扩散到相关行业，以及市场是否已经提前反映。`;
+  return `${title}短期影响偏中性，更多作为信息补充，等待行情、成交和后续消息确认。`;
 }
 
 function longTermImpact(item, impact) {
-  if (impact === "利好") return "长期需要验证是否转化为行业景气、订单或盈利改善。";
-  if (impact === "利空") return "长期需要跟踪是否影响需求、利润率或估值中枢。";
-  return "长期影响取决于事件持续性和财务、公告验证。";
+  if (impact === "利好") return "长期需要验证是否转化为行业景气、订单增长、盈利改善或现金流改善，单条新闻不能直接推导长期结论。";
+  if (impact === "利空") return "长期需要跟踪是否影响需求、利润率、现金流或估值中枢，并结合后续公告和财务数据复核。";
+  return "长期影响取决于事件持续性，以及后续财务、公告和行业趋势是否共同验证。";
 }

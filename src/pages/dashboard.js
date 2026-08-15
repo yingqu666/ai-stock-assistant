@@ -46,6 +46,13 @@ export async function renderDashboard() {
           <div><span>市场热度</span><strong>${marketSentiment.heat ?? strategy.score}分</strong></div>
           <div><span>建议仓位</span><strong>${strategy.position}</strong></div>
         </div>
+        <div class="metrics market-snapshot">
+          ${[
+            ...marketOverview.slice(0, 4),
+            { label: "涨跌家数", value: `${marketSentiment.upCount ?? "?"}/${marketSentiment.downCount ?? "?"}`, change: marketSentiment.riskLevel ?? "市场广度" },
+          ].map(metricCard).join("")}
+        </div>
+        <p class="answer"><b>AI总结：</b>${marketStateReason(strategy, marketSentiment, marketOverview)}</p>
         <p class="ai-summary">${strategy.summary}</p>
         <div class="driver-strip">${strategy.drivers.map((item) => `<span>${item}</span>`).join("")}</div>
         <p id="refresh-message" class="form-message">数据更新时间：${updatedAt ?? refreshStatus.updatedAt}｜来源：${source ?? "行情服务"}｜${refreshStatus.message}</p>
@@ -217,8 +224,25 @@ function enhancedSectorCard(sector) {
       <p><b>市场表现</b>${sector.status ?? sector.changePercent ?? "活跃度待确认"}</p>
       <p><b>成交/资金</b>${sector.amount ?? sector.flow ?? sector.turnover ?? "成交和资金由行情源补充"}</p>
       <p><b>关注原因</b>${sector.reason ?? "结合涨幅、成交额、资金活跃度和市场热度筛选"}</p>
+      <p><b>持续性</b>${sector.sustainability ?? sectorSustainability(sector)}</p>
       <p><b>风险</b>${sector.risk ?? "短线热度过高时需防止回落"}</p>
     </article>`;
+}
+
+function marketStateReason(strategy = {}, sentiment = {}, overview = []) {
+  const state = normalizeMarketState(strategy.state, sentiment.summary);
+  const amount = overview.find((item) => /成交|金额|成交额/.test(String(item.label ?? "")))?.value ?? "成交数据待更新";
+  const breadth = `上涨${sentiment.upCount ?? "?"}家、下跌${sentiment.downCount ?? "?"}家`;
+  if (state === "上涨") return `当前市场偏强，主要依据是${breadth}，成交情况为${amount}，热点板块活跃度较高。`;
+  if (state === "下跌") return `当前市场偏弱，主要依据是${breadth}，成交情况为${amount}，需优先控制回撤和追高风险。`;
+  return `当前市场震荡，主要依据是${breadth}，成交情况为${amount}，适合精选方向而不是扩大交易频率。`;
+}
+
+function sectorSustainability(sector = {}) {
+  const text = `${sector.status ?? ""}${sector.reason ?? ""}${sector.flow ?? ""}${sector.amount ?? ""}`;
+  if (/流入|放量|强|领涨|活跃/.test(text)) return "持续性偏强，但需要继续观察成交额和龙头股反馈。";
+  if (/缩量|分化|回落|冲高/.test(text)) return "持续性一般，容易出现轮动和冲高回落。";
+  return "持续性待确认，需要结合成交额、资金活跃度和后续新闻验证。";
 }
 
 function extractBasis(aiSummary = {}, sectors = [], sentiment = {}) {

@@ -250,7 +250,7 @@ export function generateRuleBasedAnalysis(input) {
     coreLogic: "核心逻辑：结合指数涨跌、成交额、涨跌家数、热点板块、新闻公告和用户关注标的进行结构化观察。",
     industryAnalysis: formatHotDirections(hotDirections),
     hotDirections,
-    stockAnalysis: `${stockName}：当前评级 ${investmentDecision.rating}，评分 ${investmentDecision.score}/100，需要继续跟踪行情、新闻、公告和财务变化。`,
+    stockAnalysis: `${stockName}：当前判断 ${investmentDecision.rating}，综合评分 ${investmentDecision.score}/100仅作辅助，需要继续跟踪行情、新闻、公告和财务变化。`,
     opportunities,
     risks: buildRiskList(input, newsEvents),
     tomorrowPlan: ["观察热点板块成交是否延续", "检查自选股公告和新闻变化", "复盘AI风险提醒是否有效"],
@@ -365,17 +365,22 @@ function formatCloudAnswer(data) {
   if (!data) return "AI暂未返回结果。";
   if (data.answer) return data.answer;
   const decision = data.investmentDecision ?? {};
+  const evidence = data.evidence ?? data.conclusionBasis ?? {};
   return [
     "【AI投资判断】",
-    `评级：${decision.rating ?? "中性观察"}`,
-    `评分：${decision.score ?? 60}/100`,
+    `当前判断：${decision.rating ?? "可以观察"}`,
+    `综合评分：${decision.score ?? 60}/100（辅助参考，不代表可以买）`,
     `趋势：${decision.marketTrend ?? "震荡"}`,
     `短期：${decision.shortTerm ?? "1-5天观察"}`,
     `中期：${decision.midTerm ?? "1-4周观察"}`,
     `策略：${decision.action ?? "等待"}，${decision.positionAdvice ?? "保持当前仓位"}`,
     "",
     "【依据】",
-    ...asList(data.basis ?? data.evidence ?? ["行情、新闻、公告、财务、用户画像"]),
+    `行业：${asList(evidence.industry ?? data.industryLogic?.marketReference).slice(0, 2).join("；") || "行业数据不足"}`,
+    `行情：${asList(evidence.stock ?? data.currentQuote).slice(0, 3).join("；") || "行情数据不足"}`,
+    `财务：${asList(evidence.financials ?? evidence.financial ?? data.financialReview?.summary).slice(0, 2).join("；") || "财务数据不足"}`,
+    `新闻：${asList(evidence.news).slice(0, 2).join("；") || "新闻数据不足"}`,
+    `公告：${asList(evidence.announcements ?? evidence.announcement).slice(0, 2).join("；") || "公告数据不足"}`,
     "",
     "【风险】",
     ...asList(data.risks ?? data.riskAnalysis ?? ["成交不足、估值波动、新闻落空或政策变化"]),
@@ -728,10 +733,10 @@ function scoreToTrend(score) {
 }
 
 function scoreToRating(score) {
-  if (score >= 85) return "强烈关注";
-  if (score >= 70) return "积极关注";
-  if (score >= 55) return "中性观察";
+  if (score >= 78) return "重点关注";
+  if (score >= 62) return "可以观察";
   if (score >= 40) return "等待机会";
+  if (score >= 25) return "暂不参与";
   return "风险较高";
 }
 
@@ -751,7 +756,15 @@ function scoreToPosition(score) {
 }
 
 function normalizeRating(value) {
-  return ["强烈关注", "积极关注", "中性观察", "等待机会", "风险较高"].includes(value) ? value : "中性观察";
+  const mapped = {
+    强烈关注: "重点关注",
+    积极关注: "重点关注",
+    中性观察: "可以观察",
+    降低关注: "暂不参与",
+    回避: "风险较高",
+  };
+  const normalized = mapped[value] ?? value;
+  return ["重点关注", "可以观察", "等待机会", "暂不参与", "风险较高"].includes(normalized) ? normalized : "可以观察";
 }
 
 function normalizeAction(value) {
