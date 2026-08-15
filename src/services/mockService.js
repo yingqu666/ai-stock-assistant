@@ -125,6 +125,45 @@ export function getOpportunityData() {
   return { opportunities };
 }
 
+const opportunityUniverse = [
+  "600176",
+  "300750",
+  "688981",
+  "601088",
+  "301396",
+  "512760",
+  "600519",
+  "000001",
+  "515980",
+  "515050",
+  "601318",
+  "002594",
+  "601138",
+  "300760",
+];
+
+export async function getAiOpportunityPool() {
+  const [marketData, newsSnapshot, syncedWatchlist] = await Promise.all([
+    getCachedMarketData().catch(() => ({ hotSectors: [], marketSentiment: {}, source: "行情数据不足" })),
+    getCachedNewsData().catch(() => ({ stockNews: [], news: [], source: "新闻数据不足" })),
+    getSyncedWatchlist().catch(() => ({ items: [] })),
+  ]);
+  const userCodes = (syncedWatchlist.items ?? []).map((item) => item.code).filter(Boolean);
+  const codes = [...new Set([...opportunityUniverse, ...userCodes])].slice(0, 16);
+  const results = await Promise.allSettled(codes.map((code) => withTimeout(queryStock(code), 5000, () => withUnavailableOpportunityStock(code))));
+  const stocks = results.map((result, index) => {
+    const stock = result.status === "fulfilled" ? result.value : withUnavailableOpportunityStock(codes[index]);
+    return stock?.code ? stock : { ...stock, code: codes[index], name: stock?.name || codes[index] };
+  });
+  const pool = stocks.map((stock) => buildOpportunityItem(stock, marketData, newsSnapshot)).sort((a, b) => b.rankScore - a.rankScore).slice(0, 10);
+  return {
+    opportunities: pool,
+    source: marketData.source ?? "行情服务",
+    updatedAt: marketData.updatedAt ?? getRefreshStatus().updatedAt,
+    dataStatus: marketData.dataStatus ?? "部分真实",
+  };
+}
+
 export async function getWatchlistData() {
   const [syncedWatchlist, newsSnapshot, marketData] = await Promise.all([getSyncedWatchlist(), getCachedNewsData(), getCachedMarketData()]);
   const watchlistSnapshot = syncedWatchlist.items ?? [];
@@ -430,4 +469,166 @@ export async function refreshWorkbenchData() {
 
 export function getInvestmentProfileData() {
   return getInvestmentProfile();
+}
+
+function buildOpportunityItem(stock = {}, marketData = {}, newsSnapshot = {}) {
+  const relatedNews = findRelatedOpportunityNews(stock, newsSnapshot);
+  const hotSector = findRelatedHotSector(stock, marketData.hotSectors ?? []);
+  const scoreParts = scoreOpportunity(stock, hotSector, relatedNews, marketData);
+  const rankScore = scoreParts.total;
+  const judgment = opportunityJudgment(rankScore, stock);
+  const priceObservation = buildOpportunityPriceObservation(stock, scoreParts, hotSector);
+  return {
+    name: stock.name ?? stock.code ?? "标的数据不足",
+    code: stock.code ?? "",
+    currentJudgment: judgment,
+    score: rankScore,
+    rankScore,
+    price: stock.price ?? DATA_MISSING,
+    changePercent: stock.changePercent ?? DATA_MISSING,
+    recentHigh: stock.highPrice ?? priceObservation.recentHigh,
+    recentLow: stock.lowPrice ?? priceObservation.recentLow,
+    dataSource: stock.dataSource ?? stock.quoteSource ?? "行情来源未返回",
+    dataStatus: stock.dataStatus ?? "数据不足",
+    updatedAt: stock.updatedAt ?? marketData.updatedAt ?? getRefreshStatus().updatedAt,
+    reasons: [
+      `行业趋势：${hotSector ? `${hotSector.name}位于热点池，${hotSector.status ?? hotSector.changePercent ?? "活跃"}` : `${stock.industry ?? "行业数据暂缺"}暂未匹配到强热点`}`,
+      `资金表现：成交额${stock.amount ?? DATA_MISSING}，成交量${stock.volume ?? DATA_MISSING}，${stock.capitalFlow ?? "资金流字段未返回"}`,
+      stock.assetType === "ETF"
+        ? `公司基本面：ETF不适用公司财务，重点观察${stock.trackingIndex ?? "跟踪指数"}、规模和流动性`
+        : `公司基本面：营收${stock.financials?.revenue ?? DATA_MISSING}，净利润${stock.financials?.netProfit ?? DATA_MISSING}，ROE${stock.financials?.roe ?? DATA_MISSING}`,
+      `新闻/公告影响：${relatedNews[0] ? `${relatedNews[0].title}（${relatedNews[0].source ?? "新闻"}，${relatedNews[0].impact ?? "中性"}）` : "未匹配到强相关新闻或公告"}`,
+    ],
+    risks: [
+      `估值风险：${stock.assetType === "ETF" ? "ETF需结合跟踪指数估值和溢价率" : `PE ${stock.pe ?? DATA_MISSING}，PB ${stock.pb ?? DATA_MISSING}`}`,
+      `行业风险：${stock.industry ?? "行业数据暂缺"}若热点退潮或政策预期变化，持续性会下降`,
+      `市场风险：若指数走弱、成交额萎缩或赚钱效应下降，机会池标的也可能同步回撤`,
+    ],
+    priceObservation,
+    scoreParts,
+    relatedNews: relatedNews.slice(0, 3),
+  };
+}
+
+function scoreOpportunity(stock = {}, hotSector, relatedNews = [], marketData = {}) {
+  const industryHeat = hotSector ? 18 : 9;
+  const capital = /亿/.test(String(stock.amount ?? "")) ? 16 : /万/.test(String(stock.amount ?? "")) ? 11 : 6;
+  const quality = stock.assetType === "ETF" ? 12 : (hasRealField(stock.financials?.netProfit) || hasRealField(stock.marketCap) ? 14 : 8);
+  const financial = stock.assetType === "ETF" ? 12 : (hasRealField(stock.financials?.roe) || hasRealField(stock.financials?.revenue) ? 15 : 7);
+  const news = relatedNews.length ? 14 : 7;
+  const valuation = scoreOpportunityValuation(stock);
+  const riskPenalty = opportunityRiskPenalty(stock, marketData);
+  const total = Math.max(0, Math.min(100, Math.round(industryHeat + capital + quality + financial + news + valuation - riskPenalty)));
+  return { industryHeat, capital, quality, financial, news, valuation, riskPenalty, total };
+}
+
+function scoreOpportunityValuation(stock = {}) {
+  if (stock.assetType === "ETF") return 12;
+  const pe = parseOpportunityNumber(stock.pe);
+  const pb = parseOpportunityNumber(stock.pb);
+  let score = 8;
+  if (Number.isFinite(pe) && pe > 0 && pe <= 35) score += 5;
+  if (Number.isFinite(pb) && pb > 0 && pb <= 4) score += 4;
+  if (Number.isFinite(pe) && pe > 80) score -= 5;
+  return Math.max(2, Math.min(17, score));
+}
+
+function opportunityRiskPenalty(stock = {}, marketData = {}) {
+  let penalty = 0;
+  const change = parseOpportunityNumber(stock.changePercent);
+  const pe = parseOpportunityNumber(stock.pe);
+  if (Number.isFinite(change) && change >= 7) penalty += 10;
+  if (Number.isFinite(change) && change <= -5) penalty += 8;
+  if (Number.isFinite(pe) && pe > 90) penalty += 8;
+  if (marketData.marketSentiment?.moneyEffect === "偏弱") penalty += 6;
+  if (String(stock.dataStatus ?? "").includes("不足")) penalty += 12;
+  return penalty;
+}
+
+function opportunityJudgment(score, stock = {}) {
+  if (String(stock.dataStatus ?? "").includes("不足")) return "暂不参与";
+  if (score >= 78) return "重点关注";
+  if (score >= 62) return "可以观察";
+  if (score >= 45) return "等待机会";
+  return "暂不参与";
+}
+
+function buildOpportunityPriceObservation(stock = {}, scoreParts = {}, hotSector) {
+  const price = parseOpportunityNumber(stock.price);
+  const high = parseOpportunityNumber(stock.highPrice);
+  const low = parseOpportunityNumber(stock.lowPrice);
+  if (!Number.isFinite(price) || price <= 0) {
+    return {
+      recentHigh: "数据不足",
+      recentLow: "数据不足",
+      watchRange: "数据不足",
+      pressureRange: "数据不足",
+      riskRange: "数据不足",
+      logic: "当前价格数据不足，不能生成价格观察区间。",
+    };
+  }
+  const recentHigh = Number.isFinite(high) && high > 0 ? high : price * 1.04;
+  const recentLow = Number.isFinite(low) && low > 0 ? low : price * 0.96;
+  const buffer = Math.max(price * 0.015, (recentHigh - recentLow) * 0.25);
+  const watchLow = Math.max(recentLow, price - buffer);
+  const watchHigh = Math.min(recentHigh, price + buffer * 0.6);
+  const pressure = Math.max(recentHigh, price * 1.035);
+  const risk = Math.min(recentLow, price * 0.96);
+  return {
+    recentHigh: formatOpportunityPrice(recentHigh),
+    recentLow: formatOpportunityPrice(recentLow),
+    watchRange: `${formatOpportunityPrice(watchLow)}-${formatOpportunityPrice(watchHigh)}`,
+    pressureRange: formatOpportunityPrice(pressure),
+    riskRange: formatOpportunityPrice(risk),
+    logic: `观察区间基于当前价、日内高低点、资金活跃度和${hotSector ? `${hotSector.name}热度` : "行业趋势"}估算；不满足成交确认时避免参与。`,
+  };
+}
+
+function findRelatedHotSector(stock = {}, hotSectors = []) {
+  const industry = String(stock.industry ?? "");
+  const name = String(stock.name ?? "");
+  return hotSectors.find((sector) => {
+    const sectorName = String(sector.name ?? "");
+    return sectorName && (industry.includes(sectorName) || sectorName.includes(industry) || name.includes(sectorName));
+  });
+}
+
+function findRelatedOpportunityNews(stock = {}, newsSnapshot = {}) {
+  const rows = [...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])];
+  const code = String(stock.code ?? "");
+  const name = String(stock.name ?? "");
+  const industry = String(stock.industry ?? "");
+  return rows.filter((item) => {
+    const text = `${item.title ?? ""}${item.relatedStock ?? ""}${(item.relatedStocks ?? []).join("")}${item.relatedIndustry ?? ""}${(item.relatedIndustries ?? []).join("")}`;
+    return (code && text.includes(code)) || (name && text.includes(name)) || (industry && text.includes(industry));
+  });
+}
+
+function withUnavailableOpportunityStock(code) {
+  return {
+    code,
+    name: code,
+    price: DATA_MISSING,
+    changePercent: DATA_MISSING,
+    amount: DATA_MISSING,
+    volume: DATA_MISSING,
+    industry: "行业数据暂缺",
+    dataStatus: "数据不足",
+    dataSource: "真实行情未返回",
+    updatedAt: getRefreshStatus().updatedAt,
+    financials: {},
+  };
+}
+
+function hasRealField(value) {
+  return Boolean(value) && !/暂无|缺失|未返回|不适用|数据源/.test(String(value));
+}
+
+function parseOpportunityNumber(value) {
+  const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : NaN;
+}
+
+function formatOpportunityPrice(value) {
+  return Number.isFinite(value) ? value.toFixed(value >= 100 ? 1 : 2) : "数据不足";
 }

@@ -44,36 +44,58 @@ export async function collectMarketData() {
   const [indexes, boards, breadth] = await Promise.all([
     fetchIndexes().catch(() => []),
     fetchHotBoards().catch(() => []),
-    fetchMarketBreadth().catch(() => ({ upCount: 0, downCount: 0, status: "宽度接口回退" })),
+    fetchMarketBreadth().catch(() => ({ upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回" })),
   ]);
   if (!indexes.length && !boards.length) throw new Error("东方财富指数和板块接口均未返回数据");
   const upCount = breadth.upCount;
   const downCount = breadth.downCount;
   const averageChange = indexes.length ? indexes.reduce((sum, item) => sum + item.changePercent, 0) / indexes.length : 0;
   const turnover = indexes.reduce((sum, item) => sum + item.turnover, 0);
+  const moneyEffect = calculateMoneyEffect(breadth, boards, turnover);
 
   return {
     source: indexes.length && boards.length ? "东方财富" : "东方财富部分接口",
-    status: indexes.length && boards.length && (upCount || downCount) ? "真实" : "部分真实",
+    status: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
+    dataStatus: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
     marketOverview: [
       ...indexes.map((item) => ({ label: item.name, value: formatNumber(item.price), change: formatPercent(item.changePercent) })),
       { label: "成交额", value: formatAmount(turnover), change: "指数合计" },
-      { label: "上涨家数", value: String(upCount), change: upCount || downCount ? "东方财富宽度" : "暂未返回" },
-      { label: "下跌家数", value: String(downCount), change: upCount || downCount ? "东方财富宽度" : "暂未返回" },
+      { label: "上涨数量", value: formatCount(upCount), change: upCount || downCount ? "东方财富宽度" : "暂未返回" },
+      { label: "下跌数量", value: formatCount(downCount), change: upCount || downCount ? "东方财富宽度" : "暂未返回" },
+      { label: "平盘数量", value: formatCount(breadth.flatCount), change: breadth.status ?? "东方财富宽度" },
+      { label: "涨停数量", value: formatCount(breadth.limitUpCount), change: "涨停统计" },
+      { label: "跌停数量", value: formatCount(breadth.limitDownCount), change: "跌停统计" },
     ],
     marketSentiment: {
       summary: `三大指数平均涨跌幅 ${formatPercent(averageChange)}，成交额约 ${formatAmount(turnover)}。`,
       upCount,
       downCount,
+      flatCount: breadth.flatCount,
+      limitUpCount: breadth.limitUpCount,
+      limitDownCount: breadth.limitDownCount,
+      totalCount: breadth.totalCount,
+      turnover: formatAmount(turnover),
+      moneyEffect: moneyEffect.label,
+      moneyEffectBasis: moneyEffect.basis,
       riskLevel: averageChange >= 0 ? "中" : "偏高",
     },
-    hotSectors: boards.slice(0, 6).map((item) => ({
+    hotSectors: boards.slice(0, 12).map((item) => ({
       name: item.name,
       status: item.changePercent >= 0 ? "活跃" : "调整",
-      flow: formatPercent(item.changePercent),
-      reason: "东方财富板块涨幅靠前",
-      risk: "热点轮动较快，需要结合成交延续性观察。",
+      changePercent: formatPercent(item.changePercent),
+      turnover: formatAmount(item.turnover),
+      amount: formatAmount(item.turnover),
+      capitalFlow: formatAmount(item.capitalFlow),
+      capitalFlowRatio: formatPercent(item.capitalFlowRatio),
+      flow: `${formatAmount(item.capitalFlow)}（${formatPercent(item.capitalFlowRatio)}）`,
+      heatRank: item.rank,
+      heatBasis: "按东方财富板块涨幅榜排序，并补充成交额与主力资金字段。",
+      reason: `东方财富板块行情TOP${item.rank}，依据涨跌幅、成交额和资金活跃度排序。`,
+      aiReason: `板块涨跌幅 ${formatPercent(item.changePercent)}，成交额 ${formatAmount(item.turnover)}，资金表现 ${formatAmount(item.capitalFlow)}。`,
+      sustainability: buildSectorSustainability(item),
+      risk: buildSectorRisk(item),
+      dataSource: "东方财富板块行情",
     })),
   };
 }
@@ -98,9 +120,16 @@ async function fetchIndexes() {
 }
 
 async function fetchHotBoards() {
-  const url = `${eastmoneyApi}/clist/get?pn=1&pz=10&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(boardFs)}&fields=f14,f3`;
+  const url = `${eastmoneyApi}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(boardFs)}&fields=f14,f3,f6,f62,f184`;
   const rows = await fetchRows(url);
-  return rows.map((row) => ({ name: row.f14, changePercent: toNumber(row.f3) }));
+  return rows.map((row, index) => ({
+    name: row.f14,
+    changePercent: toNumber(row.f3),
+    turnover: toNumber(row.f6),
+    capitalFlow: toNumber(row.f62),
+    capitalFlowRatio: toNumber(row.f184),
+    rank: index + 1,
+  }));
 }
 
 async function fetchMarketBreadth() {
@@ -117,8 +146,11 @@ async function fetchMarketBreadth() {
     const change = toNumber(item.f3);
     if (change > 0) acc.upCount += 1;
     if (change < 0) acc.downCount += 1;
+    if (change === 0) acc.flatCount += 1;
+    if (change >= 9.8) acc.limitUpCount += 1;
+    if (change <= -9.8) acc.limitDownCount += 1;
     return acc;
-  }, { upCount: 0, downCount: 0, status: "真实" });
+  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: rows.length, status: "东方财富宽度" });
 }
 
 function fetchBreadthPage(page, pageSize) {
@@ -215,6 +247,35 @@ function buildUserProfileSignals({ investmentProfile, journal, aiHistory }) {
 function toNumber(value) {
   const number = Number(value);
   return Number.isFinite(number) ? number : 0;
+}
+
+function formatCount(value) {
+  return value === null || value === undefined ? "数据缺失" : String(value);
+}
+
+function calculateMoneyEffect(breadth = {}, boards = [], turnover = 0) {
+  const up = toNumber(breadth.upCount);
+  const down = toNumber(breadth.downCount);
+  const flat = toNumber(breadth.flatCount);
+  const total = Math.max(1, up + down + flat);
+  const upRatio = up / total;
+  const activeBoards = boards.filter((item) => toNumber(item.changePercent) > 1).length;
+  const turnoverActive = turnover >= 800000000000;
+  if (!up && !down) return { label: "数据不足", basis: "上涨比例、成交额和热点集中度暂未完整返回。" };
+  if (upRatio >= 0.58 && turnoverActive && activeBoards >= 4) return { label: "偏强", basis: `上涨比例${Math.round(upRatio * 100)}%，成交活跃，热点板块较集中。` };
+  if (upRatio <= 0.42 || activeBoards <= 1) return { label: "偏弱", basis: `上涨比例${Math.round(upRatio * 100)}%，热点扩散不足。` };
+  return { label: "分化", basis: `上涨比例${Math.round(upRatio * 100)}%，热点数量${activeBoards}个，适合精选方向。` };
+}
+
+function buildSectorSustainability(item = {}) {
+  if (toNumber(item.changePercent) >= 2 && toNumber(item.capitalFlow) > 0) return "持续性偏强，但仍需观察成交额和资金流入是否延续。";
+  if (toNumber(item.changePercent) >= 1) return "持续性中等，短线热度存在但资金确认不足。";
+  return "持续性待确认，当前更多是轮动观察。";
+}
+
+function buildSectorRisk(item = {}) {
+  if (toNumber(item.changePercent) >= 4) return "短线涨幅较高，容易出现追高和冲高回落风险。";
+  return "若成交额缩小或主力资金转弱，板块持续性会下降。";
 }
 
 function formatNumber(value) {

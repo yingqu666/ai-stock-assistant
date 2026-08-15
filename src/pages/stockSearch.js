@@ -5,7 +5,7 @@ import { getStockSearchData, selectStock } from "../services/mockService.js";
 const empty = "数据源未返回";
 
 export async function renderStockSearch() {
-  const { stockDetail, stockNews, stockEvents, aiAnalysis } = await getStockSearchData();
+  const { stockDetail, stockNews, stockEvents, aiAnalysis, aiInput } = await getStockSearchData();
   const financials = stockDetail.financials ?? {};
   const valuation = stockDetail.valuationRange ?? {};
   const announcements = stockDetail.announcements ?? [];
@@ -17,6 +17,9 @@ export async function renderStockSearch() {
   const report = buildAiDisplayReport(stockDetail, stockNews, aiAnalysis);
   const breakdown = scoreBreakdown(stockDetail, decision, aiAnalysis);
   const qualityOpportunity = buildQualityOpportunity(stockDetail, breakdown, decision, aiAnalysis);
+  const tradingPosition = buildTradingPosition(stockDetail, aiInput?.marketData, breakdown);
+  const observation = buildObservationRange(stockDetail, tradingPosition, breakdown);
+  const cycle = buildHoldingCycle(stockDetail, tradingPosition, decision, aiInput?.marketData);
   const newsImpact = report.newsImpact
     ?? (stockNews.map((item) => `${item.title}：${item.impact}`).slice(0, 2).join("；") || `新闻更新时间：${stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt ?? empty}`);
 
@@ -53,10 +56,59 @@ export async function renderStockSearch() {
     </section>
 
     <section class="wide-section">
+      <div class="section-head"><h2>交易位置分析</h2><span>基于当前行情、日内位置、成交和行业热度</span></div>
+      <div class="metrics">
+        ${[
+          { label: "当前价格", value: stockDetail.price ?? empty, change: stockDetail.changePercent ?? empty },
+          { label: "今日最高价", value: stockDetail.highPrice ?? empty, change: "日内高点" },
+          { label: "今日最低价", value: stockDetail.lowPrice ?? empty, change: "日内低点" },
+          { label: "涨停价格", value: stockDetail.limitUpPrice ?? empty, change: "观察参考" },
+          { label: "跌停价格", value: stockDetail.limitDownPrice ?? empty, change: "风险参考" },
+          { label: "成交量变化", value: stockDetail.volumeChange ?? empty, change: stockDetail.volume ?? "成交量" },
+          { label: "成交额变化", value: stockDetail.amountChange ?? empty, change: stockDetail.amount ?? "成交额" },
+          { label: "当前趋势", value: tradingPosition.trend, change: tradingPosition.pricePosition },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid compact">
+        ${infoCard("当前价格位置", tradingPosition.pricePosition)}
+        ${infoCard("判断依据", tradingPosition.basis.join("；"))}
+        ${infoCard("热点/行业参考", tradingPosition.industryReference)}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>AI交易观察</h2><span>只提供观察价格区间，不输出直接买卖指令</span></div>
+      <div class="metrics">
+        ${[
+          { label: "关注区间", value: observation.watchRange, change: observation.status },
+          { label: "压力位置", value: observation.pressure, change: "上方观察" },
+          { label: "风险位置", value: observation.riskLine, change: "下方观察" },
+          { label: "数据状态", value: observation.status, change: stockDetail.dataStatus ?? "行情状态" },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid compact">
+        ${infoCard("观察逻辑", observation.logic)}
+        ${infoCard("估值参考", observation.valuation)}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>持有周期判断</h2><span>适配3天-1个月观察周期</span></div>
+      <div class="detail-grid compact">
+        ${infoCard("短线观察 1-5天", cycle.shortTerm)}
+        ${infoCard("短线上涨需要观察", cycle.shortUp)}
+        ${infoCard("短线风险需要观察", cycle.shortRisk)}
+        ${infoCard("中期观察 1-4周", cycle.midTerm)}
+        ${infoCard("中期上涨需要观察", cycle.midUp)}
+        ${infoCard("中期风险需要观察", cycle.midRisk)}
+      </div>
+    </section>
+
+    <section class="wide-section">
       <div class="section-head"><h2>AI投资经理判断</h2><span>${stockDetail.name ?? ""} ${stockDetail.code ?? ""}</span></div>
       <div class="metrics">
         ${[
-          { label: "当前判断", value: hasAiDecision ? decision.rating : aiStateText, change: hasAiDecision ? `综合评分${decision.score}/100` : "尚无AI判断" },
+          { label: "当前判断", value: hasAiDecision ? normalizeDecisionRating(decision.rating, decision.score) : aiStateText, change: hasAiDecision ? "评分仅作辅助" : "尚无AI判断" },
           { label: "股票质量评分", value: `${qualityOpportunity.quality}/100`, change: qualityOpportunity.qualityLabel },
           { label: "当前机会评分", value: `${qualityOpportunity.opportunity}/100`, change: qualityOpportunity.opportunityLabel },
           { label: "短期判断", value: hasAiDecision ? decision.shortTerm : aiStateText, change: hasAiDecision ? decision.marketTrend : "等待AI返回" },
@@ -65,12 +117,14 @@ export async function renderStockSearch() {
         ].map(metricCard).join("")}
       </div>
       <div class="detail-grid compact">
-        ${infoCard("已有仓位", decision.action === "降低仓位" || decision.action === "回避" ? "降低仓位并观察风险变化" : "继续持有观察，跟踪成交和公告变化")}
-        ${infoCard("没有仓位", decision.action === "关注" ? "关注回调后的研究机会" : "等待更明确的价格、成交和消息确认")}
-        ${infoCard("判断依据", buildDecisionBasis(stockDetail, stockNews, financials, breakdown).join("；"))}
+        ${infoCard("技术", `趋势：${tradingPosition.trend}；价格位置：${tradingPosition.pricePosition}；涨跌幅：${stockDetail.changePercent ?? empty}`)}
+        ${infoCard("资金", `成交额：${stockDetail.amount ?? empty}；成交量：${stockDetail.volume ?? empty}；${stockDetail.volumeChange ?? "成交变化数据不足"}`)}
+        ${infoCard("行业", tradingPosition.industryReference)}
+        ${infoCard("基本面", isEtf ? "ETF不适用公司财务，重点看跟踪指数、规模和流动性。" : `营收${financials.revenue ?? empty}，净利润${financials.netProfit ?? empty}，ROE${financials.roe ?? empty}`)}
+        ${infoCard("新闻", stockNews[0] ? `${stockNews[0].title}（${stockNews[0].source ?? "新闻"}，${normalizeImpact(stockNews[0].impact ?? stockNews[0].category)}）` : "暂无强相关新闻")}
         ${infoCard("核心原因", (decision.reasons ?? []).join("；"))}
         ${infoCard("风险", ensureAtLeast(decision.risks, ["行情波动", "数据延迟", "行业预期变化"], 3).join("；"))}
-        ${infoCard("操作思路", buildOperationIdea(qualityOpportunity, decision))}
+        ${infoCard("观察思路", buildOperationIdea(qualityOpportunity, decision))}
       </div>
     </section>
 
@@ -254,7 +308,7 @@ function linkOrText(title, link) {
 
 function renderCompanyNews(news = [], stockDetail = {}) {
   if (!news.length) {
-    return `<article class="data-card"><strong>新闻接口状态</strong><p>新闻接口本次未返回记录；新闻更新时间：${stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt ?? empty}</p></article>`;
+    return `<article class="data-card"><strong>新闻接口状态</strong><p>新闻接口本次未返回记录；新闻更新时间：${stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt ?? empty}</p><p><b>AI解读</b>新闻数据不足，不生成虚假影响判断。</p><p><b>短期影响</b>中性：等待真实新闻返回。</p><p><b>长期影响</b>中性：需要公告、财务和行业信息共同验证。</p></article>`;
   }
   const latest = news.slice(0, 3).map((item) => newsRow(item, stockDetail)).join("");
   const rest = news.slice(3);
@@ -270,16 +324,21 @@ function renderCompanyNews(news = [], stockDetail = {}) {
 
 function newsRow(item, stockDetail) {
   return `
-    <article class="timeline-row">
-      <span>${item.time ?? item.date ?? stockDetail.sourceTimes?.newsUpdatedAt ?? empty}</span>
+    <details class="timeline-row news-detail-row">
+      <summary>
+        <span>${item.time ?? item.date ?? stockDetail.sourceTimes?.newsUpdatedAt ?? empty}</span>
+        <strong>${escapeHtml(item.title ?? empty)}</strong>
+        <em>${item.source ?? "新闻"} · ${normalizeImpact(item.impact ?? item.category)}</em>
+      </summary>
       <div>
-        <strong>${linkOrText(item.title, item.link)}</strong>
-        <p>${item.source ?? "新闻"} | ${item.category ?? "新闻"} | 影响：${normalizeImpact(item.impact ?? item.category)}</p>
-        <p><b>短期影响</b>${shortTermNewsImpact(item, stockDetail)}</p>
-        <p><b>长期影响</b>${longTermNewsImpact(item, stockDetail)}</p>
+        <p><b>新闻标题</b>${linkOrText(item.title, item.link)}</p>
+        <p><b>来源</b>${item.source ?? "新闻"} · <b>时间</b>${item.time ?? item.date ?? stockDetail.sourceTimes?.newsUpdatedAt ?? empty}</p>
+        <p><b>AI解读</b>${newsAiInterpretation(item, stockDetail)}</p>
+        <p><b>短期影响</b>${normalizeImpact(item.impact ?? item.category)}：${shortTermNewsImpact(item, stockDetail)}</p>
+        <p><b>长期影响</b>${normalizeLongTermImpact(item, stockDetail)}：${longTermNewsImpact(item, stockDetail)}</p>
         ${(item.relatedIndustries ?? item.relatedThemes ?? []).length ? `<p>关联方向：${(item.relatedIndustries ?? item.relatedThemes).join("、")}</p>` : ""}
       </div>
-    </article>`;
+    </details>`;
 }
 
 function escapeHtml(value) {
@@ -294,6 +353,82 @@ function normalizeTomorrowAction(action = "") {
   if (action === "关注") return "买入机会";
   if (["买入机会", "等待", "持有", "降低仓位"].includes(action)) return action;
   return "等待";
+}
+
+function buildTradingPosition(stock = {}, marketData = {}, breakdown = {}) {
+  const price = parseNumber(stock.price);
+  const high = parseNumber(stock.highPrice);
+  const low = parseNumber(stock.lowPrice);
+  const change = parseNumber(stock.changePercent);
+  const rangePosition = price && high && low && high > low ? (price - low) / (high - low) : null;
+  const trend = change >= 2 && breakdown.capital >= 12 ? "上涨趋势" : change <= -2 ? "下跌趋势" : "震荡";
+  const pricePosition = rangePosition == null
+    ? "数据不足"
+    : rangePosition >= 0.68 ? "高位" : rangePosition <= 0.32 ? "低位" : "中位";
+  const hotSectors = marketData?.hotSectors ?? [];
+  const matchedSector = hotSectors.find((item) => {
+    const industry = String(stock.industry ?? "");
+    return industry && (String(item.name ?? "").includes(industry) || industry.includes(String(item.name ?? "")));
+  });
+  return {
+    trend,
+    pricePosition,
+    industryReference: matchedSector
+      ? `${stock.industry ?? "行业"}与热点板块${matchedSector.name}相关，板块表现${matchedSector.changePercent ?? matchedSector.flow ?? "待更新"}。`
+      : `${stock.industry ?? "行业数据暂缺"}未与首页热点板块形成明确匹配，需继续观察行业趋势。`,
+    basis: [
+      `近期涨跌：今日涨跌幅${stock.changePercent ?? empty}`,
+      `成交量：${stock.volume ?? empty}，${stock.volumeChange ?? "变化数据不足"}`,
+      `成交额：${stock.amount ?? empty}，${stock.amountChange ?? "变化数据不足"}`,
+      `日内区间：最高${stock.highPrice ?? empty}，最低${stock.lowPrice ?? empty}`,
+      matchedSector ? `热点板块：${matchedSector.name}` : "热点板块：未匹配到强热点",
+    ],
+  };
+}
+
+function buildObservationRange(stock = {}, tradingPosition = {}, breakdown = {}) {
+  const price = parseNumber(stock.price);
+  const high = parseNumber(stock.highPrice);
+  const low = parseNumber(stock.lowPrice);
+  const pe = stock.assetType === "ETF" ? null : parseNumber(stock.pe);
+  const hasRange = price > 0 && high > 0 && low > 0 && high >= low;
+  if (!hasRange) {
+    return {
+      watchRange: "数据不足",
+      pressure: "数据不足",
+      riskLine: "数据不足",
+      status: "数据不足",
+      logic: "当前缺少有效价格、最高价或最低价，不能生成观察区间。",
+      valuation: "估值数据不足。",
+    };
+  }
+  const buffer = Math.max(price * 0.015, (high - low) * 0.25);
+  const watchLow = Math.max(low, price - buffer);
+  const watchHigh = Math.min(high, price + buffer * 0.6);
+  const pressure = Math.max(high, price * 1.03);
+  const riskLine = Math.min(low, price * 0.96);
+  return {
+    watchRange: `${formatRangePrice(watchLow)}-${formatRangePrice(watchHigh)}元`,
+    pressure: `${formatRangePrice(pressure)}元`,
+    riskLine: `${formatRangePrice(riskLine)}元`,
+    status: "基于实时行情估算",
+    logic: `当前价格处于${tradingPosition.pricePosition}，趋势为${tradingPosition.trend}。观察区间按当前价、日内高低点和波动缓冲估算；若成交额继续放大且行业趋势不转弱，区间有效性更高。`,
+    valuation: stock.assetType === "ETF"
+      ? "ETF不使用公司PE/PB，重点结合跟踪方向、成交额和资金活跃度。"
+      : `PE ${stock.pe ?? empty}，PB ${stock.pb ?? empty}${Number.isFinite(pe) && pe > 60 ? "，估值偏高时需降低追高意愿。" : "，估值仅作辅助观察。"}`,
+  };
+}
+
+function buildHoldingCycle(stock = {}, tradingPosition = {}, decision = {}, marketData = {}) {
+  const hotNames = (marketData?.hotSectors ?? []).slice(0, 3).map((item) => item.name).join("、") || "热点方向待确认";
+  return {
+    shortTerm: `1-5天以${tradingPosition.trend}观察为主，当前判断：${normalizeDecisionRating(decision.rating, decision.score)}。`,
+    shortUp: `需要看到价格不跌破${stock.lowPrice ?? "日内低点"}，成交额${stock.amount ?? empty}维持或放大，并且${stock.industry ?? "所属行业"}不弱于市场。`,
+    shortRisk: `若跌破风险位置、成交放大但价格走弱，或热点从${hotNames}快速退潮，短线判断需要降级。`,
+    midTerm: `1-4周重点看行业趋势、估值和财务是否支持，适合3天-1个月的波段观察。`,
+    midUp: `需要行业主线延续、公告/新闻不出现反向变化，财务和估值没有明显恶化。`,
+    midRisk: `若估值过高、财务低于预期、行业景气转弱或市场成交持续缩小，中期应降低预期。`,
+  };
 }
 
 function ensureAtLeast(items = [], fallback = [], count = 3) {
@@ -419,6 +554,23 @@ function normalizeImpact(value = "") {
   return "中性";
 }
 
+function normalizeLongTermImpact(item = {}, stock = {}) {
+  if (stock.assetType === "ETF") return normalizeImpact(item.impact ?? item.category);
+  return normalizeImpact(item.longTermImpact ?? item.impact ?? item.category);
+}
+
+function newsAiInterpretation(item = {}, stock = {}) {
+  const impact = normalizeImpact(item.impact ?? item.category);
+  const title = item.title ?? "该新闻";
+  const target = stock.name ?? "标的";
+  const text = impact === "利好"
+    ? `${title}对${target}短期偏正面，但需要成交额、行业表现和后续公告验证，不能单独作为参与依据。`
+    : impact === "利空"
+      ? `${title}对${target}短期偏负面，需观察价格是否放量走弱，以及风险是否扩散到行业层面。`
+      : `${title}对${target}影响偏中性，主要作为信息跟踪，仍需结合行情、财务和公告确认。`;
+  return text.length > 100 ? `${text.slice(0, 97)}...` : text;
+}
+
 function shortTermNewsImpact(item = {}, stock = {}) {
   const impact = normalizeImpact(item.impact ?? item.category);
   const title = item.title ?? "该新闻";
@@ -439,6 +591,33 @@ function clamp(value) {
   const n = Number(value);
   if (!Number.isFinite(n)) return 60;
   return Math.max(0, Math.min(100, Math.round(n)));
+}
+
+function normalizeDecisionRating(rating, score) {
+  const mapped = {
+    强烈关注: "重点关注",
+    积极关注: "重点关注",
+    中性观察: "可以观察",
+    降低关注: "暂不参与",
+    回避: "风险较高",
+  };
+  if (mapped[rating]) return mapped[rating];
+  if (["重点关注", "可以观察", "等待机会", "暂不参与", "风险较高"].includes(rating)) return rating;
+  const numeric = Number(score);
+  if (numeric >= 78) return "重点关注";
+  if (numeric >= 62) return "可以观察";
+  if (numeric >= 45) return "等待机会";
+  if (numeric >= 30) return "暂不参与";
+  return "风险较高";
+}
+
+function parseNumber(value) {
+  const match = String(value ?? "").replace(/,/g, "").match(/-?\d+(?:\.\d+)?/);
+  return match ? Number(match[0]) : NaN;
+}
+
+function formatRangePrice(value) {
+  return Number.isFinite(value) ? value.toFixed(value >= 100 ? 1 : 2) : "数据不足";
 }
 
 function scoreByChange(value) {

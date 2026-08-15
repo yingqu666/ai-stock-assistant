@@ -16,6 +16,9 @@ export function tagList(items, className = "") {
 }
 
 export function opportunityCard(item) {
+  const reasons = item.reasons ?? [];
+  const risks = item.risks ?? [];
+  const observation = item.priceObservation ?? {};
   return `
     <article class="data-card opportunity-card">
       <div class="card-head">
@@ -24,19 +27,41 @@ export function opportunityCard(item) {
           <strong>${item.name}</strong>
           <small>${item.code}</small>
         </div>
-        <b>${item.score}分</b>
+        <b>${item.currentJudgment ?? `${item.score ?? "--"}分`}</b>
       </div>
+      <p><b>当前价格</b>${item.price ?? "数据源未返回"} · <b>涨跌幅</b>${item.changePercent ?? "数据源未返回"}</p>
+      <p><b>机会原因</b>${reasons.slice(0, 2).join("；") || "数据不足，等待行情和新闻补充。"}</p>
+      <details>
+        <summary>展开详细原因、价格观察和风险</summary>
       <div class="opportunity-body">
         <div>
-          <h3>关注原因</h3>
-          ${tagList(item.reasons)}
+          <h3>详细原因</h3>
+          ${tagList(reasons)}
         </div>
         <div>
           <h3>风险</h3>
-          ${tagList(item.risks, "risk-tags")}
+          ${tagList(risks, "risk-tags")}
         </div>
       </div>
-      <p class="notice">这是研究机会，不是保证买入。</p>
+        <div class="opportunity-body">
+          <div>
+            <h3>价格观察</h3>
+            ${tagList([
+              `近期高点：${item.recentHigh ?? observation.recentHigh ?? "数据不足"}`,
+              `近期低点：${item.recentLow ?? observation.recentLow ?? "数据不足"}`,
+              `关注区域：${observation.watchRange ?? "数据不足"}`,
+              `压力区域：${observation.pressureRange ?? "数据不足"}`,
+              `风险区域：${observation.riskRange ?? "数据不足"}`,
+            ])}
+          </div>
+          <div>
+            <h3>观察逻辑</h3>
+            <p>${observation.logic ?? "缺少价格、趋势或估值数据时不生成虚假区间。"}</p>
+            <p><b>来源</b>${item.dataSource ?? "数据源未返回"} · ${item.updatedAt ?? "时间待更新"}</p>
+          </div>
+        </div>
+      </details>
+      <p class="notice">适合观察、等待价格确认；不满足条件时避免参与。</p>
     </article>`;
 }
 

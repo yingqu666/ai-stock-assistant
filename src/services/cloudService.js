@@ -29,6 +29,7 @@ export const cloudDataApi = {
   getStockResearch: (query = "") => apiRequest(`/stocks/research?q=${encodeURIComponent(query)}`, { timeoutMs: 8000 }),
   getResearchSourceStatus: () => apiRequest("/stocks/research/status"),
   getStockDetail: (query = "") => apiRequest(`/stocks/detail?q=${encodeURIComponent(query)}`, { timeoutMs: 5000 }),
+  getMarketSnapshot: () => apiRequest("/market/snapshot", { timeoutMs: 7000 }),
   getWatchlist: () => apiRequest("/watchlist"),
   saveWatchlist: (payload) => apiRequest("/watchlist", { method: "POST", body: JSON.stringify(payload) }),
   deleteWatchlist: (idOrCode) => apiRequest(`/watchlist/${encodeURIComponent(idOrCode)}`, { method: "DELETE" }),

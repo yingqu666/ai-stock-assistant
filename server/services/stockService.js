@@ -169,8 +169,15 @@ async function getFastQuoteByCode(code) {
       price: UNKNOWN,
       changePercent: UNKNOWN,
       changeAmount: UNKNOWN,
+      highPrice: UNKNOWN,
+      lowPrice: UNKNOWN,
+      previousClose: UNKNOWN,
+      limitUpPrice: UNKNOWN,
+      limitDownPrice: UNKNOWN,
       amount: UNKNOWN,
       volume: UNKNOWN,
+      volumeChange: UNKNOWN,
+      amountChange: UNKNOWN,
       quoteSource: "\u771f\u5b9e\u884c\u60c5\u83b7\u53d6\u5931\u8d25",
       dataSource: "\u771f\u5b9e\u884c\u60c5\u83b7\u53d6\u5931\u8d25",
       dataStatus: STATUS_MOCK,
@@ -227,7 +234,7 @@ function mergeBackupQuotes(sina, tencent) {
 }
 
 async function fetchEastmoneyQuote(stock) {
-  const fields = "f12,f14,f2,f3,f4,f5,f6,f8,f20,f100,f162,f167";
+  const fields = "f12,f14,f2,f3,f4,f5,f6,f8,f10,f15,f16,f18,f20,f100,f162,f167";
   const quoteCode = normalizeQuoteCode(stock.quoteCode ?? stock.code);
   const url = `${eastmoneyQuoteApi}?fltt=2&fields=${fields}&secids=${toSecid(quoteCode, stock.market)}`;
   const json = await fetchJson(url);
@@ -242,8 +249,15 @@ async function fetchEastmoneyQuote(stock) {
     price: formatPrice(row.f2),
     changePercent: formatPercent(row.f3),
     changeAmount: formatPrice(row.f4),
+    highPrice: formatPrice(row.f15),
+    lowPrice: formatPrice(row.f16),
+    previousClose: formatPrice(row.f18),
+    limitUpPrice: formatPrice(calculateLimitPrice(row.f18, code, 1)),
+    limitDownPrice: formatPrice(calculateLimitPrice(row.f18, code, -1)),
     volume: formatVolume(row.f5),
     amount: formatAmount(row.f6),
+    volumeChange: row.f10 ? `量比 ${formatMetric(row.f10)}` : UNKNOWN,
+    amountChange: "实时成交额变化需分时数据补充",
     turnoverRate: assetType === "ETF" ? "\u4e0d\u9002\u7528" : formatPercent(row.f8),
     marketCap: formatAmount(row.f20),
     fundScale: assetType === "ETF" ? formatAmount(row.f20) : undefined,
@@ -304,8 +318,15 @@ async function fetchSinaQuote(stock) {
     price: formatPrice(current),
     changePercent: formatPercent(changePercent),
     changeAmount: formatPrice(change),
+    highPrice: formatPrice(fields[4]),
+    lowPrice: formatPrice(fields[5]),
+    previousClose: formatPrice(previousClose),
+    limitUpPrice: formatPrice(calculateLimitPrice(previousClose, code, 1)),
+    limitDownPrice: formatPrice(calculateLimitPrice(previousClose, code, -1)),
     volume: formatVolume(normalizeNumber(fields[8]) / 100),
     amount: formatAmount(normalizeNumber(fields[9])),
+    volumeChange: UNKNOWN,
+    amountChange: "实时成交额变化需分时数据补充",
     turnoverRate: assetType === "ETF" ? "\u4e0d\u9002\u7528" : UNKNOWN,
     marketCap: UNKNOWN,
     fundScale: assetType === "ETF" ? UNKNOWN : undefined,
@@ -354,8 +375,15 @@ async function fetchTencentQuote(stock, previousError = "") {
       price: formatPrice(fields[3]),
       changePercent: formatPercent(fields[32]),
       changeAmount: formatPrice(fields[31]),
+      highPrice: formatPrice(fields[33]),
+      lowPrice: formatPrice(fields[34]),
+      previousClose: formatPrice(fields[4]),
+      limitUpPrice: formatPrice(calculateLimitPrice(fields[4], code, 1)),
+      limitDownPrice: formatPrice(calculateLimitPrice(fields[4], code, -1)),
       volume: fields[36] ? `${fields[36]}\u624b` : UNKNOWN,
       amount: fields[37] ? `${fields[37]}\u4e07\u5143` : UNKNOWN,
+      volumeChange: UNKNOWN,
+      amountChange: "实时成交额变化需分时数据补充",
       turnoverRate: assetType === "ETF" ? "\u4e0d\u9002\u7528" : formatPercent(fields[38]),
       marketCap: fields[45] ? `${normalizeNumber(fields[45]).toFixed(2)}\u4ebf` : UNKNOWN,
       fundScale: assetType === "ETF" ? UNKNOWN : undefined,
@@ -400,8 +428,15 @@ async function fetchEastmoneyKlineQuote(stock, previousError = "") {
     price: formatPrice(fields[2]),
     changePercent: formatPercent(fields[8]),
     changeAmount: formatPrice(fields[9]),
+    highPrice: formatPrice(fields[3]),
+    lowPrice: formatPrice(fields[4]),
+    previousClose: formatPrice(normalizeNumber(fields[2]) - normalizeNumber(fields[9])),
+    limitUpPrice: formatPrice(calculateLimitPrice(normalizeNumber(fields[2]) - normalizeNumber(fields[9]), code, 1)),
+    limitDownPrice: formatPrice(calculateLimitPrice(normalizeNumber(fields[2]) - normalizeNumber(fields[9]), code, -1)),
     volume: formatVolume(normalizeNumber(fields[5])),
     amount: formatAmount(amount),
+    volumeChange: UNKNOWN,
+    amountChange: "来自日线备用行情，盘中变化不可用",
     turnoverRate: assetType === "ETF" ? "\u4e0d\u9002\u7528" : formatPercent(fields[10]),
     marketCap: stock.marketCap ?? UNKNOWN,
     fundScale: assetType === "ETF" ? stock.fundScale ?? UNKNOWN : undefined,
@@ -569,8 +604,15 @@ function enrichResearchFields(stock) {
     price: stock.price ?? UNKNOWN,
     changePercent: stock.changePercent ?? UNKNOWN,
     changeAmount: stock.changeAmount ?? UNKNOWN,
+    highPrice: stock.highPrice ?? UNKNOWN,
+    lowPrice: stock.lowPrice ?? UNKNOWN,
+    previousClose: stock.previousClose ?? UNKNOWN,
+    limitUpPrice: stock.limitUpPrice ?? UNKNOWN,
+    limitDownPrice: stock.limitDownPrice ?? UNKNOWN,
     amount: stock.amount ?? UNKNOWN,
     volume: stock.volume ?? UNKNOWN,
+    volumeChange: stock.volumeChange ?? UNKNOWN,
+    amountChange: stock.amountChange ?? UNKNOWN,
     turnoverRate: stock.turnoverRate ?? UNKNOWN,
     marketCap: stock.marketCap ?? UNKNOWN,
     pe: stock.pe ?? (assetType === "ETF" ? "\u4e0d\u9002\u7528" : UNKNOWN),
@@ -934,6 +976,21 @@ function buildValuationStatus(pe) {
   if (number < 20) return "\u504f\u4f4e";
   if (number < 45) return "\u4e2d\u6027";
   return "\u504f\u9ad8";
+}
+
+function calculateLimitPrice(previousClose, code, direction) {
+  const base = normalizeNumber(previousClose);
+  if (!base) return 0;
+  const limit = priceLimitRate(code);
+  return base * (1 + limit * direction);
+}
+
+function priceLimitRate(code) {
+  const text = String(code ?? "");
+  if (isEtfCode(text)) return 0.1;
+  if (text.startsWith("300") || text.startsWith("301") || text.startsWith("688")) return 0.2;
+  if (text.startsWith("8") || text.startsWith("920")) return 0.3;
+  return 0.1;
 }
 
 function normalizeNumber(value) {

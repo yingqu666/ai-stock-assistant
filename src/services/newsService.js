@@ -95,7 +95,9 @@ function normalizeAnnouncement(item) {
     relatedStocks: (item.codes ?? []).map((code) => code.stock_code).filter(Boolean),
     relatedIndustry: analysis.target,
     relatedIndustries: inferRelatedIndustries(title, analysis.target),
-    category: classifyAnnouncement(title),
+    category: "个股公告",
+    newsType: "个股公告",
+    detailType: classifyAnnouncement(title),
     impact: analysis.direction,
     target: "个股",
     credibility: { level: analysis.credibility, reason: "公告标题规则分类，需结合正文复核" },
@@ -115,6 +117,7 @@ function normalizeFastNews(item) {
     relatedIndustry: analysis.target,
     relatedIndustries: inferRelatedIndustries(title, analysis.target),
     category: classifyMarketNews(title),
+    newsType: classifyNewsType(title),
     impact: analysis.direction,
     target: analysis.target === "市场" ? "市场" : "行业",
     credibility: { level: "中", reason: "快讯来源，需等待公告或权威报道验证" },
@@ -133,6 +136,11 @@ function classifyMarketNews(title) {
   if (/政策|国务院|证监会|发改委|工信部/.test(title)) return "政策新闻";
   if (/行业|产业|需求|订单|服务器|芯片|算力|半导体|光模块|储能|电力/.test(title)) return "行业新闻";
   return "市场热点";
+}
+
+function classifyNewsType(title) {
+  if (/行业|产业|需求|订单|服务器|芯片|算力|半导体|光模块|储能|电力|AI|人工智能/.test(title)) return "行业新闻";
+  return "市场新闻";
 }
 
 function inferImpactTarget(title) {
@@ -166,13 +174,14 @@ async function fetchJson(url) {
 }
 
 function buildFallbackSnapshot(source) {
+  const useLocalFallback = DATA_MODE !== "real";
   return {
-    news,
+    news: useLocalFallback ? news : [],
     riskAlerts,
-    stockNews,
+    stockNews: useLocalFallback ? stockNews : [],
     updatedAt: formatNow(),
     source,
-    dataStatus: "备用数据",
+    dataStatus: useLocalFallback ? "备用数据" : "数据不足",
     providers: newsProviders,
   };
 }
