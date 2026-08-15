@@ -96,16 +96,17 @@ export async function getDashboardData() {
   ]);
   const watchlistSnapshot = syncedWatchlist.items ?? [];
   const risks = analyzeRisks({ watchlist: watchlistSnapshot, newsEvents: newsSnapshot.stockNews, marketData: market });
+  const fullMarketNews = dedupeNewsEvents([...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])]);
   const aiSummary = await generateAiAnalysis({
     marketData: market,
-    newsEvents: newsSnapshot.stockNews,
-    investmentProfile: getInvestmentProfileData(),
+    newsEvents: fullMarketNews,
+    riskData: risks,
   });
   return {
     ...market,
     opportunities,
     news: newsSnapshot.news,
-    importantNews: newsSnapshot.stockNews.slice(0, 3),
+    importantNews: fullMarketNews.slice(0, 6),
     riskAlerts,
     watchlist: watchlistSnapshot,
     portfolioSummary: portfolio,
@@ -115,6 +116,16 @@ export async function getDashboardData() {
     riskSignals: risks,
     refreshStatus: getRefreshStatus(),
   };
+}
+
+function dedupeNewsEvents(items = []) {
+  const seen = new Set();
+  return items.filter((item) => {
+    const key = item?.title ?? item?.headline;
+    if (!key || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 export async function getMarketData() {
