@@ -59,6 +59,7 @@ export function opportunityCard(item) {
           <div>
             <h3>观察逻辑</h3>
             <p>${observation.logic ?? "缺少价格、趋势或估值数据时不生成虚假区间。"}</p>
+            <p><b>放弃条件</b>${item.giveUpCondition ?? "跌破风险区域、热点退潮或出现明确利空时放弃观察。"}</p>
             <p><b>来源</b>${item.dataSource ?? "数据源未返回"} · ${item.updatedAt ?? "时间待更新"}</p>
           </div>
         </div>
