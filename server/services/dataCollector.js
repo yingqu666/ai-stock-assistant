@@ -72,7 +72,7 @@ export async function collectMarketData() {
   const turnover = indexes.reduce((sum, item) => sum + item.turnover, 0);
   const moneyEffect = calculateMoneyEffect(breadth, boards, turnover);
   const indexSource = sourceSummary(indexes, "指数");
-  const boardSource = boards.length ? "东方财富板块行情" : "板块数据缺失";
+  const boardSource = boards.length ? sourceSummary(boards, "板块行情") : "板块数据缺失";
   const breadthSource = upCount || downCount ? (breadth.source ?? "东方财富宽度") : "宽度数据缺失";
 
   return {
@@ -108,13 +108,15 @@ export async function collectMarketData() {
       name: item.name,
       status: item.changePercent >= 0 ? "活跃" : "调整",
       changePercent: formatPercent(item.changePercent),
+      change: formatPercent(item.changePercent),
       turnover: formatAmount(item.turnover),
       amount: formatAmount(item.turnover),
       capitalFlow: item.capitalFlow === null || item.capitalFlow === undefined ? "资金字段未返回" : formatAmount(item.capitalFlow),
       capitalFlowRatio: item.capitalFlowRatio === null || item.capitalFlowRatio === undefined ? "资金占比缺失" : formatPercent(item.capitalFlowRatio),
       flow: item.capitalFlow === null || item.capitalFlow === undefined ? `成交额${formatAmount(item.turnover)}` : `${formatAmount(item.capitalFlow)}（${formatPercent(item.capitalFlowRatio)}）`,
       heatRank: item.rank,
-      heatBasis: item.source === "新浪行业板块" ? "新浪行业板块备用源，按涨跌幅、成交额和成分股数量综合排序。" : "按东方财富板块涨幅榜排序，并补充成交额与主力资金字段。",
+      heatBasis: buildSectorHeatBasis(item),
+      rankingReason: buildSectorHeatBasis(item),
       reason: `${item.source ?? "板块行情"}TOP${item.rank}，依据涨跌幅、成交额和资金活跃度排序。`,
       aiReason: `板块涨跌幅 ${formatPercent(item.changePercent)}，成交额 ${formatAmount(item.turnover)}，资金表现 ${item.capitalFlow === null || item.capitalFlow === undefined ? "字段未返回" : formatAmount(item.capitalFlow)}。`,
       sustainability: buildSectorSustainability(item),
@@ -147,10 +149,10 @@ async function fetchIndexes(diagnostics = []) {
     try {
       const rows = await loader();
       if (rows.length) {
-        diagnostics.push({ source, status: "success", rows: rows.length });
+        recordMarketSuccess(diagnostics, source, rows.length);
         return rows;
       }
-      diagnostics.push({ source, status: "empty", message: "接口返回为空" });
+      recordMarketEmpty(diagnostics, source, "接口返回为空");
     } catch (error) {
       recordMarketFailure(diagnostics, source, error);
     }
@@ -212,10 +214,10 @@ async function fetchHotBoards(diagnostics = []) {
     try {
       const rows = await loader();
       if (rows.length) {
-        diagnostics.push({ source, status: "success", rows: rows.length });
+        recordMarketSuccess(diagnostics, source, rows.length);
         return rows;
       }
-      diagnostics.push({ source, status: "empty", message: "板块接口返回为空" });
+      recordMarketEmpty(diagnostics, source, "板块接口返回为空");
     } catch (error) {
       recordMarketFailure(diagnostics, source, error);
     }
@@ -249,10 +251,16 @@ async function fetchMarketBreadth(diagnostics = []) {
     try {
       const breadth = await loader();
       if (breadth.totalCount) {
-        diagnostics.push({ source, status: "success", rows: breadth.totalCount });
+        recordMarketSuccess(diagnostics, source, breadth.totalCount, {
+          upCount: breadth.upCount,
+          downCount: breadth.downCount,
+          flatCount: breadth.flatCount,
+          limitUpCount: breadth.limitUpCount,
+          limitDownCount: breadth.limitDownCount,
+        });
         return breadth;
       }
-      diagnostics.push({ source, status: "empty", message: "市场宽度返回为空" });
+      recordMarketEmpty(diagnostics, source, "市场宽度返回为空");
     } catch (error) {
       recordMarketFailure(diagnostics, source, error);
     }
@@ -289,11 +297,11 @@ async function fetchSinaMarketBreadth(diagnostics = []) {
   const totalRaw = await fetchText(`${sinaMarketCenterApi}/Market_Center.getHQNodeStockCount?node=hs_a`, "新浪财经宽度", { Referer: "https://finance.sina.com.cn/" });
   const total = toNumber(totalRaw.replace(/[^\d.]/g, ""));
   if (!total) throw withMarketSource(new Error("empty stock count"), "新浪财经宽度", "empty");
-  const pageSize = 500;
-  const totalPages = Math.min(Math.ceil(total / pageSize), 15);
+  const pageSize = 100;
+  const totalPages = Math.min(Math.ceil(total / pageSize), 70);
   const pages = [];
-  for (let page = 1; page <= totalPages; page += 3) {
-    const chunk = Array.from({ length: Math.min(3, totalPages - page + 1) }, (_, index) => page + index);
+  for (let page = 1; page <= totalPages; page += 20) {
+    const chunk = Array.from({ length: Math.min(20, totalPages - page + 1) }, (_, index) => page + index);
     const data = await Promise.all(chunk.map((pageNumber) => fetchSinaBreadthPage(pageNumber, pageSize).catch((error) => {
       recordMarketFailure(diagnostics, `新浪财经宽度第${pageNumber}页`, error);
       return [];
@@ -310,7 +318,6 @@ async function fetchSinaMarketBreadth(diagnostics = []) {
     if (change <= -limitThreshold(item.symbol, "down")) acc.limitDownCount += 1;
     return acc;
   }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: pages.length, status: "新浪财经宽度", source: "新浪财经宽度" });
-  diagnostics.push({ source: "新浪财经宽度", status: "success", rows: pages.length });
   return result;
 }
 
@@ -355,7 +362,6 @@ async function fetchSinaHotBoards(diagnostics = []) {
     };
   }).filter((item) => item.name && Number.isFinite(item.changePercent));
   const sorted = rows.sort((a, b) => b.composite - a.composite).slice(0, 12).map((item, index) => ({ ...item, rank: index + 1 }));
-  diagnostics.push({ source: "新浪行业板块", status: sorted.length ? "success" : "empty", rows: sorted.length });
   return sorted;
 }
 
@@ -476,9 +482,7 @@ async function fetchJson(url, diagnostics = [], source = "东方财富") {
   for (const target of targets) {
     try {
       const json = await fetchJsonTarget(target, source);
-      if (!json?.data) {
-        diagnostics.push({ source, target: safeUrl(target), status: "empty", message: "JSON data为空" });
-      }
+      if (!json?.data) recordMarketEmpty(diagnostics, source, "JSON data为空", target);
       return json;
     } catch (error) {
       lastError = error;
@@ -553,11 +557,37 @@ function recordMarketFailure(diagnostics = [], source, error, target = "") {
   const entry = {
     source,
     status: error?.statusType ?? classifyError(error),
+    rows: 0,
+    parseSuccess: false,
     message: error?.message ?? String(error),
+    error: error?.message ?? String(error),
     target: target ? safeUrl(target) : undefined,
   };
   diagnostics.push(entry);
   console.warn(`[market-data] ${entry.source} failed: ${entry.status} ${entry.message}${entry.target ? ` ${entry.target}` : ""}`);
+}
+
+function recordMarketSuccess(diagnostics = [], source, rows = 0, extra = {}) {
+  diagnostics.push({
+    source,
+    status: "success",
+    rows,
+    parseSuccess: true,
+    error: "",
+    ...extra,
+  });
+}
+
+function recordMarketEmpty(diagnostics = [], source, message = "接口返回为空", target = "") {
+  diagnostics.push({
+    source,
+    status: "empty",
+    rows: 0,
+    parseSuccess: false,
+    message,
+    error: message,
+    target: target ? safeUrl(target) : undefined,
+  });
 }
 
 function withMarketSource(error, source, statusType) {
@@ -677,6 +707,13 @@ function buildSectorSustainability(item = {}) {
 function buildSectorRisk(item = {}) {
   if (toNumber(item.changePercent) >= 4) return "短线涨幅较高，容易出现追高和冲高回落风险。";
   return "若成交额缩小或主力资金转弱，板块持续性会下降。";
+}
+
+function buildSectorHeatBasis(item = {}) {
+  if (item.source === "新浪行业板块") return "新浪行业板块备用源，按涨跌幅、成交额和成分股数量综合排序。";
+  if (item.source === "腾讯行业板块") return "腾讯行业板块备用源，按涨跌幅和成交额排序。";
+  if (item.source === "网易行业板块") return "网易行业板块备用源，按涨跌幅和成交额排序。";
+  return "按东方财富板块涨幅榜排序，并补充成交额与主力资金字段。";
 }
 
 function formatNumber(value) {
