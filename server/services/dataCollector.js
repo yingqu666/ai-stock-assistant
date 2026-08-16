@@ -8,6 +8,7 @@ const tencentQuoteApi = "https://qt.gtimg.cn/q=";
 const sinaMarketCenterApi = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php";
 const sinaIndustryApi = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php";
 const requestTimeoutMs = 6500;
+const marketDataVersion = "2026-08-16-market-fallback-diagnostics";
 import { getStockDetail } from "./stockService.js";
 
 export async function collectReportSourceData({
@@ -79,6 +80,7 @@ export async function collectMarketData() {
     source: [indexSource, boardSource, breadthSource].filter(Boolean).join(" + "),
     status: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
     dataStatus: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
+    version: marketDataVersion,
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
     diagnostics,
     marketOverview: [
