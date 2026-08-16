@@ -2,6 +2,7 @@ import { metricCard } from "../components/cards.js";
 import { getReviewDetailData, runAiReview } from "../services/chartService.js";
 
 let selectedReviewDate = null;
+const tradeReviewKey = "ai-investment-trade-review-records";
 
 function bar(value) {
   const width = Math.max(0, Math.min(100, Number(value || 0) * 100));
@@ -19,6 +20,8 @@ function accuracyCard(label, stat) {
 export async function renderReviewAnalysis() {
   const data = await getReviewDetailData(selectedReviewDate);
   const detail = data.detail;
+  const tradeRecords = loadTradeRecords();
+  const tradeStats = summarizeTrades(tradeRecords);
 
   return `
     <section class="wide-section">
@@ -44,6 +47,46 @@ export async function renderReviewAnalysis() {
         ].map(metricCard).join("")}
       </div>
       <p id="ai-review-message" class="form-message">选择日期查看当天市场、板块、自选股表现和AI观点。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head">
+        <div>
+          <h2>交易复盘记录</h2>
+          <span>只记录个人买入、卖出和盈亏，不做自动交易</span>
+        </div>
+      </div>
+      <form class="stock-search trade-review-form">
+        <input name="stock" placeholder="股票/ETF，例如 600176" />
+        <select name="type">
+          <option value="买入">买入记录</option>
+          <option value="卖出">卖出记录</option>
+          <option value="盈亏">盈亏记录</option>
+        </select>
+        <input name="price" type="number" step="0.001" placeholder="价格" />
+        <input name="quantity" type="number" step="1" placeholder="数量" />
+        <input name="reason" placeholder="交易原因 / 复盘备注" />
+        <button type="submit">保存记录</button>
+      </form>
+      <div class="metrics">
+        ${[
+          { label: "买入记录", value: `${tradeStats.buyCount}条`, change: "手动记录" },
+          { label: "卖出记录", value: `${tradeStats.sellCount}条`, change: "手动记录" },
+          { label: "已记录盈亏", value: `${tradeStats.pnl.toFixed(2)}元`, change: tradeStats.pnl >= 0 ? "盈利" : "亏损" },
+          { label: "AI复盘入口", value: "已开启", change: "结合下方AI复盘" },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid">
+        ${tradeRecords.slice(0, 8).map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.stock}</strong><span>${item.type} · ${item.time}</span></div>
+            <p><b>价格</b>${item.price || "未填"} · <b>数量</b>${item.quantity || "未填"} · <b>金额</b>${item.amount.toFixed(2)}元</p>
+            <p><b>复盘备注</b>${item.reason || "未填写，需要补充当时判断依据。"}</p>
+            <p><b>AI复盘入口</b>点击“执行AI复盘”后，可结合日报、行情和自选股表现校准判断。</p>
+          </article>
+        `).join("") || `<article class="data-card"><strong>暂无交易记录</strong><p>记录买入、卖出和盈亏后，后续可与AI判断进行对照复盘。</p></article>`}
+      </div>
+      <p id="trade-review-message" class="form-message">交易复盘仅用于记录和反思，不触发任何下单动作。</p>
     </section>
 
     <section class="wide-section">
@@ -117,6 +160,21 @@ export async function renderReviewAnalysis() {
 }
 
 export function mountReviewAnalysis({ rerender }) {
+  document.querySelector(".trade-review-form")?.addEventListener("submit", (event) => {
+    event.preventDefault();
+    const formData = new FormData(event.currentTarget);
+    const record = saveTradeRecord({
+      stock: formData.get("stock"),
+      type: formData.get("type"),
+      price: formData.get("price"),
+      quantity: formData.get("quantity"),
+      reason: formData.get("reason"),
+    });
+    const message = document.querySelector("#trade-review-message");
+    if (message) message.textContent = record.ok ? "交易复盘记录已保存。" : record.message;
+    if (record.ok) rerender();
+  });
+
   document.querySelector(".review-date-form")?.addEventListener("submit", (event) => {
     event.preventDefault();
     const formData = new FormData(event.currentTarget);
@@ -131,4 +189,40 @@ export function mountReviewAnalysis({ rerender }) {
     if (message) message.textContent = `复盘完成：更新 ${result.reviewedCount ?? 0} 条判断记录。`;
     rerender();
   });
+}
+
+function loadTradeRecords() {
+  try {
+    return JSON.parse(window.localStorage.getItem(tradeReviewKey) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function saveTradeRecord(input = {}) {
+  const stock = String(input.stock ?? "").trim();
+  if (!stock) return { ok: false, message: "请输入股票或ETF代码。" };
+  const price = Number(input.price || 0);
+  const quantity = Number(input.quantity || 0);
+  const record = {
+    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    stock,
+    type: String(input.type ?? "买入"),
+    price,
+    quantity,
+    amount: Number.isFinite(price * quantity) ? price * quantity : 0,
+    reason: String(input.reason ?? "").trim(),
+    time: new Date().toLocaleString("zh-CN", { hour12: false }),
+  };
+  window.localStorage.setItem(tradeReviewKey, JSON.stringify([record, ...loadTradeRecords()].slice(0, 80)));
+  return { ok: true, record };
+}
+
+function summarizeTrades(records = []) {
+  const buyCount = records.filter((item) => item.type === "买入").length;
+  const sellCount = records.filter((item) => item.type === "卖出").length;
+  const sellAmount = records.filter((item) => item.type === "卖出").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const buyAmount = records.filter((item) => item.type === "买入").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  const manualPnl = records.filter((item) => item.type === "盈亏").reduce((sum, item) => sum + Number(item.amount || 0), 0);
+  return { buyCount, sellCount, pnl: manualPnl || (sellAmount - buyAmount) };
 }

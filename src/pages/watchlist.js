@@ -20,8 +20,10 @@ function portfolioRow(stock, groups) {
         <strong>${stock.name}</strong>
         <small>${stock.code} · ${stock.assetType ?? "股票"} · ${stock.groupName ?? "长期观察"} · ${stock.industry ?? "行业待补充"}</small>
         <p>${stock.reason || "已加入长期观察，等待行情、新闻和公告继续验证。"}</p>
-        <p><b>价格：</b>${stock.price ?? "暂无"} · <b>涨跌幅：</b>${stock.changePercent ?? "暂无"} · <b>AI评级：</b>${stock.aiRating ?? stock.aiLevel ?? "观察"} · <b>风险：</b>${stock.riskLevel ?? stock.riskText ?? firstRisk(stock)}</p>
-        <p><b>最近新闻：</b>${stock.latestNews ?? "暂无强相关新闻，继续观察公告和行情变化。"}</p>
+        <p><b>价格：</b>${stock.price ?? "暂无"} · <b>涨跌幅：</b>${stock.changePercent ?? "暂无"} · <b>AI判断：</b>${stock.currentJudgment ?? stock.aiRating ?? stock.aiLevel ?? "观察"} · <b>风险：</b>${stock.riskLevel ?? stock.riskText ?? firstRisk(stock)}</p>
+        <p><b>判断变化：</b>${stock.aiChange ?? "暂无明显变化，继续跟踪行情、新闻和公告。"}</p>
+        <p><b>最新新闻影响：</b>${stock.newsImpact ?? stock.latestNews ?? "暂无强相关新闻，继续观察公告和行情变化。"}</p>
+        <p><b>热点关联：</b>${stock.hotSectorRelation ?? "暂未匹配到强热点板块。"}</p>
       </div>
       <span>${stock.aiLevel}</span>
       <div class="row-actions">
@@ -47,9 +49,11 @@ function stockDetailCard(stock) {
         <p><b>成交额</b>${stock.amount ?? "暂无"}</p>
         <p><b>换手率</b>${stock.turnoverRate ?? "暂无"}</p>
         <p><b>AI评级</b>${stock.aiRating ?? stock.aiLevel ?? "观察"}</p>
+        <p><b>AI当前判断变化</b>${stock.aiChange ?? "暂无明显变化"}</p>
         <p><b>风险等级</b>${stock.riskLevel ?? "中"}</p>
+        <p><b>热点板块关联</b>${stock.hotSectorRelation ?? "暂未匹配到强热点板块。"}</p>
         <p><b>AI观点</b>${stock.aiOpinion ?? "等待AI结合行情、新闻和公告继续更新。"}</p>
-        <p><b>最近新闻</b>${stock.latestNews ?? "暂无强相关新闻。"}</p>
+        <p><b>最近新闻影响</b>${stock.newsImpact ?? stock.latestNews ?? "暂无强相关新闻。"}</p>
         <p><b>数据来源</b>${stock.dataSource ?? "云端/本地"} · ${stock.dataStatus ?? "部分真实"}</p>
       </div>
     </article>`;
@@ -63,7 +67,7 @@ export async function renderWatchlist() {
   const syncStatus = synced.syncStatus;
   const groups = synced.groups ?? [];
   const sortMode = getSortMode();
-  const enrichedItems = sortStocks(enrichStocks(synced.items, riskSignals), sortMode);
+  const enrichedItems = sortStocks(enrichStocks(synced.items, riskSignals, stockNews), sortMode);
   const byGroup = groups.map((group) => ({ ...group, stocks: enrichedItems.filter((stock) => (stock.groupName ?? "长期观察") === group.name) }));
 
   return `
@@ -269,17 +273,60 @@ function getSortMode() {
   return window.localStorage.getItem(sortKey) ?? "risk";
 }
 
-function enrichStocks(items, riskSignals) {
+function enrichStocks(items, riskSignals, stockNews = []) {
   return items.map((item) => {
     const risk = riskSignals.find((signal) => signal.target === item.name || signal.target === item.code);
+    const relatedNews = findRelatedNews(item, stockNews);
+    const changeValue = parseChange(item.changePercent);
+    const currentJudgment = buildCurrentJudgment(item, risk, relatedNews, changeValue);
     return {
       ...item,
-      changeValue: parseChange(item.changePercent),
+      changeValue,
+      currentJudgment,
+      aiChange: buildAiChange(item, risk, relatedNews, changeValue),
+      latestNews: relatedNews?.title ?? item.latestNews,
+      newsImpact: buildNewsImpact(relatedNews),
+      hotSectorRelation: buildHotSectorRelation(item, relatedNews),
       isRisk: Boolean(risk) || String(item.aiLevel).includes("风险"),
       riskText: risk?.message,
       aiScore: aiLevelScore(item.aiLevel),
     };
   });
+}
+
+function findRelatedNews(stock = {}, news = []) {
+  return news.find((item) => {
+    const text = `${item.title ?? ""}${item.relatedStock ?? ""}${(item.relatedStocks ?? []).join("")}${item.relatedIndustry ?? ""}${(item.relatedIndustries ?? []).join("")}`;
+    return text.includes(stock.code) || text.includes(stock.name) || (stock.industry && text.includes(stock.industry));
+  });
+}
+
+function buildCurrentJudgment(stock = {}, risk, news, changeValue = 0) {
+  if (risk || Math.abs(changeValue) >= 5) return "风险优先观察";
+  if (news?.impact === "利好" && changeValue >= 0) return "可以观察";
+  if (news?.impact === "利空") return "等待风险释放";
+  if (changeValue >= 2) return "关注强度提升";
+  if (changeValue <= -2) return "等待企稳";
+  return stock.aiRating ?? stock.aiLevel ?? "常规观察";
+}
+
+function buildAiChange(stock = {}, risk, news, changeValue = 0) {
+  if (risk) return `风险信号触发：${risk.message}`;
+  if (news?.title) return `新闻驱动变化：${news.title}，影响方向${news.impact ?? "中性"}。`;
+  if (changeValue >= 2) return "价格表现转强，关注成交额是否同步放大。";
+  if (changeValue <= -2) return "价格走弱，等待企稳和风险释放。";
+  return "判断暂无明显变化，维持原观察等级。";
+}
+
+function buildNewsImpact(news) {
+  if (!news) return "暂无强相关新闻，继续观察公告和行情变化。";
+  return `${news.title}｜${news.source ?? "新闻"}｜${news.impact ?? "中性"}｜${news.shortTermImpact ?? news.aiSummary ?? "等待行情验证影响。"}`;
+}
+
+function buildHotSectorRelation(stock = {}, news) {
+  const sectors = [...(news?.relatedIndustries ?? []), news?.relatedIndustry, stock.industry].filter(Boolean);
+  if (!sectors.length) return "暂未匹配到强热点板块。";
+  return `关联方向：${[...new Set(sectors)].slice(0, 3).join("、")}，需观察板块热度是否延续。`;
 }
 
 function sortStocks(items, mode) {

@@ -550,6 +550,8 @@ function buildOpportunityItem(stock = {}, marketData = {}, newsSnapshot = {}, pr
     code: stock.code ?? "",
     assetType: stock.assetType ?? (String(stock.name ?? "").includes("ETF") ? "ETF" : "股票"),
     currentJudgment: judgment,
+    whyFocus: buildOpportunityFocusReason(stock, hotSector, relatedCatalysts, scoreParts),
+    whyWait: buildOpportunityWaitReason(stock, hotSector, relatedCatalysts, scoreParts),
     score: rankScore,
     rankScore,
     price: stock.price ?? DATA_MISSING,
@@ -644,6 +646,26 @@ function buildOpportunityGiveUpCondition(stock = {}, hotSector = {}, marketData 
     `市场赚钱效应转弱，上涨家数低于下跌家数且跌停数量扩大`,
     `公告/新闻出现利空，或财务质量无法支撑当前估值`,
   ].join("；");
+}
+
+function buildOpportunityFocusReason(stock = {}, hotSector = {}, relatedNews = [], scoreParts = {}) {
+  const assetType = stock.assetType === "ETF" ? "ETF" : "股票";
+  const sectorName = hotSector?.name ?? stock.industry ?? "相关方向";
+  const catalyst = relatedNews[0]?.title ? `新闻/公告催化为“${relatedNews[0].title}”` : "暂无强新闻催化";
+  const quality = assetType === "ETF"
+    ? `ETF重点看${stock.trackingIndex ?? "跟踪指数"}、成交额和主题热度`
+    : `公司基本面参考净利润${stock.financials?.netProfit ?? DATA_MISSING}、ROE${stock.financials?.roe ?? DATA_MISSING}`;
+  return `${sectorName}位于热点板块池，成交额${stock.amount ?? DATA_MISSING}，${catalyst}，${quality}。综合评分${scoreParts.total ?? "--"}分，仅代表观察优先级。`;
+}
+
+function buildOpportunityWaitReason(stock = {}, hotSector = {}, relatedNews = [], scoreParts = {}) {
+  const warnings = [];
+  if (!relatedNews.length) warnings.push("缺少真实新闻/公告催化");
+  if (scoreParts.riskPenalty >= 15) warnings.push("估值或财务风险扣分较高");
+  if (!hotSector) warnings.push("未匹配到强热点板块");
+  if (parseOpportunityNumber(stock.changePercent) >= 7) warnings.push("短线涨幅偏高，追高性价比下降");
+  if (!warnings.length) warnings.push("需要等待价格、成交和板块持续性进一步确认");
+  return `${warnings.join("；")}。不满足观察条件时暂不参与，避免把热点波动当成确定机会。`;
 }
 
 function scoreOpportunity(stock = {}, hotSector, relatedNews = [], marketData = {}) {

@@ -85,8 +85,10 @@ export async function renderDashboard() {
         <div class="section-head"><h2>AI投资经理</h2><span>${aiSummary.source ?? "AI/fallback"} · 只给仓位参考，不直接买卖股票</span></div>
         <p class="answer"><b>今日市场判断：</b>${marketStatusLabel(marketStats, rankedSectors)}。${buildManagerConclusion(decision, strategy, marketStats, rankedSectors, marketNews)}</p>
         <div class="detail-grid">
-          <article class="data-card"><strong>当前判断</strong><p>${marketActionJudgment(marketStats, rankedSectors)}。评分不是主要依据，重点看热点持续性和风险触发条件。</p></article>
-          <article class="data-card"><strong>操作判断</strong><p>${buildActionJudgment(marketStats, rankedSectors)}</p></article>
+          <article class="data-card"><strong>当前市场状态</strong><p>${buildMarketStatusDecision(marketStats, rankedSectors, marketNews)}</p></article>
+          <article class="data-card"><strong>今日主线方向</strong><p>${buildMainDirectionDecision(rankedSectors, marketNews)}</p></article>
+          <article class="data-card"><strong>风险方向</strong><p>${buildRiskDirectionDecision(marketStats, rankedSectors, marketNews)}</p></article>
+          <article class="data-card"><strong>操作思路</strong><p>${buildActionJudgment(marketStats, rankedSectors)}</p></article>
           <article class="data-card"><strong>仓位参考</strong><p>${positionPercent(decision.positionAdvice ?? strategy.position)}。仅作为风险暴露参考，不代表直接买卖。</p></article>
           <article class="data-card"><strong>判断依据</strong>${tagListSafe(extractBasis(aiSummary, rankedSectors, marketSentiment, marketStats, marketNews).slice(0, 8))}</article>
           <article class="data-card"><strong>价格/风险区域</strong><p>${buildMarketPriceZones(rankedSectors, marketStats)}</p></article>
@@ -326,6 +328,32 @@ function buildActionJudgment(stats = {}, sectors = []) {
   return `以等待价格确认为主，关注${focus}是否在回落时仍有资金承接；若热点轮动过快，不追高。`;
 }
 
+function buildMarketStatusDecision(stats = {}, sectors = [], news = []) {
+  const status = marketStatusLabel(stats, sectors);
+  const topSector = sectors[0]?.name ?? "热点板块待确认";
+  const newsTitle = news[0]?.title ?? "新闻数据不足";
+  return `${status}。依据：上涨${stats.upCount}家、下跌${stats.downCount}家，成交额${stats.turnover}，赚钱效应${stats.moneyEffect}；热点集中在${topSector}，新闻侧重点为“${newsTitle}”。`;
+}
+
+function buildMainDirectionDecision(sectors = [], news = []) {
+  const top = sectors.slice(0, 3);
+  if (!top.length) return "热点板块TOP数据不足，暂不主动生成主线方向。";
+  return top.map((sector) => {
+    const relatedNews = findNewsForSector(sector, news);
+    return `${sector.name}：涨跌幅${sector.changePercent ?? sector.change ?? "待更新"}，资金${sector.flow ?? sector.amount ?? "待更新"}，${relatedNews ? `新闻催化“${relatedNews.title}”` : "暂未匹配强新闻催化"}。`;
+  }).join(" ");
+}
+
+function buildRiskDirectionDecision(stats = {}, sectors = [], news = []) {
+  const hotRisk = sectors
+    .filter((sector) => parseNumber(sector.changePercent ?? sector.change) >= 3 || /高|回落|分化/.test(String(sector.risk ?? "")))
+    .slice(0, 3)
+    .map((sector) => `${sector.name}短线热度偏高，风险点：${sector.risk ?? "成交缩量或龙头冲高回落"}`);
+  const badNews = news.filter((item) => normalizeImpact(item.impact ?? item.direction) === "利空").slice(0, 2).map((item) => `${item.relatedIndustry ?? item.newsType ?? "相关方向"}：${item.title}`);
+  const breadthRisk = stats.moneyEffect === "偏弱" ? [`市场宽度偏弱，上涨${stats.upCount}家、下跌${stats.downCount}家`] : [];
+  return [...hotRisk, ...badNews, ...breadthRisk].join("；") || "暂未出现明确高风险方向，但仍需观察成交额、跌停数量和热点持续性。";
+}
+
 function buildMarketPriceZones(sectors = [], stats = {}) {
   const top = sectors[0];
   if (!top) return "热点板块数据不足，不能给出观察区域。";
@@ -445,6 +473,7 @@ function newsInsightCard(item = {}) {
       <p><b>影响股票</b>${newsAffectedStocks(item).join("、") || "待确认"}</p>
       <p><b>短期影响</b>${impact}：${newsShortTermImpact(item, impact)}</p>
       <p><b>长期影响</b>${normalizeImpact(item.longTermImpact ?? item.impact ?? item.category)}：${newsLongTermImpact(item, impact)}</p>
+      <p><b>风险提示</b>${item.riskWarning ?? item.aiInterpretation?.riskWarning ?? "需要结合行情、成交额和后续公告继续验证。"}</p>
     </details>`;
 }
 
@@ -472,8 +501,11 @@ function normalizeImpact(value = "") {
 }
 
 function newsImpactSummary(item = {}, impact = "中性") {
-  const raw = item.summary ?? item.content ?? item.aiSummary ?? item.title ?? "";
+  const raw = item.aiInterpretation?.factSummary ?? item.factSummary ?? item.aiSummary ?? item.summary ?? item.content ?? item.title ?? "";
   const base = String(raw).replace(/\s+/g, " ").trim();
+  if (item.aiInterpretation?.factSummary || item.factSummary || item.aiSummary) {
+    return base.length > 100 ? `${base.slice(0, 97)}...` : base;
+  }
   const prefix = impact === "利好"
     ? "短期可能提升相关方向关注度，"
     : impact === "利空"
@@ -484,7 +516,7 @@ function newsImpactSummary(item = {}, impact = "中性") {
 }
 
 function newsOriginalSummary(item = {}) {
-  const text = String(item.summary ?? item.content ?? item.title ?? "新闻正文摘要未返回。").replace(/\s+/g, " ").trim();
+  const text = String(item.factSummary ?? item.summary ?? item.content ?? item.title ?? "新闻正文摘要未返回。").replace(/\s+/g, " ").trim();
   return text.length > 120 ? `${text.slice(0, 117)}...` : text;
 }
 
@@ -514,6 +546,8 @@ function newsAffectedStocks(item = {}) {
 }
 
 function newsShortTermImpact(item = {}, impact = "中性") {
+  const explicit = item.shortTermImpact ?? item.aiInterpretation?.shortTermImpact;
+  if (explicit) return String(explicit).slice(0, 120);
   const sectors = newsAffectedSectors(item).join("、") || "相关方向";
   if (impact === "利好") return `${sectors}短线关注度可能提升，重点看板块涨幅、成交额和龙头股是否同步放大。`;
   if (impact === "利空") return `${sectors}短线可能承压，若资金流出和跌幅扩大，需要降低参与意愿。`;
@@ -521,6 +555,8 @@ function newsShortTermImpact(item = {}, impact = "中性") {
 }
 
 function newsLongTermImpact(item = {}, impact = "中性") {
+  const explicit = item.longTermImpact ?? item.aiInterpretation?.longTermImpact;
+  if (explicit) return String(explicit).slice(0, 120);
   const sectors = newsAffectedSectors(item).join("、") || "相关方向";
   if (impact === "利好") return `长期需要验证${sectors}是否出现订单、业绩、政策或产业趋势持续兑现。`;
   if (impact === "利空") return `长期需要观察${sectors}盈利预期、估值中枢或政策环境是否被实质削弱。`;

@@ -7,8 +7,9 @@ export function newsList(items) {
         <span>
           <strong>${item.title}</strong>
           <small>${item.source ?? item.type ?? "新闻"}｜${item.time ?? item.date ?? "时间待更新"}</small>
-          <em>短期：${item.shortTermImpact ?? shortTermImpact(item, impact)}</em>
-          <em>长期：${item.longTermImpact ?? longTermImpact(item, impact)}</em>
+          <em>解读：${item.aiSummary ?? item.factSummary ?? item.aiInterpretation?.factSummary ?? "等待新闻事实摘要"}</em>
+          <em>短期：${item.shortTermImpact ?? item.aiInterpretation?.shortTermImpact ?? shortTermImpact(item, impact)}</em>
+          <em>长期：${item.longTermImpact ?? item.aiInterpretation?.longTermImpact ?? longTermImpact(item, impact)}</em>
         </span>
       </article>`;
   }).join("");
