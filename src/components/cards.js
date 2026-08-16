@@ -30,12 +30,13 @@ export function opportunityCard(item) {
         <b>${item.currentJudgment ?? `${item.score ?? "--"}分`}</b>
       </div>
       <p><b>当前价格</b>${item.price ?? "数据源未返回"} · <b>涨跌幅</b>${item.changePercent ?? "数据源未返回"}</p>
-      <p><b>机会原因</b>${reasons.slice(0, 2).join("；") || "数据不足，等待行情和新闻补充。"}</p>
+      <p><b>入选原因</b>${reasons.slice(0, 4).join("；") || "数据不足，等待行情和新闻补充。"}</p>
+      <p><b>当前判断</b>${item.currentJudgment ?? "等待机会"}。只作为观察池排序，不代表直接买入。</p>
       <details>
         <summary>展开详细原因、价格观察和风险</summary>
       <div class="opportunity-body">
         <div>
-          <h3>详细原因</h3>
+          <h3>入选原因</h3>
           ${tagList(reasons)}
         </div>
         <div>
@@ -47,6 +48,7 @@ export function opportunityCard(item) {
           <div>
             <h3>价格观察</h3>
             ${tagList([
+              `当前价格：${item.price ?? "数据不足"}`,
               `近期高点：${item.recentHigh ?? observation.recentHigh ?? "数据不足"}`,
               `近期低点：${item.recentLow ?? observation.recentLow ?? "数据不足"}`,
               `关注区域：${observation.watchRange ?? "数据不足"}`,

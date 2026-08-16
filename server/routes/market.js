@@ -30,6 +30,7 @@ marketRouter.get(
       hotSectors: [],
       sectors: [],
       failureReason: error.message,
+      diagnostics: error.diagnostics ?? [],
     }));
     res.json({ ok: true, data });
   }),

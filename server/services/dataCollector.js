@@ -3,7 +3,9 @@ const indexSecids = "1.000001,0.399001,0.399006";
 const boardFs = "m:90+t:2";
 const allAShareFs = "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23";
 const fastNewsApi = "https://np-listapi.eastmoney.com/comm/web/getFastNews";
-const requestTimeoutMs = 5000;
+const sinaQuoteApi = "https://hq.sinajs.cn/list=";
+const tencentQuoteApi = "https://qt.gtimg.cn/q=";
+const requestTimeoutMs = 6500;
 import { getStockDetail } from "./stockService.js";
 
 export async function collectReportSourceData({
@@ -41,28 +43,47 @@ export async function collectReportSourceData({
 }
 
 export async function collectMarketData() {
+  const diagnostics = [];
   const [indexes, boards, breadth] = await Promise.all([
-    fetchIndexes().catch(() => []),
-    fetchHotBoards().catch(() => []),
-    fetchMarketBreadth().catch(() => ({ upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回" })),
+    fetchIndexes(diagnostics).catch((error) => {
+      recordMarketFailure(diagnostics, "指数聚合", error);
+      return [];
+    }),
+    fetchHotBoards(diagnostics).catch((error) => {
+      recordMarketFailure(diagnostics, "热点板块", error);
+      return [];
+    }),
+    fetchMarketBreadth(diagnostics).catch((error) => {
+      recordMarketFailure(diagnostics, "市场宽度", error);
+      return { upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回" };
+    }),
   ]);
-  if (!indexes.length && !boards.length) throw new Error("东方财富指数和板块接口均未返回数据");
+  if (!indexes.length && !boards.length) {
+    const message = diagnostics.map((item) => `${item.source}:${item.status}`).join("；") || "全部免费行情源均未返回";
+    const error = new Error(`指数和板块接口均未返回数据：${message}`);
+    error.diagnostics = diagnostics;
+    throw error;
+  }
   const upCount = breadth.upCount;
   const downCount = breadth.downCount;
   const averageChange = indexes.length ? indexes.reduce((sum, item) => sum + item.changePercent, 0) / indexes.length : 0;
   const turnover = indexes.reduce((sum, item) => sum + item.turnover, 0);
   const moneyEffect = calculateMoneyEffect(breadth, boards, turnover);
+  const indexSource = sourceSummary(indexes, "指数");
+  const boardSource = boards.length ? "东方财富板块行情" : "板块数据缺失";
+  const breadthSource = upCount || downCount ? (breadth.source ?? "东方财富宽度") : "宽度数据缺失";
 
   return {
-    source: indexes.length && boards.length ? "东方财富" : "东方财富部分接口",
+    source: [indexSource, boardSource, breadthSource].filter(Boolean).join(" + "),
     status: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
     dataStatus: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    diagnostics,
     marketOverview: [
       ...indexes.map((item) => ({ label: item.name, value: formatNumber(item.price), change: formatPercent(item.changePercent) })),
-      { label: "成交额", value: formatAmount(turnover), change: "指数合计" },
-      { label: "上涨数量", value: formatCount(upCount), change: upCount || downCount ? "东方财富宽度" : "暂未返回" },
-      { label: "下跌数量", value: formatCount(downCount), change: upCount || downCount ? "东方财富宽度" : "暂未返回" },
+      { label: "成交额", value: indexes.length ? formatAmount(turnover) : "数据缺失", change: indexes.length ? indexSource : "暂未返回" },
+      { label: "上涨数量", value: formatCount(upCount), change: upCount || downCount ? breadthSource : "暂未返回" },
+      { label: "下跌数量", value: formatCount(downCount), change: upCount || downCount ? breadthSource : "暂未返回" },
       { label: "平盘数量", value: formatCount(breadth.flatCount), change: breadth.status ?? "东方财富宽度" },
       { label: "涨停数量", value: formatCount(breadth.limitUpCount), change: "涨停统计" },
       { label: "跌停数量", value: formatCount(breadth.limitDownCount), change: "跌停统计" },
@@ -79,6 +100,7 @@ export async function collectMarketData() {
       moneyEffect: moneyEffect.label,
       moneyEffectBasis: moneyEffect.basis,
       riskLevel: averageChange >= 0 ? "中" : "偏高",
+      diagnostics,
     },
     hotSectors: boards.slice(0, 12).map((item) => ({
       name: item.name,
@@ -113,15 +135,74 @@ async function collectNewsData() {
   }));
 }
 
-async function fetchIndexes() {
-  const url = `${eastmoneyApi}/ulist.np/get?fltt=2&fields=f12,f14,f2,f3,f6&secids=${indexSecids}`;
-  const rows = await fetchRows(url);
-  return rows.map((row) => ({ code: row.f12, name: row.f14, price: toNumber(row.f2), changePercent: toNumber(row.f3), turnover: toNumber(row.f6) }));
+async function fetchIndexes(diagnostics = []) {
+  const sources = [
+    ["东方财富指数", () => fetchEastmoneyIndexes(diagnostics)],
+    ["新浪财经指数", () => fetchSinaIndexes(diagnostics)],
+    ["腾讯财经指数", () => fetchTencentIndexes(diagnostics)],
+  ];
+  for (const [source, loader] of sources) {
+    try {
+      const rows = await loader();
+      if (rows.length) {
+        diagnostics.push({ source, status: "success", rows: rows.length });
+        return rows;
+      }
+      diagnostics.push({ source, status: "empty", message: "接口返回为空" });
+    } catch (error) {
+      recordMarketFailure(diagnostics, source, error);
+    }
+  }
+  return [];
 }
 
-async function fetchHotBoards() {
+async function fetchEastmoneyIndexes(diagnostics = []) {
+  const url = `${eastmoneyApi}/ulist.np/get?fltt=2&fields=f12,f14,f2,f3,f6&secids=${indexSecids}`;
+  const rows = await fetchRows(url, diagnostics, "东方财富指数");
+  return rows.map((row) => ({ code: row.f12, name: row.f14, price: toNumber(row.f2), changePercent: toNumber(row.f3), turnover: toNumber(row.f6), source: "东方财富指数" }));
+}
+
+async function fetchSinaIndexes() {
+  const symbols = "s_sh000001,s_sz399001,s_sz399006";
+  const text = await fetchText(`${sinaQuoteApi}${symbols}`, "新浪财经指数", { Referer: "https://finance.sina.com.cn/" });
+  const rows = [...text.matchAll(/var hq_str_(s_[^=]+)="([^"]*)";/g)].map((match) => {
+    const values = match[2].split(",");
+    return {
+      code: match[1],
+      name: indexNameBySymbol(match[1], values[0]),
+      price: toNumber(values[1]),
+      changePercent: toNumber(values[3]),
+      turnover: toNumber(values[5]) * 10000,
+      source: "新浪财经指数",
+    };
+  });
+  return rows.filter((item) => item.name && item.price);
+}
+
+async function fetchTencentIndexes() {
+  const symbols = "sh000001,sz399001,sz399006";
+  const text = await fetchText(`${tencentQuoteApi}${symbols}`, "腾讯财经指数", { Referer: "https://gu.qq.com/" });
+  const rows = [...text.matchAll(/v_([^=]+)="([^"]*)";/g)].map((match) => {
+    const values = match[2].split("~");
+    const price = firstFinite(values[3], values[4]);
+    const changePercent = firstFinite(values[32], values[31], values[30]);
+    const turnover = firstFinite(values[37], values[36], values[35]) * 10000;
+    return {
+      code: match[1],
+      name: indexNameBySymbol(match[1], values[1]),
+      price,
+      changePercent,
+      turnover,
+      source: "腾讯财经指数",
+    };
+  });
+  return rows.filter((item) => item.name && item.price);
+}
+
+async function fetchHotBoards(diagnostics = []) {
   const url = `${eastmoneyApi}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(boardFs)}&fields=f14,f3,f6,f62,f184`;
-  const rows = await fetchRows(url);
+  const rows = await fetchRows(url, diagnostics, "东方财富板块");
+  if (!rows.length) recordMarketFailure(diagnostics, "东方财富板块", new Error("empty response"));
   return rows.map((row, index) => ({
     name: row.f14,
     changePercent: toNumber(row.f3),
@@ -132,15 +213,19 @@ async function fetchHotBoards() {
   }));
 }
 
-async function fetchMarketBreadth() {
+async function fetchMarketBreadth(diagnostics = []) {
   const pageSize = 100;
-  const firstPage = await fetchBreadthPage(1, pageSize);
+  const firstPage = await fetchBreadthPage(1, pageSize, diagnostics);
   const total = toNumber(firstPage?.data?.total);
   const totalPages = Math.min(Math.ceil(total / pageSize), 70);
   const rows = [...(firstPage?.data?.diff ?? [])];
-  for (let page = 2; page <= totalPages; page += 1) {
-    const pageData = await fetchBreadthPage(page, pageSize);
-    rows.push(...(pageData?.data?.diff ?? []));
+  for (let page = 2; page <= totalPages; page += 5) {
+    const chunk = Array.from({ length: Math.min(5, totalPages - page + 1) }, (_, index) => page + index);
+    const pages = await Promise.all(chunk.map((pageNumber) => fetchBreadthPage(pageNumber, pageSize, diagnostics).catch((error) => {
+      recordMarketFailure(diagnostics, `东方财富宽度第${pageNumber}页`, error);
+      return null;
+    })));
+    rows.push(...pages.flatMap((pageData) => pageData?.data?.diff ?? []));
   }
   return rows.reduce((acc, item) => {
     const change = toNumber(item.f3);
@@ -150,17 +235,17 @@ async function fetchMarketBreadth() {
     if (change >= 9.8) acc.limitUpCount += 1;
     if (change <= -9.8) acc.limitDownCount += 1;
     return acc;
-  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: rows.length, status: "东方财富宽度" });
+  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: rows.length, status: "东方财富宽度", source: "东方财富宽度" });
 }
 
-function fetchBreadthPage(page, pageSize) {
+function fetchBreadthPage(page, pageSize, diagnostics = []) {
   const url = `${eastmoneyApi}/clist/get?pn=${page}&pz=${pageSize}&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(allAShareFs)}&fields=f3`;
-  return fetchJson(url);
+  return fetchJson(url, diagnostics, `东方财富宽度第${page}页`);
 }
 
 async function fetchFastNews() {
   const url = `${fastNewsApi}?client=web&biz=web_724&fastColumn=102&sortEnd=0&pageSize=10&req_trace=${Date.now()}`;
-  const json = await fetchJson(url);
+  const json = await fetchJson(url, [], "东方财富快讯");
   return Array.isArray(json?.data) ? json.data : [];
 }
 
@@ -170,28 +255,62 @@ async function collectTrackedStockData(items) {
   return results.filter((result) => result?.data).map((result) => result.data);
 }
 
-async function fetchRows(url) {
-  const json = await fetchJson(url);
+async function fetchRows(url, diagnostics = [], source = "东方财富") {
+  const json = await fetchJson(url, diagnostics, source);
   return json?.data?.diff ?? [];
 }
 
-async function fetchJson(url) {
+async function fetchJson(url, diagnostics = [], source = "东方财富") {
   const targets = buildEastmoneyUrls(url);
   let lastError;
   for (const target of targets) {
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
     try {
-      const response = await fetch(target, { cache: "no-store", signal: controller.signal, headers: { Referer: "https://quote.eastmoney.com/" } });
-      if (!response.ok) throw new Error(`HTTP ${response.status}`);
-      return await response.json();
+      const json = await fetchJsonTarget(target, source);
+      if (!json?.data) {
+        diagnostics.push({ source, target: safeUrl(target), status: "empty", message: "JSON data为空" });
+      }
+      return json;
     } catch (error) {
       lastError = error;
-    } finally {
-      clearTimeout(timeout);
+      recordMarketFailure(diagnostics, source, error, target);
     }
   }
   throw lastError;
+}
+
+async function fetchJsonTarget(target, source) {
+  const text = await fetchText(target, source, { Referer: "https://quote.eastmoney.com/" });
+  try {
+    return JSON.parse(text);
+  } catch (error) {
+    throw withMarketSource(error, source, "parse-error");
+  }
+}
+
+async function fetchText(url, source, headers = {}) {
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), requestTimeoutMs);
+  try {
+    const response = await fetch(url, {
+      cache: "no-store",
+      signal: controller.signal,
+      headers: {
+        Accept: "*/*",
+        "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126 Safari/537.36",
+        ...headers,
+      },
+    });
+    if (!response.ok) throw withMarketSource(new Error(`HTTP ${response.status}`), source, `http-${response.status}`);
+    const text = await response.text();
+    if (!text.trim()) throw withMarketSource(new Error("empty response"), source, "empty");
+    return text;
+  } catch (error) {
+    if (error.name === "AbortError") throw withMarketSource(new Error(`timeout ${requestTimeoutMs}ms`), source, "timeout");
+    throw withMarketSource(error, source, error.statusType ?? "network-error");
+  } finally {
+    clearTimeout(timeout);
+  }
 }
 
 function buildEastmoneyUrls(url) {
@@ -216,6 +335,69 @@ function analyzeImpact(title) {
   if (/增长|回购|增持|中标|突破|需求|上调|利好/.test(title)) return "利好";
   if (/减持|亏损|下滑|处罚|风险|终止|诉讼|下降/.test(title)) return "利空";
   return "中性";
+}
+
+function recordMarketFailure(diagnostics = [], source, error, target = "") {
+  const entry = {
+    source,
+    status: error?.statusType ?? classifyError(error),
+    message: error?.message ?? String(error),
+    target: target ? safeUrl(target) : undefined,
+  };
+  diagnostics.push(entry);
+  console.warn(`[market-data] ${entry.source} failed: ${entry.status} ${entry.message}${entry.target ? ` ${entry.target}` : ""}`);
+}
+
+function withMarketSource(error, source, statusType) {
+  error.source = source;
+  error.statusType = statusType;
+  return error;
+}
+
+function classifyError(error = {}) {
+  const message = String(error.message ?? error);
+  if (/timeout|abort/i.test(message)) return "timeout";
+  if (/HTTP 403/.test(message)) return "http-403";
+  if (/HTTP 502/.test(message)) return "http-502";
+  if (/HTTP \d+/.test(message)) return message.match(/HTTP \d+/)?.[0]?.toLowerCase().replace(" ", "-") ?? "http-error";
+  if (/empty/i.test(message)) return "empty";
+  return "network-error";
+}
+
+function safeUrl(url = "") {
+  try {
+    const parsed = new URL(url);
+    return `${parsed.origin}${parsed.pathname}`;
+  } catch {
+    return "";
+  }
+}
+
+function sourceSummary(items = [], fallback = "数据源") {
+  const sources = [...new Set(items.map((item) => item.source).filter(Boolean))];
+  return sources.length ? sources.join("/") : fallback;
+}
+
+function normalizeIndexName(name = "") {
+  if (name === "上证指数") return "上证指数";
+  if (name === "深证成指") return "深证指数";
+  if (name === "创业板指") return "创业板指数";
+  return name;
+}
+
+function indexNameBySymbol(symbol = "", fallback = "") {
+  if (/000001/.test(symbol)) return "上证指数";
+  if (/399001/.test(symbol)) return "深证指数";
+  if (/399006/.test(symbol)) return "创业板指数";
+  return normalizeIndexName(fallback);
+}
+
+function firstFinite(...values) {
+  for (const value of values) {
+    const number = toNumber(value);
+    if (number) return number;
+  }
+  return 0;
 }
 
 function fallbackMarketData(error) {

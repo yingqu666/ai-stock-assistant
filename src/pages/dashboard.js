@@ -116,7 +116,7 @@ export async function renderDashboard() {
         <div class="section-head"><h2>数据来源状态</h2><span>可信程度提示</span></div>
         <div class="metrics">
           ${[
-            { label: "行情", value: source?.includes("模拟") ? "🟡 部分回退" : "🟢 东方财富真实数据", change: updatedAt ?? refreshStatus.updatedAt },
+            { label: "行情", value: marketSourceStatus(source, marketSentiment), change: updatedAt ?? refreshStatus.updatedAt },
             { label: "新闻", value: refreshStatus.newsOk ? "🟢 东方财富公告/快讯" : "🟡 备用新闻", change: refreshStatus.updatedAt },
             { label: "AI", value: aiStatus?.connected ? "🟢 真实AI模型" : "🟡 fallback模式", change: aiStatus?.provider ?? aiStatus?.label ?? "AI状态" },
           ].map(metricCard).join("")}
@@ -296,17 +296,18 @@ function marketStatusLabel(stats = {}, sectors = []) {
   const strongSectors = sectors.filter((item) => parseNumber(item.changePercent ?? item.change) > 1).length;
   const up = Number(stats.upCount ?? 0);
   const down = Number(stats.downCount ?? 0);
-  if (stats.moneyEffect === "偏强" && strongSectors >= 3 && up > down) return "强势";
-  if (stats.moneyEffect === "偏弱" || down > up * 1.2) return "弱势";
-  return "震荡";
+  if (stats.moneyEffect === "偏强" && strongSectors >= 3 && up > down) return "强势上涨";
+  if ((stats.moneyEffect === "偏强" || stats.moneyEffect === "分化") && strongSectors >= 2 && up >= down) return "震荡偏强";
+  if (stats.moneyEffect === "偏弱" || (up > 0 && down > up * 1.2)) return "风险阶段";
+  return "震荡等待";
 }
 
 function marketActionJudgment(stats = {}, sectors = []) {
   const status = marketStatusLabel(stats, sectors);
-  if (status === "强势") return "重点关注";
-  if (status === "震荡" && sectors.length >= 3) return "可以观察";
-  if (status === "震荡") return "等待机会";
-  if (status === "弱势") return "暂不参与";
+  if (status === "强势上涨") return "重点关注";
+  if (status === "震荡偏强" && sectors.length >= 3) return "可以观察";
+  if (status === "震荡等待") return "等待机会";
+  if (status === "风险阶段") return "暂不参与";
   return "风险较高";
 }
 
@@ -320,8 +321,8 @@ function buildManagerConclusion(decision = {}, strategy = {}, stats = {}, sector
 function buildActionJudgment(stats = {}, sectors = []) {
   const top = sectors[0];
   const focus = top?.name ?? "热点方向待确认";
-  if (marketStatusLabel(stats, sectors) === "强势") return `优先观察${focus}等前排方向，适合参与的前提是板块成交额延续、资金不快速流出、龙头不冲高回落。`;
-  if (marketStatusLabel(stats, sectors) === "弱势") return `当前不急于参与，等待上涨家数修复、跌停数量下降、热点重新集中后再观察${focus}。`;
+  if (marketStatusLabel(stats, sectors) === "强势上涨") return `优先观察${focus}等前排方向，适合参与的前提是板块成交额延续、资金不快速流出、龙头不冲高回落。`;
+  if (marketStatusLabel(stats, sectors) === "风险阶段") return `当前不急于参与，等待上涨家数修复、跌停数量下降、热点重新集中后再观察${focus}。`;
   return `以等待价格确认为主，关注${focus}是否在回落时仍有资金承接；若热点轮动过快，不追高。`;
 }
 
@@ -568,4 +569,12 @@ function flattenEvidence(value) {
 function parseNumber(value) {
   const match = String(value ?? "").replace("+", "").match(/-?\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
+}
+
+function marketSourceStatus(source = "", sentiment = {}) {
+  const text = `${source} ${sentiment.failureReason ?? ""} ${sentiment.summary ?? ""}`;
+  if (/模拟|本地备用/.test(text)) return "🟡 mock/备用";
+  if (/失败|数据不足|未返回|缺失|不可用/.test(text)) return "🔴 数据不足";
+  if (/部分|新浪|腾讯/.test(text)) return "🟡 部分真实";
+  return "🟢 真实数据";
 }
