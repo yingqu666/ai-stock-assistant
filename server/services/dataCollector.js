@@ -202,38 +202,62 @@ async function fetchTencentIndexes() {
 }
 
 async function fetchHotBoards(diagnostics = []) {
-  const url = `${eastmoneyApi}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(boardFs)}&fields=f14,f3,f6,f62,f184`;
-  try {
-    const rows = await fetchRows(url, diagnostics, "东方财富板块");
-    if (!rows.length) throw withMarketSource(new Error("empty response"), "东方财富板块", "empty");
-    diagnostics.push({ source: "东方财富板块", status: "success", rows: rows.length });
-    return rows.map((row, index) => ({
-      name: row.f14,
-      changePercent: toNumber(row.f3),
-      turnover: toNumber(row.f6),
-      capitalFlow: toNumber(row.f62),
-      capitalFlowRatio: toNumber(row.f184),
-      rank: index + 1,
-      source: "东方财富板块行情",
-    }));
-  } catch (error) {
-    recordMarketFailure(diagnostics, "东方财富板块", error);
+  const adapters = [
+    ["东方财富板块", () => fetchEastmoneyHotBoards(diagnostics)],
+    ["新浪行业板块", () => fetchSinaHotBoards(diagnostics)],
+    ["腾讯行业板块", () => fetchTencentHotBoards(diagnostics)],
+    ["网易行业板块", () => fetchNeteaseHotBoards(diagnostics)],
+  ];
+  for (const [source, loader] of adapters) {
+    try {
+      const rows = await loader();
+      if (rows.length) {
+        diagnostics.push({ source, status: "success", rows: rows.length });
+        return rows;
+      }
+      diagnostics.push({ source, status: "empty", message: "板块接口返回为空" });
+    } catch (error) {
+      recordMarketFailure(diagnostics, source, error);
+    }
   }
-  return fetchSinaHotBoards(diagnostics);
+  return [];
+}
+
+async function fetchEastmoneyHotBoards(diagnostics = []) {
+  const url = `${eastmoneyApi}/clist/get?pn=1&pz=12&po=1&np=1&fltt=2&invt=2&fid=f3&fs=${encodeURIComponent(boardFs)}&fields=f14,f3,f6,f62,f184`;
+  const rows = await fetchRows(url, diagnostics, "东方财富板块");
+  if (!rows.length) throw withMarketSource(new Error("empty response"), "东方财富板块", "empty");
+  return rows.map((row, index) => ({
+    name: row.f14,
+    changePercent: toNumber(row.f3),
+    turnover: toNumber(row.f6),
+    capitalFlow: toNumber(row.f62),
+    capitalFlowRatio: toNumber(row.f184),
+    rank: index + 1,
+    source: "东方财富板块行情",
+  }));
 }
 
 async function fetchMarketBreadth(diagnostics = []) {
-  try {
-    const breadth = await fetchEastmoneyMarketBreadth(diagnostics);
-    if (breadth.totalCount) {
-      diagnostics.push({ source: "东方财富宽度", status: "success", rows: breadth.totalCount });
-      return breadth;
+  const adapters = [
+    ["东方财富宽度", () => fetchEastmoneyMarketBreadth(diagnostics)],
+    ["新浪财经宽度", () => fetchSinaMarketBreadth(diagnostics)],
+    ["腾讯财经宽度", () => fetchTencentMarketBreadth(diagnostics)],
+    ["网易财经宽度", () => fetchNeteaseMarketBreadth(diagnostics)],
+  ];
+  for (const [source, loader] of adapters) {
+    try {
+      const breadth = await loader();
+      if (breadth.totalCount) {
+        diagnostics.push({ source, status: "success", rows: breadth.totalCount });
+        return breadth;
+      }
+      diagnostics.push({ source, status: "empty", message: "市场宽度返回为空" });
+    } catch (error) {
+      recordMarketFailure(diagnostics, source, error);
     }
-    diagnostics.push({ source: "东方财富宽度", status: "empty", message: "市场宽度返回为空" });
-  } catch (error) {
-    recordMarketFailure(diagnostics, "东方财富宽度", error);
   }
-  return fetchSinaMarketBreadth(diagnostics);
+  return { upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回", source: "宽度数据缺失" };
 }
 
 async function fetchEastmoneyMarketBreadth(diagnostics = []) {
@@ -333,6 +357,95 @@ async function fetchSinaHotBoards(diagnostics = []) {
   const sorted = rows.sort((a, b) => b.composite - a.composite).slice(0, 12).map((item, index) => ({ ...item, rank: index + 1 }));
   diagnostics.push({ source: "新浪行业板块", status: sorted.length ? "success" : "empty", rows: sorted.length });
   return sorted;
+}
+
+async function fetchTencentMarketBreadth() {
+  const text = await fetchText("https://stock.gtimg.cn/data/index.php?appn=rank&t=rankash/chr&p=1&o=0&l=6000&v=list_data", "腾讯财经宽度", { Referer: "https://gu.qq.com/" }, "gbk");
+  const rows = parseTencentRankRows(text);
+  if (!rows.length) throw withMarketSource(new Error("empty rank data"), "腾讯财经宽度", "empty");
+  return rows.reduce((acc, item) => {
+    const change = toNumber(item.changePercent);
+    if (change > 0) acc.upCount += 1;
+    if (change < 0) acc.downCount += 1;
+    if (change === 0) acc.flatCount += 1;
+    if (change >= limitThreshold(item.symbol, "up")) acc.limitUpCount += 1;
+    if (change <= -limitThreshold(item.symbol, "down")) acc.limitDownCount += 1;
+    return acc;
+  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: rows.length, status: "腾讯财经宽度", source: "腾讯财经宽度" });
+}
+
+async function fetchNeteaseMarketBreadth() {
+  const text = await fetchText("https://quotes.money.163.com/hs/service/diyrank.php?page=0&query=STYPE:EQA&fields=NO,SYMBOL,NAME,PRICE,PERCENT,UPDOWN,VOLUME,TURNOVER&sort=PERCENT&order=desc&count=6000&type=query", "网易财经宽度", { Referer: "https://quotes.money.163.com/" });
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    throw withMarketSource(error, "网易财经宽度", "parse-error");
+  }
+  const rows = Array.isArray(payload?.list) ? payload.list : [];
+  if (!rows.length) throw withMarketSource(new Error("empty rank data"), "网易财经宽度", "empty");
+  return rows.reduce((acc, item) => {
+    const change = toNumber(item.PERCENT);
+    if (change > 0) acc.upCount += 1;
+    if (change < 0) acc.downCount += 1;
+    if (change === 0) acc.flatCount += 1;
+    if (change >= limitThreshold(item.SYMBOL, "up")) acc.limitUpCount += 1;
+    if (change <= -limitThreshold(item.SYMBOL, "down")) acc.limitDownCount += 1;
+    return acc;
+  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: rows.length, status: "网易财经宽度", source: "网易财经宽度" });
+}
+
+async function fetchTencentHotBoards() {
+  const text = await fetchText("https://stock.gtimg.cn/data/index.php?appn=rank&t=pt012/chr&p=1&o=0&l=80&v=list_data", "腾讯行业板块", { Referer: "https://gu.qq.com/" }, "gbk");
+  const rows = parseTencentRankRows(text);
+  if (!rows.length) throw withMarketSource(new Error("empty board data"), "腾讯行业板块", "empty");
+  return rows.slice(0, 12).map((item, index) => ({
+    name: item.name,
+    changePercent: item.changePercent,
+    turnover: item.turnover,
+    capitalFlow: null,
+    capitalFlowRatio: null,
+    rank: index + 1,
+    source: "腾讯行业板块",
+  }));
+}
+
+async function fetchNeteaseHotBoards() {
+  const text = await fetchText("https://quotes.money.163.com/hs/service/diyrank.php?page=0&query=TYPE:HY&fields=NO,SYMBOL,NAME,PRICE,PERCENT,UPDOWN,VOLUME,TURNOVER&sort=PERCENT&order=desc&count=80&type=query", "网易行业板块", { Referer: "https://quotes.money.163.com/" });
+  let payload;
+  try {
+    payload = JSON.parse(text);
+  } catch (error) {
+    throw withMarketSource(error, "网易行业板块", "parse-error");
+  }
+  const rows = Array.isArray(payload?.list) ? payload.list : [];
+  if (!rows.length) throw withMarketSource(new Error("empty board data"), "网易行业板块", "empty");
+  return rows.slice(0, 12).map((item, index) => ({
+    name: item.NAME,
+    changePercent: toNumber(item.PERCENT),
+    turnover: toNumber(item.TURNOVER),
+    capitalFlow: null,
+    capitalFlowRatio: null,
+    rank: index + 1,
+    source: "网易行业板块",
+  })).filter((item) => item.name);
+}
+
+function parseTencentRankRows(text = "") {
+  const dataMatch = text.match(/data:'([^']*)'/) ?? text.match(/data:"([^"]*)"/);
+  const data = dataMatch?.[1] ?? "";
+  if (!data.trim()) return [];
+  return data.split("^").map((row) => {
+    const values = row.split("~");
+    return {
+      symbol: values[0] ?? values[1] ?? "",
+      code: values[1] ?? values[0] ?? "",
+      name: values[2] ?? values[1] ?? "",
+      price: toNumber(values[3]),
+      changePercent: firstFinite(values[5], values[6], values[4]),
+      turnover: firstFinite(values[9], values[10], values[11]) * 10000,
+    };
+  }).filter((item) => item.name);
 }
 
 function fetchBreadthPage(page, pageSize, diagnostics = []) {
