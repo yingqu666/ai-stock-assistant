@@ -146,6 +146,7 @@ async function fetchIndexes(diagnostics = []) {
     ["腾讯财经指数", () => fetchTencentIndexes(diagnostics)],
   ];
   for (const [source, loader] of sources) {
+    recordMarketAttempt(diagnostics, source, "指数");
     try {
       const rows = await loader();
       if (rows.length) {
@@ -211,6 +212,7 @@ async function fetchHotBoards(diagnostics = []) {
     ["网易行业板块", () => fetchNeteaseHotBoards(diagnostics)],
   ];
   for (const [source, loader] of adapters) {
+    recordMarketAttempt(diagnostics, source, "热点板块");
     try {
       const rows = await loader();
       if (rows.length) {
@@ -248,6 +250,7 @@ async function fetchMarketBreadth(diagnostics = []) {
     ["网易财经宽度", () => fetchNeteaseMarketBreadth(diagnostics)],
   ];
   for (const [source, loader] of adapters) {
+    recordMarketAttempt(diagnostics, source, "市场宽度");
     try {
       const breadth = await loader();
       if (breadth.totalCount) {
@@ -309,6 +312,10 @@ async function fetchSinaMarketBreadth(diagnostics = []) {
     pages.push(...data.flat());
   }
   if (!pages.length) throw withMarketSource(new Error("empty breadth rows"), "新浪财经宽度", "empty");
+  const coverageRatio = pages.length / total;
+  if (coverageRatio < 0.85) {
+    throw withMarketSource(new Error(`partial breadth rows ${pages.length}/${total}`), "新浪财经宽度", "partial");
+  }
   const result = pages.reduce((acc, item) => {
     const change = toNumber(item.changepercent);
     if (change > 0) acc.upCount += 1;
@@ -568,18 +575,20 @@ function recordMarketFailure(diagnostics = [], source, error, target = "") {
 }
 
 function recordMarketSuccess(diagnostics = [], source, rows = 0, extra = {}) {
-  diagnostics.push({
+  const entry = {
     source,
     status: "success",
     rows,
     parseSuccess: true,
     error: "",
     ...extra,
-  });
+  };
+  diagnostics.push(entry);
+  console.info(`[market-data] source=${source} status=success rows=${rows} parseSuccess=true`);
 }
 
 function recordMarketEmpty(diagnostics = [], source, message = "接口返回为空", target = "") {
-  diagnostics.push({
+  const entry = {
     source,
     status: "empty",
     rows: 0,
@@ -587,7 +596,22 @@ function recordMarketEmpty(diagnostics = [], source, message = "接口返回为�
     message,
     error: message,
     target: target ? safeUrl(target) : undefined,
-  });
+  };
+  diagnostics.push(entry);
+  console.warn(`[market-data] source=${source} status=empty rows=0 parseSuccess=false error=${message}${entry.target ? ` target=${entry.target}` : ""}`);
+}
+
+function recordMarketAttempt(diagnostics = [], source, stage = "") {
+  const entry = {
+    source,
+    stage,
+    status: "attempt",
+    rows: 0,
+    parseSuccess: false,
+    error: "",
+  };
+  diagnostics.push(entry);
+  console.info(`[market-data] source=${source} status=attempt rows=0 parseSuccess=false${stage ? ` stage=${stage}` : ""}`);
 }
 
 function withMarketSource(error, source, statusType) {
