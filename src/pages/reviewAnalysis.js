@@ -1,6 +1,6 @@
 import { metricCard } from "../components/cards.js";
 import { getReviewDetailData, runAiReview } from "../services/chartService.js";
-import { getMarketAnalysisHistory } from "../services/historyService.js";
+import { getMarketAnalysisHistory, updateMarketAnalysisReview } from "../services/historyService.js";
 
 let selectedReviewDate = null;
 const tradeReviewKey = "ai-investment-trade-review-records";
@@ -205,6 +205,22 @@ export function mountReviewAnalysis({ rerender }) {
     if (message) message.textContent = `复盘完成：更新 ${result.reviewedCount ?? 0} 条判断记录。`;
     rerender();
   });
+
+  document.querySelectorAll(".market-review-form").forEach((form) => {
+    form.addEventListener("submit", async (event) => {
+      event.preventDefault();
+      const formData = new FormData(event.currentTarget);
+      const message = event.currentTarget.querySelector(".market-review-message");
+      if (message) message.textContent = "正在保存复盘结果...";
+      const result = await updateMarketAnalysisReview(String(formData.get("id") ?? ""), {
+        actualMarketMove: formData.get("actualMarketMove"),
+        reviewStatus: formData.get("reviewStatus"),
+        reviewNote: formData.get("reviewNote"),
+      });
+      if (message) message.textContent = result.ok ? "复盘结果已保存。" : result.message;
+      if (result.ok) rerender();
+    });
+  });
 }
 
 function loadTradeRecords() {
@@ -247,16 +263,36 @@ function marketAnalysisHistoryCard(record = {}) {
   const content = record.predictionContent ?? record.prediction_content ?? {};
   const snapshot = content.marketSnapshotSummary ?? {};
   const breadth = snapshot.breadth ?? {};
+  const actual = record.actualResult ?? record.actual_result ?? {};
+  const reviewStatus = record.reviewStatus ?? record.review_status ?? actual.reviewStatus ?? "pending";
   const directions = (content.mainDirections ?? []).map((item) => item.name ?? item).filter(Boolean).slice(0, 4);
   const risks = (content.riskDirections ?? []).map((item) => item.target ? `${item.target}：${item.reason}` : String(item)).filter(Boolean).slice(0, 3);
   return `
     <article class="data-card">
-      <div class="card-head"><strong>${record.date ?? "日期待补充"}</strong><span>${content.aiSource ?? record.source ?? "fallback"} · ${record.reviewStatus ?? "pending"}</span></div>
+      <div class="card-head"><strong>${record.date ?? "日期待补充"}</strong><span>${content.aiSource ?? record.source ?? "fallback"} · ${statusLabel(reviewStatus)}</span></div>
       <p><b>AI判断</b>${content.marketState ?? record.marketPrediction ?? record.prediction?.marketDirection ?? "市场判断待补充"}</p>
       <p><b>今日主线</b>${directions.join("、") || "主线方向待补充"}</p>
       <p><b>风险方向</b>${risks.join("；") || "风险方向待补充"}</p>
       <p><b>操作思路</b>${content.operationPlan ?? "等待后续复盘补充"}</p>
       <p><b>市场数据</b>上涨${breadth.upCount ?? "未知"}家，下跌${breadth.downCount ?? "未知"}家，涨停${breadth.limitUpCount ?? "未知"}家，跌停${breadth.limitDownCount ?? "未知"}家，成交额${breadth.turnover ?? "未知"}。</p>
-      <p><b>复盘入口</b>后续可记录实际走势、判断是否正确，目前状态：${record.reviewStatus ?? "待复盘"}。</p>
+      <p><b>实际结果</b>${actual.marketMove ?? "未填写"}。<b>复盘备注</b>${record.reviewNote ?? actual.reviewNote ?? "未填写"}</p>
+      <form class="stock-search market-review-form">
+        <input type="hidden" name="id" value="${record.id}" />
+        <input name="actualMarketMove" value="${actual.marketMove ?? ""}" placeholder="实际走势，例如：指数震荡收涨，半导体走强" />
+        <select name="reviewStatus">
+          <option value="pending" ${reviewStatus === "pending" ? "selected" : ""}>待复盘</option>
+          <option value="correct" ${reviewStatus === "correct" ? "selected" : ""}>判断正确</option>
+          <option value="wrong" ${reviewStatus === "wrong" ? "selected" : ""}>判断错误</option>
+        </select>
+        <input name="reviewNote" value="${record.reviewNote ?? actual.reviewNote ?? ""}" placeholder="复盘备注" />
+        <button type="submit">保存复盘</button>
+        <span class="market-review-message form-message"></span>
+      </form>
     </article>`;
+}
+
+function statusLabel(status) {
+  if (status === "correct") return "判断正确";
+  if (status === "wrong") return "判断错误";
+  return "待复盘";
 }

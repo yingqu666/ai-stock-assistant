@@ -1,4 +1,6 @@
 import { account } from "../data.js";
+import { answerInvestmentQuestion } from "./aiService.js";
+import { getCachedMarketData, getCachedNewsData } from "./refreshService.js";
 import { queryStock } from "./stockService.js";
 import { deleteSyncedPortfolio, getSyncStatus, saveSyncedPortfolio, syncPortfolio } from "./syncService.js";
 import { getUserStoragePrefix } from "./userService.js";
@@ -45,6 +47,35 @@ export async function getPortfolioSummary() {
     aiAnalysis: buildPortfolioAnalysis(positions, totalMarketValue, industryAllocation),
     syncStatus: getSyncStatus().portfolio ?? { status: synced.status ?? "本地模式", lastSyncAt: "暂无", source: synced.mode ?? "本地" },
   };
+}
+
+export async function analyzeHoldingRisks(portfolio = null) {
+  const summary = portfolio ?? await getPortfolioSummary();
+  const [marketData, newsSnapshot] = await Promise.all([
+    getCachedMarketData().catch(() => ({})),
+    getCachedNewsData().catch(() => ({ news: [], stockNews: [] })),
+  ]);
+  const fallback = buildHoldingRiskAnalysis(summary, marketData, newsSnapshot, "fallback");
+  try {
+    const ai = await answerInvestmentQuestion("请基于当前市场、新闻和我的持仓，分析每个持仓的风险，不给买卖指令。", {
+      marketData,
+      newsData: [...(newsSnapshot.news ?? []), ...(newsSnapshot.stockNews ?? [])].slice(0, 12),
+      portfolio: summary.positions,
+      riskData: summary.concentrationRisk ? [summary.concentrationRisk.message] : [],
+    });
+    return {
+      ...fallback,
+      source: ai.source ?? fallback.source,
+      overall: ai.answer ?? fallback.overall,
+      aiRaw: ai.raw,
+    };
+  } catch (error) {
+    return {
+      ...fallback,
+      source: "fallback",
+      overall: `${fallback.overall} AI接口暂不可用，已使用本地规则fallback：${error.message}`,
+    };
+  }
 }
 
 export async function previewPortfolioPosition(code) {
@@ -305,6 +336,80 @@ function buildPortfolioAnalysis(positions, totalMarketValue, industryAllocation)
     strengths: ["持仓数据支持云端同步", "股票与ETF已统一纳入资产管理", "组合结构清晰，便于每日复盘"],
     risks,
     suggestions: ["关注单一标的和行业集中度变化", "结合风险提醒调整观察优先级", "不输出买卖指令，只给出研究和风险提示"],
+  };
+}
+
+function buildHoldingRiskAnalysis(summary = {}, marketData = {}, newsSnapshot = {}, source = "fallback") {
+  const marketRisk = marketData.marketSentiment?.riskLevel ?? marketData.marketSentiment?.moneyEffect ?? "中";
+  const newsRows = [...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])];
+  const holdings = (summary.positions ?? []).map((position) => {
+    const relatedNews = newsRows.filter((item) => {
+      const text = `${item.title ?? ""}${item.relatedStock ?? ""}${(item.relatedStocks ?? []).join("")}${item.relatedIndustry ?? ""}${(item.relatedIndustries ?? []).join("")}`;
+      return text.includes(position.code) || text.includes(position.name) || text.includes(position.industry);
+    }).slice(0, 3);
+    return buildHoldingRiskItem(position, summary, marketData, relatedNews);
+  });
+  return {
+    source,
+    generatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    overall: holdings.length
+      ? `当前持仓风险以${summary.concentrationRisk?.level ?? "中等"}为主，市场环境${marketRisk}。以下仅做风险观察，不自动交易。`
+      : "暂无持仓，无法生成持仓风险分析。",
+    holdings,
+    basis: {
+      market: marketData.marketSentiment?.summary ?? "市场状态数据不足",
+      hotSectors: (marketData.hotSectors ?? []).slice(0, 5).map((item) => item.name),
+      newsCount: newsRows.length,
+    },
+  };
+}
+
+function buildHoldingRiskItem(position = {}, summary = {}, marketData = {}, relatedNews = []) {
+  const isEtf = position.assetType === "ETF";
+  const weight = Number(position.weight ?? 0);
+  const returnRate = Number(position.returnRate ?? 0);
+  const currentPrice = Number(position.currentPrice ?? position.price ?? 0);
+  const cost = Number(position.cost ?? 0);
+  const hotSectors = marketData.hotSectors ?? [];
+  const sectorHot = hotSectors.find((sector) => {
+    const text = `${sector.name ?? ""}${sector.reason ?? ""}${sector.aiReason ?? ""}`;
+    return text.includes(position.industry) || String(position.industry ?? "").includes(sector.name);
+  });
+  const riskScore = Math.min(100, Math.max(15,
+    35
+    + (weight > 35 ? 20 : weight > 20 ? 10 : 0)
+    + (returnRate < -8 ? 16 : returnRate > 20 ? 10 : 0)
+    + (relatedNews.some((item) => /利空|减持|亏损|下滑|处罚|风险/.test(`${item.impact ?? ""}${item.title ?? ""}`)) ? 18 : 0)
+    + (marketData.marketSentiment?.moneyEffect === "偏弱" ? 12 : 0)
+    - (sectorHot ? 8 : 0),
+  ));
+  const riskLevel = riskScore >= 70 ? "高" : riskScore >= 45 ? "中" : "低";
+  const watchPrice = currentPrice > 0 ? `${(currentPrice * 0.97).toFixed(currentPrice >= 100 ? 1 : 2)}-${(currentPrice * 1.03).toFixed(currentPrice >= 100 ? 1 : 2)}` : "价格数据不足";
+  const riskPrice = currentPrice > 0 ? (returnRate < 0 ? currentPrice * 0.97 : currentPrice * 0.94).toFixed(currentPrice >= 100 ? 1 : 2) : "价格数据不足";
+  const riskReasons = [
+    `仓位：当前占比${weight.toFixed(1)}%，${weight > 35 ? "单一持仓偏高" : "仓位暂可控"}`,
+    `盈亏：当前收益率${returnRate.toFixed(2)}%，${returnRate < -8 ? "亏损扩大需要复核逻辑" : returnRate > 20 ? "浮盈较高需防回撤" : "盈亏未触发极端风险"}`,
+    relatedNews[0] ? `新闻：${relatedNews[0].title}` : "新闻：暂未匹配到强相关新闻",
+    isEtf
+      ? `ETF：重点观察${position.industry}板块趋势、成交额和流动性`
+      : `股票：重点观察公司公告、财务、行业位置和相关新闻`,
+  ];
+  return {
+    code: position.code,
+    name: position.name,
+    assetType: position.assetType,
+    riskLevel,
+    aiJudgment: riskLevel === "高" ? "风险较高，优先复核持仓逻辑" : riskLevel === "中" ? "中等风险，继续观察确认" : "风险暂可控，跟踪变化",
+    riskReasons,
+    watchPrice,
+    riskPrice,
+    watchChanges: isEtf
+      ? ["板块是否仍在热点方向", "成交额是否持续活跃", "跟踪方向是否出现利空新闻"]
+      : ["公司公告是否改变逻辑", "财务和盈利趋势是否稳定", "行业热度和资金是否延续"],
+    holdConditions: isEtf
+      ? ["跟踪板块仍保持趋势和成交活跃", "未出现持续资金流出", "市场赚钱效应不明显恶化"]
+      : ["公司基本面和公告未出现明显恶化", "价格未跌破风险位置", "行业逻辑和新闻催化未被证伪"],
+    relatedNews,
   };
 }
 

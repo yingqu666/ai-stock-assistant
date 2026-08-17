@@ -53,6 +53,31 @@ export async function getMarketAnalysisHistory() {
     .sort((a, b) => String(b.date ?? "").localeCompare(String(a.date ?? "")));
 }
 
+export async function updateMarketAnalysisReview(id, review = {}) {
+  const records = await getAiHistoryRecords();
+  const current = records.find((item) => item.id === id);
+  if (!current) return { ok: false, message: "未找到对应AI市场判断记录。" };
+  const status = normalizeReviewStatus(review.reviewStatus);
+  const actualMarketMove = String(review.actualMarketMove ?? "").trim();
+  const reviewNote = String(review.reviewNote ?? "").trim();
+  const updated = {
+    ...current,
+    actualResult: {
+      ...(current.actualResult ?? {}),
+      marketMove: actualMarketMove,
+      reviewStatus: status,
+      reviewNote,
+      reviewedAt: new Date().toISOString(),
+    },
+    reviewStatus: status,
+    reviewNote,
+    accuracyScore: status === "correct" ? 100 : status === "wrong" ? 0 : null,
+    updatedAt: new Date().toISOString(),
+  };
+  await saveAiHistoryRecord(updated);
+  return { ok: true, data: updated };
+}
+
 export async function getAiAccuracyStats() {
   const records = await getAiHistoryRecords();
   const total = records.length || 1;
@@ -133,4 +158,8 @@ function normalizeRiskTexts(items = []) {
       midTermImpact: item.midTermImpact,
     };
   });
+}
+
+function normalizeReviewStatus(status) {
+  return ["pending", "correct", "wrong"].includes(status) ? status : "pending";
 }

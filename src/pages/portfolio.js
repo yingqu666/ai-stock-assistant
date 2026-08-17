@@ -1,5 +1,7 @@
 import { metricCard } from "../components/cards.js";
-import { addPortfolioPosition, getPortfolioSummary, previewPortfolioPosition, removePortfolioPosition } from "../services/portfolioService.js";
+import { addPortfolioPosition, analyzeHoldingRisks, getPortfolioSummary, previewPortfolioPosition, removePortfolioPosition } from "../services/portfolioService.js";
+
+let holdingRiskAnalysis = null;
 
 export async function renderPortfolio() {
   const portfolio = await getPortfolioSummary();
@@ -98,6 +100,18 @@ export async function renderPortfolio() {
         <article class="data-card"><strong>风险点</strong><p>${portfolio.aiAnalysis.risks.join("；")}</p></article>
         <article class="data-card"><strong>观察建议</strong><p>${portfolio.aiAnalysis.suggestions.join("；")}</p></article>
       </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head">
+        <div><h2>持仓风险分析</h2><span>结合持仓成本、现价、仓位、市场、新闻和个股行情</span></div>
+        <button id="analyze-holding-risk-button" type="button">分析持仓风险</button>
+      </div>
+      <p id="holding-risk-message" class="form-message">${holdingRiskAnalysis ? `${holdingRiskAnalysis.source} · ${holdingRiskAnalysis.generatedAt}` : "点击后生成持仓风险分析；DeepSeek不可用时自动使用fallback。"}</p>
+      <article class="data-card"><strong>整体判断</strong><p>${holdingRiskAnalysis?.overall ?? "尚未生成持仓风险分析。"}</p></article>
+      <div class="detail-grid">
+        ${(holdingRiskAnalysis?.holdings ?? []).map(holdingRiskCard).join("") || `<article class="data-card"><strong>暂无分析结果</strong><p>添加持仓后点击“分析持仓风险”。</p></article>`}
+      </div>
     </section>`;
 }
 
@@ -140,6 +154,15 @@ export function mountPortfolio({ rerender }) {
       rerender();
     });
   });
+
+  document.querySelector("#analyze-holding-risk-button")?.addEventListener("click", async () => {
+    const riskMessage = document.querySelector("#holding-risk-message");
+    if (riskMessage) riskMessage.textContent = "正在分析持仓风险...";
+    const portfolio = await getPortfolioSummary();
+    holdingRiskAnalysis = await analyzeHoldingRisks(portfolio);
+    if (riskMessage) riskMessage.textContent = `${holdingRiskAnalysis.source} · ${holdingRiskAnalysis.generatedAt}`;
+    rerender();
+  });
 }
 
 function barHeight(value, records) {
@@ -152,4 +175,17 @@ function barHeight(value, records) {
 
 function money(value) {
   return Number(value ?? 0).toFixed(2);
+}
+
+function holdingRiskCard(item = {}) {
+  return `
+    <article class="data-card">
+      <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.assetType} · 风险${item.riskLevel}</span></div>
+      <p><b>AI判断</b>${item.aiJudgment}</p>
+      <p><b>风险原因</b>${(item.riskReasons ?? []).join("；")}</p>
+      <p><b>关注价格</b>${item.watchPrice} · <b>风险价格</b>${item.riskPrice}</p>
+      <p><b>需要观察</b>${(item.watchChanges ?? []).join("；")}</p>
+      <p><b>继续持有条件</b>${(item.holdConditions ?? []).join("；")}</p>
+      <p class="notice">只做持仓风险管理，不输出保证收益，不自动买卖。</p>
+    </article>`;
 }
