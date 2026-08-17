@@ -60,6 +60,15 @@ export function opportunityCard(item) {
           <div>
             <h3>观察逻辑</h3>
             <p>${observation.logic ?? "缺少价格、趋势或估值数据时不生成虚假区间。"}</p>
+            ${item.etfAnalysis ? `
+              <h3>ETF观察</h3>
+              ${tagList([
+                `跟踪方向：${item.etfAnalysis.trackingIndex}`,
+                `流动性：${item.etfAnalysis.liquidity}`,
+                `板块资金：${item.etfAnalysis.sectorDirection}`,
+                `持续性：${item.etfAnalysis.sustainability}`,
+              ])}
+            ` : ""}
             <p><b>放弃条件</b>${item.giveUpCondition ?? "跌破风险区域、热点退潮或出现明确利空时放弃观察。"}</p>
             <p><b>来源</b>${item.dataSource ?? "数据源未返回"} · ${item.updatedAt ?? "时间待更新"}</p>
           </div>

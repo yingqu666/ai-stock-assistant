@@ -18,6 +18,9 @@ export async function renderDashboard() {
     riskSignals,
     refreshStatus,
     portfolioSummary,
+    opportunitySource,
+    opportunityStatus,
+    opportunityLoadingMessage,
     updatedAt,
     source,
   } = await getDashboardData();
@@ -152,8 +155,9 @@ export async function renderDashboard() {
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>AI研究机会</h2><span>仅作研究观察，不构成投资建议</span></div>
-        <div class="card-grid">${opportunities.slice(0, 3).map(opportunityCard).join("")}</div>
+        <div class="section-head"><h2>AI研究机会</h2><span>${opportunityStatus ?? "正在分析市场机会"} · 仅作研究观察，不构成投资建议</span></div>
+        <p class="form-message">${opportunityLoadingMessage ?? "正在分析市场机会，优先展示前3个，完整TOP10后台继续生成。"} 来源：${opportunitySource ?? source ?? "行情服务"}</p>
+        <div class="card-grid">${opportunities.slice(0, 3).map(opportunityCard).join("") || opportunityLoadingCard(opportunityStatus, opportunitySource)}</div>
       </section>
 
       <section class="split-section">
@@ -170,6 +174,7 @@ export async function renderDashboard() {
 export function mountDashboard({ rerender }) {
   const button = document.querySelector("#refresh-data-button");
   const message = document.querySelector("#refresh-message");
+  window.addEventListener("ai-opportunity-pool-updated", rerender, { once: true });
   button?.addEventListener("click", async () => {
     if (message) message.textContent = "正在刷新行情、股票、新闻和AI分析...";
     await refreshWorkbenchData();
@@ -400,6 +405,17 @@ function missingOpportunityCard() {
       <p><b>新闻催化</b>新闻接口未返回可验证催化。</p>
       <p><b>持续性判断</b>数据不足，等待行情和资金字段恢复后再判断。</p>
       <p><b>风险</b>缺少真实板块和资金数据时，不能将任何方向判定为机会。</p>
+    </article>`;
+}
+
+function opportunityLoadingCard(status = "正在分析市场机会", source = "行情服务") {
+  const insufficient = String(status).includes("不足") || String(source).includes("不足") || String(source).includes("未返回");
+  return `
+    <article class="data-card">
+      <div class="card-head"><strong>${insufficient ? "机会池数据不足" : "正在分析市场机会"}</strong><span>${status ?? "分析中"}</span></div>
+      <p><b>当前状态</b>${insufficient ? "真实热点板块、行情或新闻候选不足，暂不生成假机会。" : "正在根据真实热点板块、行情、新闻和风险条件生成机会池。"}</p>
+      <p><b>数据不足原因</b>${source ?? "行情服务暂未返回完整候选。"}</p>
+      <p><b>处理方式</b>${insufficient ? "等待真实数据恢复后再展示机会。" : "优先展示前3个机会，完整TOP10会在后台继续分析。"}</p>
     </article>`;
 }
 
