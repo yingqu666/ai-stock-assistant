@@ -2,7 +2,7 @@ import { Router } from "express";
 import { getAIFeedback, getAIHistory, getPortfolio, getReports, getSettings, saveAIFeedback, saveAIHistory, saveReport } from "../db/store.js";
 import { requireUser } from "../middleware/auth.js";
 import { asyncHandler } from "../middleware/security.js";
-import { answerInvestmentQuestion, buildReportTemplate, generateFallbackResearchReport, generateResearchReport, getAiCallLogs, getAiRuntimeStatus, runResearchTeam } from "../services/aiService.js";
+import { answerInvestmentQuestion, buildReportTemplate, generateFallbackResearchReport, generateMarketAnalysis, generateResearchReport, getAiCallLogs, getAiRuntimeStatus, runResearchTeam } from "../services/aiService.js";
 import { buildReflection } from "../services/aiReviewService.js";
 import { getResearchData } from "../services/researchDataService.js";
 
@@ -67,6 +67,37 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
       error: error.message,
     });
     res.json({ ok: true, data: fallback, report: fallback });
+  }
+}));
+
+aiRouter.post("/market-analysis", asyncHandler(async (req, res) => {
+  const input = req.body ?? {};
+  const runtime = getAiRuntimeStatus();
+  console.info("[market-ai-analysis] AI request:", {
+    provider: runtime.provider,
+    mode: runtime.aiMode,
+    hasApiKey: runtime.hasApiKey,
+    hotSectorCount: input.marketSnapshot?.hotSectors?.length ?? input.marketData?.hotSectors?.length ?? 0,
+    newsCount: input.newsSnapshot?.news?.length ?? input.newsData?.length ?? input.newsEvents?.length ?? 0,
+  });
+  try {
+    const analysis = await generateMarketAnalysis(input);
+    console.info("[market-ai-analysis] AI response:", {
+      source: analysis.source,
+      provider: getAiRuntimeStatus().provider,
+      mode: getAiRuntimeStatus().aiMode,
+      error: analysis.error ?? "",
+    });
+    res.json({ ok: true, data: analysis, analysis });
+  } catch (error) {
+    console.info("[market-ai-analysis] AI response:", {
+      source: "fallback",
+      provider: getAiRuntimeStatus().provider,
+      mode: getAiRuntimeStatus().aiMode,
+      error: error.message,
+    });
+    const fallback = generateFallbackResearchReport(input, `AI市场分析异常：${error.message}`);
+    res.json({ ok: true, data: fallback, analysis: fallback });
   }
 }));
 

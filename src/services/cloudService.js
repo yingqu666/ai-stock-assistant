@@ -49,6 +49,7 @@ export const cloudDataApi = {
   getAiHistory: () => apiRequest("/ai-history"),
   saveAiHistory: (payload) => apiRequest("/ai-history", { method: "POST", body: JSON.stringify(payload) }),
   generateStockAiReport: (payload) => apiRequest("/ai/stock-report", { method: "POST", body: JSON.stringify(payload), timeoutMs: 12000 }),
+  generateMarketAnalysis: (payload) => apiRequest("/ai/market-analysis", { method: "POST", body: JSON.stringify(payload), timeoutMs: 12000 }),
   getAiProviderStatus: () => apiRequest("/ai/provider-status", { timeoutMs: 5000 }),
   generateAiReport: (payload) => apiRequest("/ai/report", { method: "POST", body: JSON.stringify(payload) }),
   askAi: (payload) => apiRequest("/ai/ask", { method: "POST", body: JSON.stringify(payload) }),

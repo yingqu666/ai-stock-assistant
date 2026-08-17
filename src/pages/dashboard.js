@@ -86,12 +86,12 @@ export async function renderDashboard() {
 
       <section class="wide-section">
         <div class="section-head"><h2>AI投资经理</h2><span>${aiSummary.source ?? "AI/fallback"} · 只给仓位参考，不直接买卖股票</span></div>
-        <p class="answer"><b>今日市场判断：</b>${marketStatusLabel(marketStats, rankedSectors)}。${buildManagerConclusion(decision, strategy, marketStats, rankedSectors, marketNews)}</p>
+        <p class="answer"><b>今日市场判断：</b>${aiSummary.currentMarketJudgment ?? `${marketStatusLabel(marketStats, rankedSectors)}。${buildManagerConclusion(decision, strategy, marketStats, rankedSectors, marketNews)}`}</p>
         <div class="detail-grid">
-          <article class="data-card"><strong>当前市场状态</strong><p>${buildMarketStatusDecision(marketStats, rankedSectors, marketNews)}</p></article>
-          <article class="data-card"><strong>今日主线方向</strong><p>${buildMainDirectionDecision(rankedSectors, marketNews)}</p></article>
-          <article class="data-card"><strong>风险方向</strong><p>${buildRiskDirectionDecision(marketStats, rankedSectors, marketNews)}</p></article>
-          <article class="data-card"><strong>操作思路</strong><p>${buildActionJudgment(marketStats, rankedSectors)}</p></article>
+          <article class="data-card"><strong>当前市场状态</strong><p>${aiSummary.marketSummary ?? buildMarketStatusDecision(marketStats, rankedSectors, marketNews)}</p></article>
+          <article class="data-card"><strong>今日主线方向</strong><p>${formatMarketMainDirections(aiSummary.mainDirections, aiSummary.hotDirections) || buildMainDirectionDecision(rankedSectors, marketNews)}</p></article>
+          <article class="data-card"><strong>风险方向</strong><p>${formatMarketRiskReminders(aiSummary.riskReminders, aiSummary.risks) || buildRiskDirectionDecision(marketStats, rankedSectors, marketNews)}</p></article>
+          <article class="data-card"><strong>操作思路</strong><p>${aiSummary.operationPlan ?? buildActionJudgment(marketStats, rankedSectors)}</p></article>
           <article class="data-card"><strong>仓位参考</strong><p>${positionPercent(decision.positionAdvice ?? strategy.position)}。仅作为风险暴露参考，不代表直接买卖。</p></article>
           <article class="data-card"><strong>判断依据</strong>${tagListSafe(extractBasis(aiSummary, rankedSectors, marketSentiment, marketStats, marketNews).slice(0, 8))}</article>
           <article class="data-card"><strong>价格/风险区域</strong><p>${buildMarketPriceZones(rankedSectors, marketStats)}</p></article>
@@ -323,6 +323,22 @@ function buildManagerConclusion(decision = {}, strategy = {}, stats = {}, sector
   const newsFactor = marketNews[0]?.title ? `新闻因素方面，重点关注“${marketNews[0].title}”。` : "新闻因素暂未返回有效数据。";
   const action = decision.action ?? "观察";
   return `当前AI根据全市场热点、涨跌家数、成交额、涨停数量、资金活跃度和新闻因素判断，市场处于${stats.state ?? "震荡"}状态，赚钱效应${stats.moneyEffect ?? "待确认"}，主动筛选方向为${leading}。${newsFactor}策略上以${action}和控制仓位暴露为主，仓位参考${positionPercent(decision.positionAdvice ?? strategy.position)}，等待成交额和资金方向进一步验证。`;
+}
+
+function formatMarketMainDirections(mainDirections = [], hotDirections = []) {
+  const rows = Array.isArray(mainDirections) && mainDirections.length ? mainDirections : hotDirections;
+  return (rows ?? []).slice(0, 3).map((item) => {
+    if (typeof item === "string") return item;
+    return `${item.name ?? "主线方向"}：${item.reason ?? item.catalyst ?? "依据待补充"}；持续性：${item.sustainability ?? "需要继续观察"}；风险：${item.risk ?? "热点退潮或成交缩量"}`;
+  }).join(" ");
+}
+
+function formatMarketRiskReminders(riskReminders = [], risks = []) {
+  const rows = Array.isArray(riskReminders) && riskReminders.length ? riskReminders : risks;
+  return (rows ?? []).slice(0, 4).map((item) => {
+    if (typeof item === "string") return item;
+    return `${item.target ?? "风险对象"}：${item.reason ?? "风险原因待补充"}；短期：${item.shortTermImpact ?? "可能加剧波动"}；中期：${item.midTermImpact ?? "需要继续观察"}`;
+  }).join("；");
 }
 
 function buildActionJudgment(stats = {}, sectors = []) {

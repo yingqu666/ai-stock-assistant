@@ -145,6 +145,7 @@ export async function getDashboardData() {
   const fullMarketNews = dedupeNewsEvents([...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])]);
   const aiSummary = await generateAiAnalysis({
     marketData: market,
+    newsSnapshot,
     newsEvents: fullMarketNews,
     riskData: risks,
   });

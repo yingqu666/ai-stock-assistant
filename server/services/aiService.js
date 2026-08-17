@@ -93,6 +93,46 @@ const reportSchema = {
   },
 };
 
+const marketAnalysisSchema = {
+  currentMarketJudgment: "当前市场判断：强势/震荡偏强/震荡等待/风险阶段，并说明一句核心理由",
+  marketSummary: "今日A股市场分析，必须引用指数、涨跌家数、成交额、涨停跌停、热点板块和新闻",
+  mainDirections: [
+    {
+      name: "今日主线方向",
+      reason: "为什么成为主线，基于热点板块、成交额、资金活跃度和新闻",
+      relatedSectors: ["相关板块"],
+      sustainability: "持续性：强/一般/弱，并说明依据",
+      risk: "该方向最大风险",
+    },
+  ],
+  riskReminders: [
+    {
+      target: "风险对象：市场/板块/股票名称",
+      reason: "风险原因，引用行情、资金或新闻",
+      shortTermImpact: "短期影响",
+      midTermImpact: "中期影响",
+    },
+  ],
+  operationPlan: "操作思路，只能给观察、等待、控制仓位、降低风险暴露，不输出确定买卖",
+  investmentDecision: {
+    marketTrend: "上涨/震荡偏强/震荡/偏弱/下跌",
+    rating: "重点关注/可以观察/等待机会/暂不参与/风险较高",
+    score: "0-100，仅作为市场环境参考",
+    action: "关注/等待/持有/降低仓位/回避",
+    positionAdvice: "0%-100%仓位参考或低仓位/半仓/保持当前仓位/降低仓位",
+    reasons: ["判断依据"],
+    risks: ["风险条件"],
+    watchPoints: ["观察条件"],
+  },
+  evidence: {
+    market: ["指数、涨跌家数、成交额、涨停跌停依据"],
+    industry: ["热点板块TOP12依据"],
+    news: ["市场新闻、行业新闻或公告依据"],
+    risk: ["风险依据"],
+  },
+  conclusion: "一句话结论，不保证收益，不自动交易",
+};
+
 const aiCallLogs = [];
 let lastAiStatus = {
   lastCallAt: null,
@@ -134,6 +174,15 @@ export async function generateResearchReport(input) {
     input: normalizeAiInput(input),
     outputSchema: reportSchema,
     fallback: () => fallbackReport(input),
+  });
+}
+
+export async function generateMarketAnalysis(input) {
+  return runAiJsonTask({
+    task: "生成首页AI市场分析，只分析市场环境、主线方向、风险和操作思路，不分析具体买卖股票",
+    input: normalizeMarketAnalysisInput(input),
+    outputSchema: marketAnalysisSchema,
+    fallback: () => fallbackMarketAnalysis(input),
   });
 }
 
@@ -367,6 +416,117 @@ function normalizeAiInput(input = {}) {
   };
 }
 
+function normalizeMarketAnalysisInput(input = {}) {
+  const marketData = input.marketSnapshot ?? input.marketData ?? {};
+  const newsSnapshot = input.newsSnapshot ?? {};
+  const newsData = asArray(input.newsData ?? input.newsEvents ?? newsSnapshot.news)
+    .concat(asArray(newsSnapshot.stockNews))
+    .slice(0, 8)
+    .map((item) => ({
+      title: trimText(item.title, 140),
+      source: item.source,
+      time: item.time ?? item.publishedAt,
+      category: item.category ?? item.newsType,
+      impact: item.impact ?? item.direction,
+      relatedIndustry: item.relatedIndustry,
+      relatedIndustries: asArray(item.relatedIndustries).slice(0, 4),
+      relatedStocks: asArray(item.relatedStocks).slice(0, 5),
+      summary: trimText(item.summary ?? item.aiSummary ?? item.analysis?.summary, 220),
+    }));
+  const sentiment = marketData.marketSentiment ?? {};
+  return {
+    marketSnapshot: {
+      source: marketData.source,
+      dataStatus: marketData.dataStatus,
+      updatedAt: marketData.updatedAt,
+      indexes: asArray(marketData.marketOverview).slice(0, 8),
+      breadth: {
+        upCount: sentiment.upCount,
+        downCount: sentiment.downCount,
+        flatCount: sentiment.flatCount,
+        limitUpCount: sentiment.limitUpCount,
+        limitDownCount: sentiment.limitDownCount,
+        turnover: sentiment.turnover ?? findMetric(marketData.marketOverview, "成交")?.value,
+        moneyEffect: sentiment.moneyEffect,
+        summary: sentiment.summary,
+      },
+      hotSectors: asArray(marketData.hotSectors).slice(0, 12).map((sector) => ({
+        name: sector.name,
+        changePercent: sector.changePercent ?? sector.change,
+        amount: sector.amount ?? sector.turnover,
+        capitalFlow: sector.capitalFlow ?? sector.flow,
+        heatRank: sector.heatRank ?? sector.rank,
+        reason: trimText(sector.reason ?? sector.aiReason ?? sector.rankingReason, 180),
+        risk: trimText(sector.risk, 160),
+      })),
+    },
+    newsSnapshot: {
+      source: newsSnapshot.source,
+      dataStatus: newsSnapshot.dataStatus,
+      updatedAt: newsSnapshot.updatedAt,
+      news: newsData,
+    },
+  };
+}
+
+function fallbackMarketAnalysis(input = {}) {
+  const marketData = input.marketSnapshot ?? input.marketData ?? {};
+  const newsSnapshot = input.newsSnapshot ?? {};
+  const newsRows = asArray(input.newsData ?? input.newsEvents ?? newsSnapshot.news);
+  const sentiment = marketData.marketSentiment ?? {};
+  const sectors = asArray(marketData.hotSectors).slice(0, 5);
+  const up = Number(sentiment.upCount ?? 0);
+  const down = Number(sentiment.downCount ?? 0);
+  const state = up > down * 1.2 ? "震荡偏强" : down > up * 1.2 ? "风险阶段" : "震荡等待";
+  const mainDirections = sectors.slice(0, 3).map((sector) => ({
+    name: sector.name ?? "热点方向",
+    reason: `${sector.name ?? "相关板块"}位于热点TOP，涨跌幅${sector.changePercent ?? sector.change ?? "数据不足"}，成交额${sector.amount ?? sector.turnover ?? "数据不足"}。`,
+    relatedSectors: [sector.name].filter(Boolean),
+    sustainability: sector.amount || sector.turnover ? "一般：需要继续观察成交额和资金活跃度是否延续。" : "弱：成交额或资金数据不足。",
+    risk: sector.risk ?? "热点退潮或指数转弱会降低持续性。",
+  }));
+  const riskReminders = [
+    {
+      target: sectors[0]?.name ?? "市场",
+      reason: `上涨${sentiment.upCount ?? "数据不足"}家、下跌${sentiment.downCount ?? "数据不足"}家，涨停${sentiment.limitUpCount ?? "数据不足"}家、跌停${sentiment.limitDownCount ?? "数据不足"}家；若赚钱效应转弱需控制风险。`,
+      shortTermImpact: "短线可能加大分化，追高性价比下降。",
+      midTermImpact: "若成交额不能延续，主线持续性会下降。",
+    },
+  ];
+  return {
+    currentMarketJudgment: `${state}：基于涨跌家数、成交额和热点板块强度的规则fallback判断。`,
+    marketSummary: `今日市场处于${state}，上涨${sentiment.upCount ?? "数据不足"}家、下跌${sentiment.downCount ?? "数据不足"}家，成交额${sentiment.turnover ?? findMetric(marketData.marketOverview, "成交")?.value ?? "数据不足"}。`,
+    mainDirections,
+    riskReminders,
+    operationPlan: "以观察主线持续性和控制仓位暴露为主，不追高，不输出确定买卖。",
+    investmentDecision: {
+      marketTrend: state,
+      rating: state === "风险阶段" ? "等待机会" : "可以观察",
+      score: state === "风险阶段" ? 52 : 68,
+      action: "等待",
+      positionAdvice: state === "风险阶段" ? "降低仓位" : "低仓位到半仓观察",
+      reasons: [
+        `涨跌家数：上涨${sentiment.upCount ?? "数据不足"}，下跌${sentiment.downCount ?? "数据不足"}`,
+        `热点板块：${sectors.map((item) => item.name).filter(Boolean).join("、") || "数据不足"}`,
+        `新闻数量：${newsRows.length}`,
+      ],
+      risks: riskReminders.map((item) => `${item.target}：${item.reason}`),
+      watchPoints: ["热点板块成交额是否延续", "涨跌家数是否继续改善", "重要新闻是否改变风险偏好"],
+    },
+    hotDirections: mainDirections,
+    risks: riskReminders.map((item) => `${item.target}：${item.reason}`),
+    tomorrowPlan: ["观察TOP热点板块是否延续", "检查成交额和涨停数量变化", "关注市场新闻是否出现利空"],
+    evidence: {
+      market: [`上涨${sentiment.upCount ?? "数据不足"}家，下跌${sentiment.downCount ?? "数据不足"}家`, `成交额${sentiment.turnover ?? "数据不足"}`],
+      industry: sectors.map((item) => `${item.name} ${item.changePercent ?? item.change ?? ""}`).filter(Boolean),
+      news: newsRows.slice(0, 3).map((item) => `${item.title ?? "新闻"}（${item.source ?? "来源未返回"}）`),
+      risk: riskReminders.map((item) => item.reason),
+    },
+    conclusion: `${state}，以观察主线和风险控制为主。`,
+    source: "fallback",
+  };
+}
+
 function compactAiInput(input = {}) {
   const normalized = normalizeAiInput(input);
   const stockRelatedNews = asArray(normalized.newsBuckets.stockRelated);
@@ -457,6 +617,10 @@ function compactPlainObject(value = {}, maxKeys = 8, maxText = 160) {
 function asArray(value) {
   if (Array.isArray(value)) return value;
   return value === undefined || value === null ? [] : [value];
+}
+
+function findMetric(metrics = [], keyword = "") {
+  return asArray(metrics).find((item) => String(item?.label ?? "").includes(keyword)) ?? null;
 }
 
 function normalizeTimeout(value, fallback) {

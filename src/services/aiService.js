@@ -99,7 +99,12 @@ export async function generateAiAnalysis(input) {
     console.info("[stock-ai-report] AI请求:", Boolean(stock.code || stock.name));
     const result = stock.code || stock.name
       ? await cloudDataApi.generateStockAiReport(input)
-      : await cloudDataApi.generateAiReport(input);
+      : await cloudDataApi.generateMarketAnalysis({
+        marketSnapshot: input.marketData ?? input.marketSnapshot,
+        newsSnapshot: input.newsSnapshot,
+        newsData: input.newsData ?? input.newsEvents,
+        riskData: input.riskData,
+      });
     const output = result.report ?? result.data?.content ?? result.data?.report ?? result.data;
     if (output?.investmentDecision || output?.marketSummary || output?.companyAnalysis) {
       console.info("[stock-ai-report] AI返回:", {
@@ -108,7 +113,7 @@ export async function generateAiAnalysis(input) {
         rating: output.investmentDecision?.rating,
         score: output.investmentDecision?.score,
       });
-      return normalizeAiOutput(output, input, aiSourceLabel(output.source ?? result.data?.source));
+      return normalizeAiOutput(output, input, stock.code || stock.name ? aiSourceLabel(output.source ?? result.data?.source) : (output.source ?? result.data?.source ?? "fallback"));
     }
   } catch (error) {
     console.info("[stock-ai-report] AI返回:", { success: false, error: error.message });
