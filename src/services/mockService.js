@@ -14,7 +14,7 @@ import {
 } from "../data.js";
 import { buildAiResearchInput, buildPrompt, generateAiAnalysis, generateDailyReports, getAiStatus } from "./aiService.js";
 import { answerInvestmentQuestion } from "./aiService.js";
-import { getAiAccuracyStats, getAiHistoryRecords } from "./historyService.js";
+import { getAiAccuracyStats, getAiHistoryRecords, saveMarketAnalysisHistory } from "./historyService.js";
 import { getMarketSnapshot } from "./marketService.js";
 import { getNewsSnapshot, getStockNews } from "./newsService.js";
 import { getInvestmentProfile } from "./investmentProfileService.js";
@@ -149,6 +149,7 @@ export async function getDashboardData() {
     newsEvents: fullMarketNews,
     riskData: risks,
   });
+  await saveMarketAnalysisHistory(aiSummary, market, newsSnapshot).catch(() => null);
   const realtimeOpportunityPool = await getDashboardOpportunityPreview(market, newsSnapshot, watchlistSnapshot);
   return {
     ...market,

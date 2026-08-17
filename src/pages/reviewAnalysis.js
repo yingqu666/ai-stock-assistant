@@ -1,5 +1,6 @@
 import { metricCard } from "../components/cards.js";
 import { getReviewDetailData, runAiReview } from "../services/chartService.js";
+import { getMarketAnalysisHistory } from "../services/historyService.js";
 
 let selectedReviewDate = null;
 const tradeReviewKey = "ai-investment-trade-review-records";
@@ -18,7 +19,10 @@ function accuracyCard(label, stat) {
 }
 
 export async function renderReviewAnalysis() {
-  const data = await getReviewDetailData(selectedReviewDate);
+  const [data, marketAnalysisHistory] = await Promise.all([
+    getReviewDetailData(selectedReviewDate),
+    getMarketAnalysisHistory(),
+  ]);
   const detail = data.detail;
   const tradeRecords = loadTradeRecords();
   const tradeStats = summarizeTrades(tradeRecords);
@@ -47,6 +51,18 @@ export async function renderReviewAnalysis() {
         ].map(metricCard).join("")}
       </div>
       <p id="ai-review-message" class="form-message">选择日期查看当天市场、板块、自选股表现和AI观点。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head">
+        <div>
+          <h2>AI市场判断历史</h2>
+          <span>记录首页DeepSeek/fallback市场分析，供后续复盘验证</span>
+        </div>
+      </div>
+      <div class="detail-grid">
+        ${marketAnalysisHistory.slice(0, 8).map(marketAnalysisHistoryCard).join("") || `<article class="data-card"><strong>暂无市场判断记录</strong><p>打开首页生成AI市场分析后，这里会保存当天判断。</p></article>`}
+      </div>
     </section>
 
     <section class="wide-section">
@@ -225,4 +241,22 @@ function summarizeTrades(records = []) {
   const buyAmount = records.filter((item) => item.type === "买入").reduce((sum, item) => sum + Number(item.amount || 0), 0);
   const manualPnl = records.filter((item) => item.type === "盈亏").reduce((sum, item) => sum + Number(item.amount || 0), 0);
   return { buyCount, sellCount, pnl: manualPnl || (sellAmount - buyAmount) };
+}
+
+function marketAnalysisHistoryCard(record = {}) {
+  const content = record.predictionContent ?? record.prediction_content ?? {};
+  const snapshot = content.marketSnapshotSummary ?? {};
+  const breadth = snapshot.breadth ?? {};
+  const directions = (content.mainDirections ?? []).map((item) => item.name ?? item).filter(Boolean).slice(0, 4);
+  const risks = (content.riskDirections ?? []).map((item) => item.target ? `${item.target}：${item.reason}` : String(item)).filter(Boolean).slice(0, 3);
+  return `
+    <article class="data-card">
+      <div class="card-head"><strong>${record.date ?? "日期待补充"}</strong><span>${content.aiSource ?? record.source ?? "fallback"} · ${record.reviewStatus ?? "pending"}</span></div>
+      <p><b>AI判断</b>${content.marketState ?? record.marketPrediction ?? record.prediction?.marketDirection ?? "市场判断待补充"}</p>
+      <p><b>今日主线</b>${directions.join("、") || "主线方向待补充"}</p>
+      <p><b>风险方向</b>${risks.join("；") || "风险方向待补充"}</p>
+      <p><b>操作思路</b>${content.operationPlan ?? "等待后续复盘补充"}</p>
+      <p><b>市场数据</b>上涨${breadth.upCount ?? "未知"}家，下跌${breadth.downCount ?? "未知"}家，涨停${breadth.limitUpCount ?? "未知"}家，跌停${breadth.limitDownCount ?? "未知"}家，成交额${breadth.turnover ?? "未知"}。</p>
+      <p><b>复盘入口</b>后续可记录实际走势、判断是否正确，目前状态：${record.reviewStatus ?? "待复盘"}。</p>
+    </article>`;
 }
