@@ -35,7 +35,7 @@ const BSE_CODE_MAP = {
 
 const defaultRiskTips = [
   "\u884c\u60c5\u3001\u4f30\u503c\u548c\u8d22\u52a1\u6570\u636e\u53ef\u80fd\u5b58\u5728\u5ef6\u8fdf\uff0c\u9700\u7ed3\u5408\u4ea4\u6613\u6240\u548c\u516c\u53f8\u516c\u544a\u590d\u6838\u3002",
-  "\u672c\u9875\u4ec5\u7528\u4e8e\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u63d0\u793a\uff0c\u4e0d\u6784\u6210\u660e\u786e\u4e70\u5356\u5efa\u8bae\u3002",
+  "\u672c\u9875\u4ec5\u7528\u4e8e\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u63d0\u793a\uff0c\u4e0d\u6784\u6210\u4ea4\u6613\u6307\u4ee4\u3002",
 ];
 
 export const fallbackStocks = [
@@ -504,7 +504,7 @@ async function fetchAnnouncements(code) {
 
 async function fetchFinancials(stock) {
   if (stock.assetType === "ETF" || isEtfCode(stock.code)) {
-    return buildUnavailableFinancials(stock, "\u57fa\u91d1\u54c1\u79cd\u4e0d\u9002\u7528\u516c\u53f8\u8d22\u52a1");
+    return buildUnavailableFinancials(stock, "ETF\u4e13\u9879\u6307\u6807");
   }
 
   const columns = [
@@ -661,12 +661,16 @@ function enrichResearchFields(stock) {
   };
   const dataQuality = stock.dataQuality ?? assessDataQuality(base);
   const priceLevels = stock.priceLevels ?? buildPriceLevels(base, dataQuality);
-  return { ...base, dataQuality, priceLevels, researchReport: stock.researchReport ?? buildResearchReport({ ...base, dataQuality, priceLevels }) };
+  const mustUseSpecificTemplate = securityProfile.isEtf || securityProfile.isSt || securityProfile.isNewStock;
+  const researchReport = mustUseSpecificTemplate
+    ? buildResearchReport({ ...base, dataQuality, priceLevels })
+    : stock.researchReport ?? buildResearchReport({ ...base, dataQuality, priceLevels });
+  return { ...base, dataQuality, priceLevels, researchReport };
 }
 
 function buildFinancials(stock) {
   if ((stock.assetType ?? "") === "ETF" || isEtfCode(stock.code)) {
-    return buildUnavailableFinancials(stock, "\u57fa\u91d1\u54c1\u79cd\u4e0d\u9002\u7528\u516c\u53f8\u8d22\u52a1");
+    return buildUnavailableFinancials(stock, "ETF\u4e13\u9879\u6307\u6807");
   }
   return {
     ...buildUnavailableFinancials(stock),
@@ -695,11 +699,15 @@ function buildUnavailableFinancials(stock, reason = "\u8d22\u52a1\u63a5\u53e3\u6
 }
 
 function buildResearchReport(stock) {
-  const isEtf = stock.assetType === "ETF";
+  const profile = stock.securityProfile ?? classifySecurity(stock);
+  const isEtf = profile.isEtf;
+  if (isEtf) return buildEtfResearchReport(stock);
+  if (profile.isNewStock) return buildNewStockResearchReport(stock);
+  if (profile.isSt) return buildStResearchReport(stock);
   return {
-    company: isEtf ? `${stock.name}\u662fETF\u54c1\u79cd\uff0c\u7814\u7a76\u91cd\u70b9\u662f\u8ddf\u8e2a\u6307\u6570\u3001\u6210\u4efd\u7ed3\u6784\u3001\u6d41\u52a8\u6027\u548c\u6298\u6ea2\u4ef7\u3002` : `${stock.name}\u5df2\u7eb3\u5165\u4e2a\u80a1\u7814\u7a76\u89c6\u56fe\uff0c\u9700\u7ed3\u5408\u516c\u544a\u3001\u8d22\u62a5\u548c\u884c\u4e1a\u6570\u636e\u6301\u7eed\u9a8c\u8bc1\u3002`,
+    company: `${stock.name}\u5df2\u7eb3\u5165\u4e2a\u80a1\u7814\u7a76\u89c6\u56fe\uff0c\u9700\u7ed3\u5408\u516c\u544a\u3001\u8d22\u62a5\u548c\u884c\u4e1a\u6570\u636e\u6301\u7eed\u9a8c\u8bc1\u3002`,
     industry: `${stock.industry}\u65b9\u5411\u9700\u89c2\u5bdf\u653f\u7b56\u3001\u666f\u6c14\u5ea6\u3001\u4f30\u503c\u4f4d\u7f6e\u548c\u8d44\u91d1\u6301\u7eed\u6027\u3002`,
-    moat: isEtf ? "ETF\u6ca1\u6709\u516c\u53f8\u62a4\u57ce\u6cb3\uff0c\u91cd\u70b9\u770b\u8ddf\u8e2a\u6307\u6570\u8d28\u91cf\u3001\u8d39\u7387\u548c\u6d41\u52a8\u6027\u3002" : "\u6838\u5fc3\u7ade\u4e89\u529b\u9700\u4ece\u4e3b\u8425\u4e1a\u52a1\u3001\u5ba2\u6237\u7ed3\u6784\u3001\u76c8\u5229\u80fd\u529b\u548c\u7814\u53d1\u6295\u5165\u9a8c\u8bc1\u3002",
+    moat: "\u6838\u5fc3\u7ade\u4e89\u529b\u9700\u4ece\u4e3b\u8425\u4e1a\u52a1\u3001\u5ba2\u6237\u7ed3\u6784\u3001\u76c8\u5229\u80fd\u529b\u548c\u7814\u53d1\u6295\u5165\u9a8c\u8bc1\u3002",
     hotspotRelation: stock.hotspotRelation ?? `${stock.industry}\u4e0e\u5f53\u524d\u5e02\u573a\u70ed\u70b9\u53ef\u80fd\u5b58\u5728\u5173\u8054\uff0c\u9700\u89c2\u5bdf\u6301\u7eed\u6027\u3002`,
     upFactors: ["\u884c\u4e1a\u666f\u6c14\u6216\u653f\u7b56\u9884\u671f\u6539\u5584", "\u6210\u4ea4\u6d3b\u8dc3\u5ea6\u63d0\u5347", "\u76f8\u5173\u4e3b\u9898\u8d44\u91d1\u5173\u6ce8"],
     downsideRisks: ["\u77ed\u671f\u6da8\u5e45\u8fc7\u9ad8", "\u4f30\u503c\u6ce2\u52a8", "\u884c\u4e1a\u666f\u6c14\u6216\u653f\u7b56\u9884\u671f\u53d8\u5316"],
@@ -709,7 +717,52 @@ function buildResearchReport(stock) {
     technicalTrend: `\u6da8\u8dcc\u5e45 ${stock.changePercent ?? UNKNOWN}\uff0c\u6362\u624b\u7387 ${stock.turnoverRate ?? UNKNOWN}\uff0c\u77ed\u7ebf\u9700\u89c2\u5bdf\u91cf\u4ef7\u914d\u5408\u3002`,
     risks: stock.riskTips ?? defaultRiskTips,
     aiScore: scoreStock(stock),
-    summary: "\u5f53\u524d\u5b9a\u4f4d\u4e3a\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u8ddf\u8e2a\uff0c\u4e0d\u8f93\u51fa\u660e\u786e\u4e70\u5165\u3001\u5356\u51fa\u6216\u4fdd\u8bc1\u4e0a\u6da8\u7ed3\u8bba\u3002",
+    summary: "\u5f53\u524d\u5b9a\u4f4d\u4e3a\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u8ddf\u8e2a\uff0c\u4e0d\u8f93\u51fa\u4ea4\u6613\u6307\u4ee4\u6216\u4fdd\u8bc1\u4e0a\u6da8\u7ed3\u8bba\u3002",
+  };
+}
+
+function buildEtfResearchReport(stock) {
+  return {
+    assetType: "ETF",
+    trackingDirection: stock.trackingIndex ?? stock.industry ?? "\u8ddf\u8e2a\u65b9\u5411\u7531\u57fa\u91d1\u516c\u544a\u548c\u884c\u60c5\u6570\u636e\u8865\u5145",
+    trackingIndex: stock.trackingIndex ?? stock.industry ?? UNKNOWN,
+    sectorTrend: `${stock.industry ?? "\u76f8\u5173\u65b9\u5411"}\u9700\u89c2\u5bdf\u677f\u5757\u6da8\u8dcc\u3001\u6210\u4ea4\u989d\u548c\u65b0\u95fb\u50ac\u5316\u662f\u5426\u6301\u7eed\u3002`,
+    activity: `\u6210\u4ea4\u989d ${stock.amount ?? UNKNOWN}\uff0c\u6210\u4ea4\u91cf ${stock.volume ?? UNKNOWN}\uff0c\u7528\u4e8e\u5224\u65ad\u6210\u4ea4\u6d3b\u8dc3\u5ea6\u3002`,
+    capitalFlow: stock.capitalFlow ?? `\u8d44\u91d1\u8868\u73b0\u9700\u7ed3\u5408\u6210\u4ea4\u989d ${stock.amount ?? UNKNOWN}\u548c\u6da8\u8dcc\u5e45 ${stock.changePercent ?? UNKNOWN}\u89c2\u5bdf\u3002`,
+    liquidityRisk: "\u91cd\u70b9\u5173\u6ce8\u6210\u4ea4\u840e\u7f29\u3001\u6298\u6ea2\u4ef7\u6269\u5927\u548c\u8ddf\u8e2a\u65b9\u5411\u56de\u843d\u98ce\u9669\u3002",
+    continuity: "\u6301\u7eed\u6027\u53d6\u51b3\u4e8e\u8ddf\u8e2a\u65b9\u5411\u7684\u70ed\u5ea6\u3001\u653f\u7b56\u50ac\u5316\u548c\u6210\u4ea4\u6d3b\u8dc3\u5ea6\u3002",
+    observeConditions: ["\u8ddf\u8e2a\u65b9\u5411\u4fdd\u6301\u5e02\u573a\u70ed\u5ea6", "\u6210\u4ea4\u989d\u7ef4\u6301\u6d3b\u8dc3", "\u65b0\u95fb\u6216\u653f\u7b56\u50ac\u5316\u6ca1\u6709\u8f6c\u5f31"],
+    risks: ["\u677f\u5757\u70ed\u5ea6\u56de\u843d", "\u6210\u4ea4\u6d41\u52a8\u6027\u4e0b\u964d", "\u8ddf\u8e2a\u65b9\u5411\u51fa\u73b0\u4f30\u503c\u6216\u653f\u7b56\u538b\u529b"],
+    summary: "ETF\u91c7\u7528\u4e13\u9879\u89c2\u5bdf\u6a21\u677f\uff0c\u53ea\u8bc4\u4f30\u8ddf\u8e2a\u65b9\u5411\u3001\u6210\u4ea4\u6d3b\u8dc3\u5ea6\u3001\u8d44\u91d1\u8868\u73b0\u548c\u6d41\u52a8\u6027\u98ce\u9669\u3002",
+  };
+}
+
+function buildNewStockResearchReport(stock) {
+  return {
+    assetType: "\u65b0\u80a1",
+    listingDate: stock.listingDate ?? "\u4e0a\u5e02\u65e5\u671f\u7531\u516c\u544a\u8865\u5145",
+    issuePrice: stock.issuePrice ?? UNKNOWN,
+    firstDayPerformance: `\u5f53\u524d\u4ef7 ${stock.price ?? UNKNOWN}\uff0c\u6da8\u8dcc\u5e45 ${stock.changePercent ?? UNKNOWN}\uff0c\u9700\u7ed3\u5408\u4e0a\u5e02\u521d\u671f\u6ce2\u52a8\u89c2\u5bdf\u3002`,
+    turnoverObservation: `\u6362\u624b\u7387 ${stock.turnoverRate ?? UNKNOWN}\uff0c\u6210\u4ea4\u91cf ${stock.volume ?? UNKNOWN}\uff0c\u6210\u4ea4\u989d ${stock.amount ?? UNKNOWN}\u3002`,
+    activity: `\u6210\u4ea4\u989d ${stock.amount ?? UNKNOWN}\uff0c\u65e5\u5185\u9ad8\u4f4e ${stock.highPrice ?? UNKNOWN}/${stock.lowPrice ?? UNKNOWN}\u3002`,
+    riskNotice: "\u4e0a\u5e02\u65f6\u95f4\u77ed\uff0c\u5386\u53f2\u6837\u672c\u4e0d\u8db3\uff0c\u53ea\u5c55\u793a\u771f\u5b9e\u4ea4\u6613\u4fe1\u606f\u548c\u98ce\u9669\u9650\u5236\u3002",
+    dataLimit: "\u6682\u4e0d\u751f\u6210\u7b49\u7ea7\u3001\u5206\u6570\u3001\u4ef7\u683c\u533a\u95f4\u548c\u8d8b\u52bf\u7ed3\u8bba\u3002",
+    risks: ["\u6ce2\u52a8\u7387\u9ad8", "\u6362\u624b\u5feb\u901f\u53d8\u5316", "\u5386\u53f2\u6570\u636e\u6837\u672c\u4e0d\u8db3", "\u4f30\u503c\u53c2\u7167\u4e0d\u7a33\u5b9a"],
+    summary: "\u65b0\u80a1\u91c7\u7528\u964d\u7ea7\u5c55\u793a\uff0c\u4ec5\u4f5c\u4ea4\u6613\u4fe1\u606f\u548c\u98ce\u9669\u89c2\u5bdf\u3002",
+  };
+}
+
+function buildStResearchReport(stock) {
+  return {
+    assetType: "ST\u80a1\u7968",
+    stRiskLevel: "\u9ad8",
+    delistingRisk: "ST/*ST\u6807\u7684\u9700\u4f18\u5148\u8bc4\u4f30\u9000\u5e02\u3001\u8d22\u52a1\u548c\u6301\u7eed\u7ecf\u8425\u98ce\u9669\u3002",
+    financialRisk: `\u8d22\u52a1\u72b6\u6001\uff1a${stock.financials?.status ?? UNKNOWN}\uff1b\u9700\u91cd\u70b9\u590d\u6838\u8d22\u62a5\u548c\u5ba1\u8ba1\u610f\u89c1\u3002`,
+    liquidityRisk: `\u6210\u4ea4\u989d ${stock.amount ?? UNKNOWN}\uff0c\u6210\u4ea4\u91cf ${stock.volume ?? UNKNOWN}\uff0c\u6d41\u52a8\u6027\u98ce\u9669\u9700\u5355\u72ec\u8bc4\u4f30\u3002`,
+    tradingRuleNotice: "ST\u6807\u7684\u53d7\u4ea4\u6613\u89c4\u5219\u3001\u98ce\u9669\u8b66\u793a\u548c\u4fe1\u606f\u62ab\u9732\u5f71\u54cd\u8f83\u5927\u3002",
+    riskObserveConditions: ["\u98ce\u9669\u8b66\u793a\u662f\u5426\u53d8\u5316", "\u8d22\u52a1\u72b6\u51b5\u662f\u5426\u6539\u5584", "\u6210\u4ea4\u6d41\u52a8\u6027\u662f\u5426\u7a33\u5b9a", "\u516c\u544a\u662f\u5426\u51fa\u73b0\u91cd\u5927\u4e0d\u5229\u4e8b\u9879"],
+    risks: ["\u9000\u5e02\u98ce\u9669", "\u8d22\u52a1\u98ce\u9669", "\u6d41\u52a8\u6027\u98ce\u9669", "\u4ea4\u6613\u89c4\u5219\u98ce\u9669"],
+    summary: "ST\u6807\u7684\u91c7\u7528\u98ce\u9669\u4f18\u5148\u6a21\u677f\uff0c\u4e0d\u4f7f\u7528\u666e\u901a\u6210\u957f\u7814\u7a76\u6a21\u677f\u3002",
   };
 }
 

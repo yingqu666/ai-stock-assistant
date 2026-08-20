@@ -135,6 +135,13 @@ function normalizeResearchStock(research, fallback = {}, result = {}) {
   const dataQuality = research.dataQuality ?? assessDataQuality({ ...security, ...quote, financials, announcements: research.announcements ?? [], stockNews: research.news ?? [], securityProfile });
   const priceLevels = research.priceLevels ?? buildPriceLevels({ ...security, ...quote, financials, securityProfile }, dataQuality);
   const dataStatus = normalizeDataStatus(research.dataStatus?.overall);
+  const researchReport = buildClientResearchReport({
+    fallback: fallback.researchReport,
+    aiReport,
+    quote,
+    research,
+    securityProfile,
+  });
   return {
     ...fallback,
     code: security.code ?? quote.code ?? fallback.code,
@@ -177,13 +184,7 @@ function normalizeResearchStock(research, fallback = {}, result = {}) {
     priceLevels,
     announcements: research.announcements ?? [],
     stockNews: research.news ?? [],
-    researchReport: {
-      ...(fallback.researchReport ?? {}),
-      aiScore: aiReport.investmentDecision?.score,
-      summary: aiReport.conclusion ?? aiReport.summary,
-      capitalFlow: quote.status === "real" ? `成交额 ${quote.amount}，成交量 ${quote.volume}` : `行情接口状态：${quote.message ?? DATA_MISSING}`,
-      newsImpact: (research.news ?? []).slice(0, 2).map((item) => `${item.title}；${item.impact}`).join("；") || `新闻更新时间：${research.sourceTimes?.newsUpdatedAt ?? research.updatedAt}`,
-    },
+    researchReport,
     riskTips: [...(aiReport.investmentDecision?.risks ?? []), ...((research.dataStatus?.message && research.dataStatus.message !== "真实行情可用") ? [research.dataStatus.message] : [])],
     aiReport,
     dataSource: result.source ?? research.dataStatus?.sources?.join(" / ") ?? security.dataSource,
@@ -192,6 +193,53 @@ function normalizeResearchStock(research, fallback = {}, result = {}) {
     dataMessage: research.dataStatus?.message ?? quote.message ?? "",
     sourceTimes: research.sourceTimes ?? {},
     updatedAt: research.updatedAt ?? result.updatedAt ?? nowText(),
+  };
+}
+
+function buildClientResearchReport({ fallback = {}, aiReport = {}, quote = {}, research = {}, securityProfile = {} }) {
+  const base = {
+    summary: aiReport.conclusion ?? aiReport.summary,
+    capitalFlow: quote.status === "real" ? `成交额 ${quote.amount}，成交量 ${quote.volume}` : `行情接口状态：${quote.message ?? DATA_MISSING}`,
+    newsImpact: (research.news ?? []).slice(0, 2).map((item) => `${item.title}；${item.impact}`).join("；") || `新闻更新时间：${research.sourceTimes?.newsUpdatedAt ?? research.updatedAt}`,
+  };
+  if (securityProfile.isEtf) {
+    return {
+      assetType: "ETF",
+      trackingDirection: research.etf?.trackingIndex ?? research.security?.industry ?? DATA_MISSING,
+      sectorTrend: research.security?.industry ? `${research.security.industry}方向需结合板块表现和成交活跃度观察。` : "跟踪方向由基金资料补充。",
+      activity: base.capitalFlow,
+      liquidityRisk: "关注成交萎缩、折溢价扩大和跟踪方向回落风险。",
+      continuity: "持续性取决于跟踪方向热度和成交活跃度。",
+      summary: base.summary ?? "ETF采用专项观察模板。",
+    };
+  }
+  if (securityProfile.isNewStock) {
+    return {
+      assetType: "新股",
+      listingDate: research.company?.listingDate ?? research.security?.listingDate ?? DATA_MISSING,
+      firstDayPerformance: `当前价 ${quote.price ?? DATA_MISSING}，涨跌幅 ${quote.changePercent ?? DATA_MISSING}。`,
+      turnoverObservation: `换手率 ${quote.turnoverRate ?? DATA_MISSING}，成交额 ${quote.amount ?? DATA_MISSING}。`,
+      riskNotice: "上市时间短，历史样本不足，仅展示真实交易信息和风险限制。",
+      dataLimit: "暂不生成等级、分数、价格区间和趋势结论。",
+      summary: "新股采用降级展示。",
+    };
+  }
+  if (securityProfile.isSt) {
+    return {
+      assetType: "ST股票",
+      stRiskLevel: "高",
+      delistingRisk: "优先关注退市、财务和持续经营风险。",
+      financialRisk: `财务状态：${research.financials?.status ?? DATA_MISSING}。`,
+      liquidityRisk: base.capitalFlow,
+      tradingRuleNotice: "受交易规则、风险警示和信息披露影响较大。",
+      riskObserveConditions: ["风险警示变化", "财务状况改善", "成交流动性稳定", "公告无重大不利事项"],
+      summary: "ST标的采用风险优先模板。",
+    };
+  }
+  return {
+    ...(fallback ?? {}),
+    aiScore: aiReport.investmentDecision?.score,
+    ...base,
   };
 }
 

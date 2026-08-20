@@ -54,7 +54,7 @@ export function assessDataQuality(security = {}) {
     label: level === "complete" ? "完整" : level === "partial" ? "部分缺失" : "严重缺失",
     availableCount,
     requiredCount,
-    canScore: level !== "insufficient" && !profile.isNewStock && !financials.hasFatalIssue,
+    canScore: level !== "insufficient" && !profile.isNewStock && !profile.isSt && !financials.hasFatalIssue,
     canGeneratePriceLevels: level !== "insufficient" && !profile.isNewStock,
     canGenerateTechnicalView: level !== "insufficient" && !profile.isNewStock,
     message: security.dataConflict ? `数据源冲突：${security.dataConflict}` : buildQualityMessage(level, profile, financials),
@@ -70,9 +70,9 @@ export function validateFinancials(financials = {}, profile = {}) {
       status: "not_applicable",
       availableCount: 0,
       hasFatalIssue: false,
-      issues: ["ETF不适用公司财务指标"],
+      issues: ["ETF采用专项指标"],
       roe: "不适用",
-      source: financials.source ?? "ETF不适用公司财务指标",
+      source: financials.source ?? "ETF专项指标",
     };
   }
   const clean = { ...financials };
@@ -108,7 +108,7 @@ export function buildPriceLevels(security = {}, quality = assessDataQuality(secu
   if (!quality.canGeneratePriceLevels) {
     return {
       status: "unavailable",
-      message: profile.isNewStock ? "新股历史数据不足，暂不生成技术买卖区间，谨慎交易。" : "数据不足，无法生成可靠价格区间。",
+      message: profile.isNewStock ? "新股历史数据不足，仅提供观察，不生成交易判断。" : "数据不足，无法生成可靠价格区间。",
       levels: [],
     };
   }
@@ -198,14 +198,14 @@ function estimateListedDays(dateText) {
 }
 
 function buildSecurityWarnings({ securityType, listedDays }) {
-  if (securityType === "etf") return ["ETF不适用公司主营、净利润、ROE等公司基本面模板。"];
+  if (securityType === "etf") return ["ETF采用资产组合模板，重点看跟踪方向、成交活跃度、资金表现和流动性风险。"];
   if (securityType === "st") return ["ST/*ST标的存在退市、流动性、财务和交易规则风险，所有判断需提高风险权重。"];
-  if (securityType === "newStock") return [`上市交易时间较短${Number.isFinite(listedDays) ? `（约${listedDays}天）` : ""}，不生成技术评分和价格区间。`];
+  if (securityType === "newStock") return [`上市交易时间较短${Number.isFinite(listedDays) ? `（约${listedDays}天）` : ""}，只展示真实交易信息和风险限制。`];
   return [];
 }
 
 function buildQualityMessage(level, profile, financials) {
-  if (profile.isNewStock) return "新股历史数据不足，暂不生成技术买卖区间，谨慎交易。";
+  if (profile.isNewStock) return "新股历史数据不足，仅提供观察，不生成交易判断。";
   if (level === "insufficient") return "数据不足，无法生成可靠判断。";
   if (financials.hasFatalIssue) return `财务字段存在异常：${financials.issues.join("；")}。`;
   if (level === "partial") return "部分关键数据缺失，评分和策略仅能降级参考。";
@@ -246,9 +246,9 @@ function classifyAnnouncementType(title) {
   if (/业绩预告|预增|预减|预盈|预亏/.test(title)) return "业绩预告";
   if (/年报|季报|半年报|财报|年度报告|季度报告/.test(title)) return "财报";
   if (/股权激励|激励计划/.test(title)) return "股权激励";
-  if (/董事会|监事会|股东大会/.test(title)) return "董事会/治理决议";
+  if (/股东大会|临时股东大会|临时股东会|股东会|董事会决议|监事会决议|董事会|监事会|议案|授权|选举/.test(title)) return "治理决议";
   if (/合同|订单|中标|项目/.test(title)) return "重大合同/订单";
-  if (/增持|减持|股东/.test(title)) return "股东增减持";
+  if (/增持|减持/.test(title)) return "股东增减持";
   if (/回购/.test(title)) return "回购";
   if (/上市公告|首次公开发行|发行公告/.test(title)) return "上市公告";
   if (/ST|风险警示|退市|终止上市/.test(title)) return "风险警示";
