@@ -2,6 +2,7 @@ import { DATA_MODE } from "../config/dataSources.js";
 import { stockDatabase, stockEvents, watchlist } from "../data.js";
 import { cloudDataApi } from "./cloudService.js";
 import { addLog } from "./logService.js";
+import { assessDataQuality, buildPriceLevels, classifySecurity, validateFinancials } from "../../shared/securityClassifier.js";
 
 const SOURCE_LOCAL = "本地备用数据";
 const STATUS_LOCAL = "数据不足";
@@ -128,13 +129,19 @@ function normalizeResearchStock(research, fallback = {}, result = {}) {
   const company = research.company ?? {};
   const etf = research.etf ?? {};
   const aiReport = research.aiReport ?? {};
-  const isEtf = security.assetType === "ETF";
+  const securityProfile = research.securityProfile ?? classifySecurity({ ...security, ...quote, ...fallback });
+  const isEtf = securityProfile.isEtf || security.assetType === "ETF";
+  const financials = validateFinancials(research.financials ?? {}, securityProfile);
+  const dataQuality = research.dataQuality ?? assessDataQuality({ ...security, ...quote, financials, announcements: research.announcements ?? [], stockNews: research.news ?? [], securityProfile });
+  const priceLevels = research.priceLevels ?? buildPriceLevels({ ...security, ...quote, financials, securityProfile }, dataQuality);
   const dataStatus = normalizeDataStatus(research.dataStatus?.overall);
   return {
     ...fallback,
     code: security.code ?? quote.code ?? fallback.code,
     name: security.name ?? quote.name ?? fallback.name,
-    assetType: security.assetType ?? fallback.assetType ?? "股票",
+    assetType: securityProfile.assetType ?? security.assetType ?? fallback.assetType ?? "股票",
+    securityType: securityProfile.securityType,
+    securityProfile,
     market: security.market ?? fallback.market ?? DATA_MISSING,
     industry: security.industry ?? fallback.industry ?? DATA_MISSING,
     companyName: company.name ?? etf.name ?? security.name ?? fallback.companyName,
@@ -165,7 +172,9 @@ function normalizeResearchStock(research, fallback = {}, result = {}) {
     pe: quote.pe ?? (isEtf ? "ETF不适用PE" : DATA_MISSING),
     pb: quote.pb ?? (isEtf ? "ETF不适用PB" : DATA_MISSING),
     valuationStatus: quote.status === "real" ? "按实时行情观察" : `数据状态：${research.dataStatus?.message ?? DATA_MISSING}`,
-    financials: research.financials ?? {},
+    financials,
+    dataQuality,
+    priceLevels,
     announcements: research.announcements ?? [],
     stockNews: research.news ?? [],
     researchReport: {
@@ -188,12 +197,18 @@ function normalizeResearchStock(research, fallback = {}, result = {}) {
 
 function normalizeCloudStock(stock, fallback = {}, result = {}) {
   const reference = pickLocalReferenceMetadata(fallback);
+  const securityProfile = stock.securityProfile ?? classifySecurity({ ...reference, ...stock });
+  const financials = validateFinancials(stock.financials ?? {}, securityProfile);
+  const dataQuality = stock.dataQuality ?? assessDataQuality({ ...reference, ...stock, financials, securityProfile });
+  const priceLevels = stock.priceLevels ?? buildPriceLevels({ ...reference, ...stock, financials, securityProfile }, dataQuality);
   return {
     ...reference,
     ...stock,
     code: stock.code ?? reference.code,
     name: stock.name ?? reference.name,
-    assetType: stock.assetType ?? reference.assetType ?? "股票",
+    assetType: securityProfile.assetType ?? stock.assetType ?? reference.assetType ?? "股票",
+    securityType: securityProfile.securityType,
+    securityProfile,
     market: stock.market ?? reference.market ?? DATA_MISSING,
     industry: stock.industry ?? reference.industry ?? DATA_MISSING,
     companyName: stock.companyName ?? reference.companyName ?? stock.name ?? reference.name,
@@ -214,7 +229,9 @@ function normalizeCloudStock(stock, fallback = {}, result = {}) {
     pe: stock.pe ?? (stock.assetType === "ETF" ? "ETF不适用PE" : DATA_MISSING),
     pb: stock.pb ?? (stock.assetType === "ETF" ? "ETF不适用PB" : DATA_MISSING),
     valuationStatus: stock.valuationStatus ?? "继续观察",
-    financials: stock.financials ?? {},
+    financials,
+    dataQuality,
+    priceLevels,
     valuationRange: stock.valuationRange ?? {},
     announcements: stock.announcements ?? [],
     researchReport: stock.researchReport ?? {},

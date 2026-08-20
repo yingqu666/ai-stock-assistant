@@ -2,6 +2,7 @@ import { collectMarketData } from "./dataCollector.js";
 import { generateResearchReport } from "./aiService.js";
 import { getStockDetail, searchStockCandidates } from "./stockService.js";
 import { getEtfKnowledge, getSecurityUniverseStatus } from "./stockUniverseService.js";
+import { assessDataQuality, buildPriceLevels, classifySecurity, dedupeEvents, validateFinancials } from "../../shared/securityClassifier.js";
 
 const eastmoneyQuoteApi = "https://push2.eastmoney.com/api/qt/ulist.np/get";
 const sinaQuoteApi = "https://hq.sinajs.cn/list=";
@@ -64,8 +65,9 @@ export async function getResearchData(query) {
   const effectiveQuoteResult = mergeQuoteResults(quoteResult, quoteFallback);
   const quote = effectiveQuoteResult.data ?? {};
   const isEtf = isEtfCode(resolved.code);
-  const announcements = Array.isArray(detail.announcements) ? detail.announcements : [];
-  const financials = isEtf ? buildEtfFinancialUnavailable() : normalizeFinancials(detail.financials, detailResult?.message);
+  const securityProfile = detail.securityProfile ?? classifySecurity({ ...resolved, ...detail, ...quote });
+  const announcements = dedupeEvents(Array.isArray(detail.announcements) ? detail.announcements : []);
+  const financials = isEtf ? buildEtfFinancialUnavailable() : validateFinancials(normalizeFinancials(detail.financials, detailResult?.message), securityProfile);
   const security = buildSecurityProfile({ resolved, detail, quote, isEtf });
   const newsBuckets = buildNewsBuckets(newsResult.data);
   const dataSources = buildDataSources({ quoteResult: effectiveQuoteResult, newsResult, announcements, financials });
@@ -92,6 +94,9 @@ export async function getResearchData(query) {
     },
     updatedAt: nowText(),
   };
+  researchData.securityProfile = securityProfile;
+  researchData.dataQuality = detail.dataQuality ?? assessDataQuality({ ...security, ...quote, financials, announcements, stockNews: researchData.news, securityProfile });
+  researchData.priceLevels = detail.priceLevels ?? buildPriceLevels({ ...security, ...quote, financials, announcements, stockNews: researchData.news, securityProfile }, researchData.dataQuality);
 
   const hasUsableQuote = ["real", "partial"].includes(effectiveQuoteResult.status)
     && quote.price && quote.price !== DATA_MISSING
@@ -105,6 +110,9 @@ export async function getResearchData(query) {
       isEtf,
       announcements,
       financials,
+      securityProfile,
+      dataQuality: researchData.dataQuality,
+      priceLevels: researchData.priceLevels,
       dataStatus: researchData.dataStatus.overall,
       dataSources,
       sourceTimes: researchData.sourceTimes,
@@ -467,14 +475,21 @@ function buildRiskData(data) {
   if (data.quote.status !== "real") risks.push({ message: `行情接口状态：${data.quote.message}` });
   if (!data.announcements.length) risks.push({ message: `公告接口未返回最新公告；公告更新时间：${data.sourceTimes?.announcementUpdatedAt ?? nowText()}` });
   if (data.financials.status === "unavailable") risks.push({ message: `财务数据状态：${data.financials.source}` });
+  if (data.dataQuality?.level === "insufficient") risks.push({ message: data.dataQuality.message });
+  if (data.securityProfile?.isSt) risks.push({ message: "ST/*ST标的存在退市、流动性、财务和交易规则风险。" });
+  if (data.securityProfile?.isNewStock) risks.push({ message: "新股历史数据不足，禁止生成技术评分和买卖价格区间。" });
   return risks;
 }
 
-function buildAiStockInput({ security, quote, detail = {}, isEtf, announcements, financials, dataStatus, dataSources, sourceTimes }) {
+function buildAiStockInput({ security, quote, detail = {}, isEtf, announcements, financials, securityProfile, dataQuality, priceLevels, dataStatus, dataSources, sourceTimes }) {
   return {
     name: valueOrEmpty(quote.name ?? security.name),
     code: valueOrEmpty(security.code ?? quote.code),
     assetType: isEtf ? "ETF" : "股票",
+    securityType: securityProfile?.securityType ?? (isEtf ? "etf" : "stock"),
+    securityProfile,
+    dataQuality,
+    priceLevels,
     market: valueOrEmpty(security.market),
     industry: valueOrEmpty(security.industry ?? quote.industry),
     companyName: valueOrEmpty(detail.companyName ?? detail.name ?? security.name),
@@ -527,6 +542,9 @@ function normalizeAiFinancials(financials = {}) {
     reportDate: valueOrEmpty(financials.reportDate),
     source: valueOrEmpty(financials.source),
     status: financials.status ?? "unavailable",
+    issues: financials.issues ?? [],
+    availableCount: financials.availableCount,
+    hasFatalIssue: Boolean(financials.hasFatalIssue),
     credibility: financials.credibility ?? {},
   };
 }
@@ -703,11 +721,15 @@ function isMissingValue(value) {
     DATA_MISSING,
     INDUSTRY_MISSING,
     "暂无",
+    "-",
     "数据暂不可用",
     "待接真实数据",
     "待补充",
     "undefined",
     "null",
+    "NaN",
+    "Infinity",
+    "-Infinity",
   ].includes(text);
 }
 
@@ -789,16 +811,19 @@ function toNumber(value) {
 }
 
 function formatPrice(value) {
+  if (isMissingValue(value)) return DATA_MISSING;
   const number = toNumber(value);
   return number ? number.toFixed(2) : DATA_MISSING;
 }
 
 function formatPercent(value) {
-  const number = toNumber(value);
+  if (isMissingValue(value)) return DATA_MISSING;
+  const number = Number(value);
   return Number.isFinite(number) ? `${number >= 0 ? "+" : ""}${number.toFixed(2)}%` : DATA_MISSING;
 }
 
 function formatMetric(value) {
+  if (isMissingValue(value)) return DATA_MISSING;
   const number = toNumber(value);
   return number ? number.toFixed(2) : DATA_MISSING;
 }

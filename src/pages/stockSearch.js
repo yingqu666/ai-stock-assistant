@@ -1,6 +1,7 @@
 import { metricCard, riskCard } from "../components/cards.js";
 import { timelineList } from "../components/lists.js";
 import { getStockSearchData, selectStock } from "../services/mockService.js";
+import { assessDataQuality, buildPriceLevels, classifySecurity } from "../../shared/securityClassifier.js";
 
 const empty = "数据源未返回";
 
@@ -9,14 +10,21 @@ export async function renderStockSearch() {
   const financials = stockDetail.financials ?? {};
   const valuation = stockDetail.valuationRange ?? {};
   const announcements = stockDetail.announcements ?? [];
-  const isEtf = stockDetail.assetType === "ETF";
+  const securityProfile = stockDetail.securityProfile ?? classifySecurity(stockDetail);
+  const dataQuality = stockDetail.dataQuality ?? assessDataQuality({ ...stockDetail, securityProfile });
+  const priceLevels = stockDetail.priceLevels ?? buildPriceLevels({ ...stockDetail, securityProfile }, dataQuality);
+  const isEtf = securityProfile.isEtf;
+  const isSt = securityProfile.isSt;
+  const isNewStock = securityProfile.isNewStock;
+  const canScore = dataQuality.canScore && !isNewStock;
+  const canShowPriceLevels = dataQuality.canGeneratePriceLevels && !isNewStock && priceLevels.status === "available";
   const decision = aiAnalysis.investmentDecision ?? {};
   const hasAiDecision = Boolean(aiAnalysis.investmentDecision);
   const aiPending = aiAnalysis.source === "AI\u5206\u6790\u751f\u6210\u4e2d";
   const aiStateText = aiPending ? "AI\u751f\u6210\u4e2d" : hasAiDecision ? (aiAnalysis.source ?? "AI") : (aiAnalysis.source ?? "AI\u672a\u751f\u6210");
   const report = buildAiDisplayReport(stockDetail, stockNews, aiAnalysis);
-  const breakdown = scoreBreakdown(stockDetail, decision, aiAnalysis);
-  const qualityOpportunity = buildQualityOpportunity(stockDetail, breakdown, decision, aiAnalysis);
+  const breakdown = canScore ? scoreBreakdown(stockDetail, decision, aiAnalysis) : null;
+  const qualityOpportunity = canScore ? buildQualityOpportunity(stockDetail, breakdown, decision, aiAnalysis) : { quality: "数据不足", opportunity: "数据不足", qualityLabel: dataQuality.message, opportunityLabel: dataQuality.message };
   const tradingPosition = buildTradingPosition(stockDetail, aiInput?.marketData, breakdown);
   const observation = buildObservationRange(stockDetail, tradingPosition, breakdown);
   const cycle = buildHoldingCycle(stockDetail, tradingPosition, decision, aiInput?.marketData);
@@ -29,7 +37,9 @@ export async function renderStockSearch() {
     { label: "成交额", value: stockDetail.amount ?? empty, change: stockDetail.volume ?? "成交量由行情源补充" },
     { label: "换手率", value: stockDetail.turnoverRate ?? empty, change: stockDetail.market ?? "市场由证券池识别" },
     { label: isEtf ? "基金规模" : "市值", value: stockDetail.fundScale ?? stockDetail.marketCap ?? empty, change: stockDetail.industry ?? "行业由数据源补充" },
-    { label: "PE / PB", value: `${stockDetail.pe ?? empty} / ${stockDetail.pb ?? empty}`, change: stockDetail.valuationStatus ?? "继续观察" },
+    isEtf
+      ? { label: "跟踪方向", value: stockDetail.trackingIndex ?? stockDetail.industry ?? empty, change: "ETF不使用公司PE/PB" }
+      : { label: "PE / PB", value: `${stockDetail.pe ?? empty} / ${stockDetail.pb ?? empty}`, change: stockDetail.valuationStatus ?? "继续观察" },
   ];
 
   return `
@@ -45,9 +55,10 @@ export async function renderStockSearch() {
         <button type="submit">查询</button>
       </form>
       <p id="stock-query-message" class="form-message">
-        数据来源：${stockDetail.dataSource ?? "数据源未返回"} | 更新时间：${stockDetail.updatedAt ?? empty} | 状态：${stockDetail.dataStatus ?? "部分真实"} | 类型：${stockDetail.assetType ?? "股票"}
+        数据来源：${stockDetail.dataSource ?? "数据源未返回"} | 更新时间：${stockDetail.updatedAt ?? empty} | 状态：${stockDetail.dataStatus ?? "部分真实"} | 类型：${securityProfile.template}
         ${stockDetail.dataMessage ? ` | 说明：${stockDetail.dataMessage}` : ""}
       </p>
+      ${renderReliabilityNotice(securityProfile, dataQuality, priceLevels)}
       <div class="section-head compact">
         <h2>${stockDetail.name ?? "未选择标的"} ${stockDetail.code ?? ""}</h2>
         <span>${stockDetail.market ?? "市场由证券池识别"} | ${stockDetail.industry ?? "行业由数据源补充"} | ${stockDetail.companyName ?? stockDetail.name ?? ""}</span>
@@ -78,16 +89,16 @@ export async function renderStockSearch() {
 
     <section class="wide-section">
       <div class="section-head"><h2>AI交易观察</h2><span>只提供观察价格区间，不输出直接买卖指令</span></div>
-      <div class="metrics">
+      ${canShowPriceLevels ? `<div class="metrics">
         ${[
-          { label: "关注区间", value: observation.watchRange, change: observation.status },
-          { label: "压力位置", value: observation.pressure, change: "上方观察" },
-          { label: "风险位置", value: observation.riskLine, change: "下方观察" },
+          { label: "关注区间", value: getPriceLevel(priceLevels, "关注区域"), change: getPriceBasis(priceLevels, "关注区域") },
+          { label: "压力位置", value: getPriceLevel(priceLevels, "压力区域"), change: getPriceBasis(priceLevels, "压力区域") },
+          { label: "风险位置", value: getPriceLevel(priceLevels, "风险区域"), change: getPriceBasis(priceLevels, "风险区域") },
           { label: "数据状态", value: observation.status, change: stockDetail.dataStatus ?? "行情状态" },
         ].map(metricCard).join("")}
-      </div>
+      </div>` : `<article class="data-card"><strong>暂不生成价格区间</strong><p>${priceLevels.message ?? dataQuality.message}</p></article>`}
       <div class="detail-grid compact">
-        ${infoCard("观察逻辑", observation.logic)}
+        ${infoCard("观察逻辑", canShowPriceLevels ? observation.logic : "当前不满足价格区间生成条件，避免输出没有依据的精确数字。")}
         ${infoCard("估值参考", observation.valuation)}
       </div>
     </section>
@@ -107,28 +118,33 @@ export async function renderStockSearch() {
     <section class="wide-section">
       <div class="section-head"><h2>AI投资经理判断</h2><span>${stockDetail.name ?? ""} ${stockDetail.code ?? ""}</span></div>
       <div class="metrics">
-        ${[
+        ${(canScore ? [
           { label: "当前判断", value: hasAiDecision ? normalizeDecisionRating(decision.rating, decision.score) : aiStateText, change: hasAiDecision ? "评分仅作辅助" : "尚无AI判断" },
           { label: "股票质量评分", value: `${qualityOpportunity.quality}/100`, change: qualityOpportunity.qualityLabel },
           { label: "当前机会评分", value: `${qualityOpportunity.opportunity}/100`, change: qualityOpportunity.opportunityLabel },
           { label: "短期判断", value: hasAiDecision ? decision.shortTerm : aiStateText, change: hasAiDecision ? decision.marketTrend : "等待AI返回" },
           { label: "一周判断", value: hasAiDecision ? decision.midTerm : aiStateText, change: hasAiDecision ? decision.action : "等待AI返回" },
           { label: "仓位建议", value: hasAiDecision ? decision.positionAdvice : "暂不生成", change: hasAiDecision ? `上涨${decision.probability?.up ?? "需观察"}` : "基础行情不受影响" },
-        ].map(metricCard).join("")}
+        ] : [
+          { label: "当前判断", value: dataQuality.level === "insufficient" ? "数据不足" : isNewStock ? "新股降级观察" : "暂不评分", change: dataQuality.message },
+          { label: "数据质量", value: dataQuality.label, change: `可用字段 ${dataQuality.availableCount}/${dataQuality.requiredCount}` },
+          { label: "当前策略", value: isSt ? "风险较高" : "等待机会", change: "不生成明确评分" },
+          { label: "技术结论", value: isNewStock ? "不生成" : "数据不足", change: "避免硬编结论" },
+        ]).map(metricCard).join("")}
       </div>
       <div class="detail-grid compact">
-        ${infoCard("技术", `趋势：${tradingPosition.trend}；价格位置：${tradingPosition.pricePosition}；涨跌幅：${stockDetail.changePercent ?? empty}`)}
+        ${infoCard("技术", canScore ? `趋势：${tradingPosition.trend}；价格位置：${tradingPosition.pricePosition}；涨跌幅：${stockDetail.changePercent ?? empty}` : dataQuality.message)}
         ${infoCard("资金", `成交额：${stockDetail.amount ?? empty}；成交量：${stockDetail.volume ?? empty}；${stockDetail.volumeChange ?? "成交变化数据不足"}`)}
         ${infoCard("行业", tradingPosition.industryReference)}
         ${infoCard("基本面", isEtf ? "ETF不适用公司财务，重点看跟踪指数、规模和流动性。" : `营收${financials.revenue ?? empty}，净利润${financials.netProfit ?? empty}，ROE${financials.roe ?? empty}`)}
         ${infoCard("新闻", stockNews[0] ? `${stockNews[0].title}（${stockNews[0].source ?? "新闻"}，${normalizeImpact(stockNews[0].impact ?? stockNews[0].category)}）` : "暂无强相关新闻")}
-        ${infoCard("核心原因", (decision.reasons ?? []).join("；"))}
+        ${infoCard("核心原因", canScore ? (decision.reasons ?? []).join("；") : "数据不足或特殊标的降级，不生成硬性结论。")}
         ${infoCard("风险", ensureAtLeast(decision.risks, ["行情波动", "数据延迟", "行业预期变化"], 3).join("；"))}
         ${infoCard("观察思路", buildOperationIdea(qualityOpportunity, decision))}
       </div>
     </section>
 
-    <section class="wide-section">
+    ${canScore ? `<section class="wide-section">
       <div class="section-head"><h2>五维评分</h2><span>技术、资金、基本面、消息、市场环境</span></div>
       <div class="metrics">
         ${[
@@ -146,7 +162,17 @@ export async function renderStockSearch() {
         ${infoCard("买入观察条件", buyWatchConditions(stockDetail, decision).join("；"))}
         ${infoCard("卖出风险条件", sellRiskConditions(stockDetail, decision).join("；"))}
       </div>
-    </section>
+    </section>` : `<section class="wide-section">
+      <div class="section-head"><h2>诊断卡</h2><span>数据严重缺失或特殊标的时不输出具体评分</span></div>
+      <div class="metrics">
+        ${[
+          { label: "数据质量", value: dataQuality.label, change: dataQuality.message },
+          { label: "趋势状态", value: isNewStock ? "新股不判断" : tradingPosition.trend, change: dataQuality.canGenerateTechnicalView ? "可观察" : "数据不足" },
+          { label: "信号强度", value: dataQuality.level === "complete" ? "强" : dataQuality.level === "partial" ? "中" : "弱", change: `缺失：${(dataQuality.missingFields ?? []).join("、") || "无"}` },
+          { label: "当前策略", value: isSt ? "风险较高" : dataQuality.level === "insufficient" ? "暂不参与" : "等待机会", change: "不输出确定买卖" },
+        ].map(metricCard).join("")}
+      </div>
+    </section>`}
 
     <section class="wide-section">
       <div class="section-head"><h2>基础资料</h2><span>公司基础、主营业务和行业位置</span></div>
@@ -177,9 +203,11 @@ export async function renderStockSearch() {
           <div>
             <strong>${linkOrText(item.title, item.link)}</strong>
             <p>${item.source ?? "公告"} | ${item.type ?? "公告"} | 涉及股票：${item.relatedStock ?? stockDetail.code ?? empty} | 方向：${item.analysis?.direction ?? item.impact ?? "中性"}</p>
-            <p>事件：${item.analysis?.event ?? item.title}</p>
-            <p>影响：${item.analysis?.impact ?? item.impact ?? "需要继续观察"}</p>
+            <p>事实摘要：${item.analysis?.factSummary ?? item.analysis?.event ?? item.title}</p>
+            <p>短期影响：${item.analysis?.shortTermImpact ?? item.analysis?.impact ?? item.impact ?? "需要继续观察"}</p>
+            <p>中长期影响：${item.analysis?.midLongTermImpact ?? "需要结合后续公告、财务和行情验证。"}</p>
             <p>风险：${item.analysis?.risk ?? "需要阅读公告原文并结合财务和行情验证。"}</p>
+            ${item.duplicateCount > 1 ? `<p>去重提示：该事件有${item.duplicateCount}条相似报道/公告，AI催化只按一次主要事件计算。</p>` : ""}
           </div>
         </article>
       `).join("") : `<article class="data-card"><strong>公告接口状态</strong><p>公告接口本次未返回记录；公告更新时间：${stockDetail.sourceTimes?.announcementUpdatedAt ?? stockDetail.updatedAt ?? empty}</p></article>`}
@@ -195,7 +223,7 @@ export async function renderStockSearch() {
       ${timelineList((stockEvents.length ? stockEvents : stockDetail.timeline ?? []).map((item) => ({ date: item.date, title: item.event ?? item.title, impact: item.analysis ?? item.impact ?? item.level })))}
     </section>
 
-    ${hasAiDecision ? `<section class="wide-section">
+    ${hasAiDecision && canScore && !isEtf ? `<section class="wide-section">
       <div class="section-head"><h2>AI个股研究报告</h2><span>只做机会观察和风险提示，不输出确定买卖结论</span></div>
       <div class="detail-grid">
         ${infoCard("1. 公司基本情况", report.company)}
@@ -209,11 +237,21 @@ export async function renderStockSearch() {
         ${infoCard("9. 技术走势", report.technicalTrend)}
         ${infoCard("10. AI综合评价", `${report.aiScore ?? aiAnalysis.score ?? "待评分"} 分。${report.summary ?? "当前只作研究观察。"}`)}
       </div>
+    </section>` : hasAiDecision && isEtf ? `<section class="wide-section">
+      <div class="section-head"><h2>AI ETF研究报告</h2><span>ETF只分析跟踪方向、流动性、板块趋势和风险</span></div>
+      <div class="detail-grid">
+        ${infoCard("1. ETF跟踪方向", stockDetail.trackingIndex ?? stockDetail.industry)}
+        ${infoCard("2. 板块强弱", tradingPosition.industryReference)}
+        ${infoCard("3. 流动性", `成交额${stockDetail.amount ?? empty}，成交量${stockDetail.volume ?? empty}。`)}
+        ${infoCard("4. 热度持续性", report.hotspotRelation ?? "需要观察热点板块成交和新闻催化是否延续。")}
+        ${infoCard("5. ETF风险", ensureAtLeast(decision.risks, ["板块回撤", "成交萎缩", "跟踪方向热度下降"], 3).join("；"))}
+        ${infoCard("6. 观察结论", report.summary ?? aiAnalysis.stockAnalysis ?? "ETF只作主题观察，不使用公司基本面模板。")}
+      </div>
     </section>` : `<section class="wide-section">
       <div class="section-head"><h2>AI个股研究报告</h2><span>${aiStateText}</span></div>
       <article class="data-card">
-        <strong>${aiPending ? "AI分析正在后台生成" : "AI分析未生成"}</strong>
-        <p>${aiAnalysis.stockAnalysis ?? aiAnalysis.summary ?? "基础行情可以正常查看，当前没有可展示的AI投资判断。"}</p>
+        <strong>${aiPending ? "AI分析正在后台生成" : isNewStock ? "新股降级展示" : dataQuality.level === "insufficient" ? "数据不足，无法生成可靠判断" : "AI分析未生成"}</strong>
+        <p>${isNewStock ? "新股历史数据不足，暂不生成技术评分和买卖价格区间，谨慎交易。" : aiAnalysis.stockAnalysis ?? aiAnalysis.summary ?? "基础行情可以正常查看，当前没有可展示的AI投资判断。"}</p>
       </article>
     </section>`}
 
@@ -232,8 +270,11 @@ export async function renderStockSearch() {
       <div class="detail-grid">
         ${infoCard("数据来源", stockDetail.dataSource)}
         ${infoCard("行情更新时间", stockDetail.sourceTimes?.quoteUpdatedAt ?? stockDetail.updatedAt)}
+        ${infoCard("行情来源", stockDetail.quoteSource ?? stockDetail.dataSource)}
         ${infoCard("新闻更新时间", stockDetail.sourceTimes?.newsUpdatedAt ?? stockDetail.updatedAt)}
         ${infoCard("数据状态", stockDetail.dataStatus)}
+        ${infoCard("数据质量", `${dataQuality.label}：${dataQuality.message}`)}
+        ${infoCard("缺失字段", (dataQuality.missingFields ?? []).join("、") || "无")}
         ${infoCard("财务状态", financials.status ?? (isEtf ? "ETF不适用" : "部分真实"))}
         ${infoCard("财务来源", financials.source)}
         ${infoCard("财务可信度", `${financials.credibility?.level ?? "中"}：${financials.credibility?.reason ?? "需要结合公告原文复核"}`)}
@@ -301,6 +342,23 @@ function infoCard(title, value) {
   return `<article class="data-card"><strong>${title}</strong><p>${value || empty}</p></article>`;
 }
 
+function renderReliabilityNotice(profile = {}, quality = {}, priceLevels = {}) {
+  const warnings = [
+    ...(profile.warnings ?? []),
+    ...(quality.financials?.issues ?? []),
+    quality.level === "insufficient" ? "数据不足，无法生成可靠判断。" : "",
+  ].filter(Boolean);
+  if (!warnings.length && quality.level === "complete") return "";
+  return `
+    <article class="data-card ${profile.isSt ? "risk-row" : ""}">
+      <strong>${profile.template ?? "数据诊断"}</strong>
+      <p>数据质量：${quality.label ?? "部分缺失"}，可用字段 ${quality.availableCount ?? 0}/${quality.requiredCount ?? 0}。</p>
+      <p>${quality.message ?? "需要结合真实数据继续观察。"}</p>
+      ${warnings.length ? `<p>提示：${warnings.join("；")}</p>` : ""}
+      ${priceLevels.status !== "available" ? `<p>价格区间：${priceLevels.message ?? "暂不生成无依据价格。"}</p>` : ""}
+    </article>`;
+}
+
 function linkOrText(title, link) {
   const safeTitle = escapeHtml(title || empty);
   return link ? `<a href="${escapeHtml(link)}" target="_blank" rel="noreferrer">${safeTitle}</a>` : safeTitle;
@@ -361,7 +419,9 @@ function buildTradingPosition(stock = {}, marketData = {}, breakdown = {}) {
   const low = parseNumber(stock.lowPrice);
   const change = parseNumber(stock.changePercent);
   const rangePosition = price && high && low && high > low ? (price - low) / (high - low) : null;
-  const trend = change >= 2 && breakdown.capital >= 12 ? "上涨趋势" : change <= -2 ? "下跌趋势" : "震荡";
+  const trend = stock.securityProfile?.isNewStock || !stock.dataQuality?.canGenerateTechnicalView
+    ? "数据不足"
+    : change >= 2 && (breakdown?.capital ?? 0) >= 12 ? "上涨趋势" : change <= -2 ? "下跌趋势" : "震荡";
   const pricePosition = rangePosition == null
     ? "数据不足"
     : rangePosition >= 0.68 ? "高位" : rangePosition <= 0.32 ? "低位" : "中位";
@@ -387,6 +447,28 @@ function buildTradingPosition(stock = {}, marketData = {}, breakdown = {}) {
 }
 
 function buildObservationRange(stock = {}, tradingPosition = {}, breakdown = {}) {
+  if (stock.priceLevels?.status === "available") {
+    return {
+      watchRange: getPriceLevel(stock.priceLevels, "关注区域"),
+      pressure: getPriceLevel(stock.priceLevels, "压力区域"),
+      riskLine: getPriceLevel(stock.priceLevels, "风险区域"),
+      status: "基于真实行情计算",
+      logic: `${stock.priceLevels.message} 关注依据：${getPriceBasis(stock.priceLevels, "关注区域")}；压力依据：${getPriceBasis(stock.priceLevels, "压力区域")}；风险依据：${getPriceBasis(stock.priceLevels, "风险区域")}。`,
+      valuation: stock.assetType === "ETF"
+        ? "ETF不使用公司PE/PB，重点结合跟踪方向、成交额和资金活跃度。"
+        : `PE ${stock.pe ?? empty}，PB ${stock.pb ?? empty}，估值仅作辅助观察。`,
+    };
+  }
+  if (stock.priceLevels?.status === "unavailable") {
+    return {
+      watchRange: "数据不足",
+      pressure: "数据不足",
+      riskLine: "数据不足",
+      status: "不生成",
+      logic: stock.priceLevels.message,
+      valuation: stock.assetType === "ETF" ? "ETF不使用公司PE/PB。" : "估值数据不足。",
+    };
+  }
   const price = parseNumber(stock.price);
   const high = parseNumber(stock.highPrice);
   const low = parseNumber(stock.lowPrice);
@@ -417,6 +499,14 @@ function buildObservationRange(stock = {}, tradingPosition = {}, breakdown = {})
       ? "ETF不使用公司PE/PB，重点结合跟踪方向、成交额和资金活跃度。"
       : `PE ${stock.pe ?? empty}，PB ${stock.pb ?? empty}${Number.isFinite(pe) && pe > 60 ? "，估值偏高时需降低追高意愿。" : "，估值仅作辅助观察。"}`,
   };
+}
+
+function getPriceLevel(priceLevels = {}, name) {
+  return (priceLevels.levels ?? []).find((item) => item.name === name)?.value ?? "数据不足";
+}
+
+function getPriceBasis(priceLevels = {}, name) {
+  return (priceLevels.levels ?? []).find((item) => item.name === name)?.basis ?? "缺少依据";
 }
 
 function buildHoldingCycle(stock = {}, tradingPosition = {}, decision = {}, marketData = {}) {
@@ -527,6 +617,7 @@ function buildOperationIdea(scores, decision = {}) {
 
 function scoreFinancialQuality(stock, review = {}) {
   if (stock.assetType === "ETF") return 20;
+  if (stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
   const financials = stock.financials ?? {};
   let score = 10;
   if (financials.netProfit && !String(financials.netProfit).includes("未返回")) score += 8;
@@ -538,6 +629,7 @@ function scoreFinancialQuality(stock, review = {}) {
 
 function scoreValuationQuality(stock, review = {}) {
   if (stock.assetType === "ETF") return 15;
+  if (stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
   const pe = Number(String(stock.pe ?? "").replace(",", ""));
   const pb = Number(String(stock.pb ?? "").replace(",", ""));
   let score = 12;

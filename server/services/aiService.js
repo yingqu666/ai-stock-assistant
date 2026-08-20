@@ -304,6 +304,11 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
               "你是个人A股投资研究助手，定位接近投资经理，但不是自动交易系统。",
               "你必须基于输入中的实时行情、新闻、公告、财务、行业和用户数据分析。",
               "没有数据支持时必须明确说明数据不足，不允许编造价格、公告、新闻或财务。",
+              "如果输入dataQuality为insufficient，禁止输出具体评分、技术结论和买卖价格区间，只能说明数据不足。",
+              "如果securityType为newStock，禁止输出技术评分、支撑位、压力位、买入区间和卖出区间。",
+              "如果securityType为etf，使用ETF模板，不能使用公司主营、公司净利润、ROE、核心竞争力等普通公司模板。",
+              "如果securityType为st，必须显著提示退市、流动性、财务和交易风险，不能因短期涨幅给出积极评级。",
+              "价格区间只能引用输入priceLevels，不能自行编造具体价格。",
               "可以给出明确的研究判断和评级，但禁止输出保证收益、确定买入、确定卖出等结论。",
               "回答必须是结构化JSON。",
             ].join("\n"),
@@ -566,6 +571,10 @@ function compactStockData(stock = {}) {
     code: stock.code,
     name: stock.name,
     assetType: stock.assetType,
+    securityType: stock.securityType,
+    securityProfile: compactPlainObject(stock.securityProfile ?? {}, 8, 120),
+    dataQuality: compactPlainObject(stock.dataQuality ?? {}, 8, 140),
+    priceLevels: compactPlainObject(stock.priceLevels ?? {}, 8, 160),
     market: stock.market,
     industry: stock.industry,
     price: stock.price,
@@ -788,6 +797,7 @@ function fallbackReport(input) {
     marketRisks: ["市场成交不足", "指数回撤", "高位题材波动放大"],
   };
   return {
+    stockData: stock,
     stockBasics,
     currentQuote,
     assetProfile,
@@ -801,7 +811,7 @@ function fallbackReport(input) {
     valuationAnalysis: buildValuationAnalysis(stock),
     shortTermObservation: investmentDecision.shortTerm,
     midLongTermObservation: investmentDecision.midTerm,
-    overallJudgement: `当前判断：${investmentDecision.rating}；综合评分${investmentDecision.score}/100仅作辅助。策略为${investmentDecision.action}，需结合行业、行情、财务、新闻公告和风险变化复核。`,
+    overallJudgement: buildOverallJudgement(investmentDecision, stock),
     investorFit,
     dataSources,
     companyAnalysis,
@@ -812,7 +822,7 @@ function fallbackReport(input) {
     marketSummary: buildMarketSummary(market),
     coreLogic: "结合指数表现、成交额、涨跌家数、热点行业、新闻公告和用户关注标的进行结构化研究。",
     industryAnalysis: formatHotDirections(hotDirections),
-    stockAnalysis: `${stock.name ?? stock.code ?? "当前标的"}：当前判断 ${investmentDecision.rating}，综合评分 ${investmentDecision.score}/100仅作辅助，核心依据来自行情、行业、新闻公告和财务变化。`,
+    stockAnalysis: buildStockAnalysisText(stock, investmentDecision),
     hotDirections,
     opportunities: hotDirections.map((item) => item.name).slice(0, 5),
     risks: flattenRiskAnalysis({ riskAnalysis, investmentDecision }).slice(0, 8),
@@ -821,7 +831,7 @@ function fallbackReport(input) {
       ...hotDirections.slice(0, 3).map((item) => `跟踪${item.name}持续性`),
       stock.code ? `复核${stock.name ?? stock.code}公告、新闻和成交变化` : "检查自选股公告和新闻变化",
     ].slice(0, 6),
-    conclusion: `当前AI判断：${investmentDecision.rating}；综合评分${investmentDecision.score}/100仅作辅助，策略为${investmentDecision.action}。`,
+    conclusion: buildOverallJudgement(investmentDecision, stock),
     basis: flattenEvidence(evidence),
     evidence,
   };
@@ -838,7 +848,7 @@ function fallbackAnswer(question, input) {
 }
 
 function normalizeOutput(output, fallback) {
-  const investmentDecision = normalizeInvestmentDecision(output.investmentDecision ?? fallback.investmentDecision, fallback);
+  const investmentDecision = applyQualityGate(normalizeInvestmentDecision(output.investmentDecision ?? fallback.investmentDecision, fallback), fallback.stockData ?? fallback.stockBasics ?? fallback);
   const evidence = output.evidence ?? output.conclusionBasis ?? fallback.evidence ?? {};
   const basis = Array.isArray(output.basis) ? output.basis : flattenEvidence(evidence);
   const riskAnalysis = output.riskAnalysis ?? fallback.riskAnalysis;
@@ -971,6 +981,22 @@ function buildFinancialReview(stock = {}) {
   const f = stock.financials ?? {};
   if (stock.assetType === "ETF") {
     return { status: "not_applicable", summary: "ETF不适用公司财务指标，重点看跟踪指数、规模、流动性和成分方向。" };
+  }
+  if (f.hasFatalIssue || (f.issues ?? []).length) {
+    return {
+      status: "invalid",
+      source: f.source ?? "财务来源未返回",
+      reportDate: f.reportDate ?? "",
+      revenue: f.revenue ?? "",
+      netProfit: f.netProfit ?? "",
+      roe: f.roe ?? "不适用",
+      grossMargin: f.grossMargin ?? "",
+      netMargin: f.netMargin ?? "",
+      debtRatio: f.debtRatio ?? "",
+      cashFlow: f.cashFlow ?? "",
+      issues: f.issues ?? [],
+      summary: `财务字段异常：${(f.issues ?? []).join("；") || "存在异常字段"}。不进行正常财务评分。`,
+    };
   }
   const available = ["revenue", "netProfit", "roe", "grossMargin", "netMargin", "debtRatio", "cashFlow"].filter((key) => !isMissingField(f[key]));
   return {
@@ -1133,7 +1159,7 @@ function buildInvestmentDecision(input) {
     "公告、新闻和财务数据需要结合原文复核。",
     "热点轮动过快时短线波动会放大。",
   ].filter(Boolean);
-  return {
+  return applyQualityGate({
     marketTrend: scoreToTrend(score),
     rating: scoreToRating(score),
     score,
@@ -1149,7 +1175,69 @@ function buildInvestmentDecision(input) {
       "热点行业是否保持成交和新闻催化",
       "新闻、公告和财报是否出现反向变化",
     ],
-  };
+  }, stock);
+}
+
+function applyQualityGate(decision = {}, stock = {}) {
+  const quality = stock.dataQuality ?? {};
+  const profile = stock.securityProfile ?? {};
+  const securityType = stock.securityType ?? profile.securityType;
+  if (quality.level === "insufficient") {
+    return {
+      ...decision,
+      score: "数据不足，无法评分",
+      rating: "暂不参与",
+      marketTrend: "数据不足",
+      shortTerm: "关键行情/财务/新闻字段缺失，无法生成可靠短线判断。",
+      midTerm: "数据不足，需等待真实数据补齐后再观察。",
+      action: "等待",
+      positionAdvice: "不增加仓位",
+      probability: { up: "不生成", flat: "不生成", down: "不生成" },
+      reasons: [quality.message ?? "数据不足，无法生成可靠判断。"],
+      risks: [...asStringList(decision.risks), ...(quality.missingFields ?? []).map((item) => `缺失字段：${item}`)].slice(0, 6),
+      watchPoints: ["等待真实行情、公告、财务和新闻数据补齐。"],
+    };
+  }
+  if (securityType === "newStock") {
+    return {
+      ...decision,
+      score: "新股不评分",
+      rating: "等待机会",
+      shortTerm: "新股历史数据不足，暂不生成技术趋势判断。",
+      midTerm: "等待更多交易日、换手率和公告数据验证。",
+      action: "等待",
+      positionAdvice: "不增加仓位",
+      reasons: ["新股上市交易日不足，历史价格和技术样本不足。"],
+      risks: [...asStringList(decision.risks), "新股波动大，技术价格区间无可靠样本。"].slice(0, 6),
+    };
+  }
+  if (securityType === "st") {
+    const numeric = Number(decision.score);
+    return {
+      ...decision,
+      score: Number.isFinite(numeric) ? Math.min(numeric, 45) : decision.score,
+      rating: "风险较高",
+      action: "回避",
+      positionAdvice: "降低风险暴露",
+      risks: ["ST/*ST退市风险", "流动性风险", "财务风险", ...asStringList(decision.risks)].slice(0, 6),
+    };
+  }
+  return decision;
+}
+
+function buildOverallJudgement(decision = {}, stock = {}) {
+  if (stock.dataQuality?.level === "insufficient") return "数据不足，无法生成可靠判断；当前只展示真实返回的数据。";
+  if ((stock.securityType ?? stock.securityProfile?.securityType) === "newStock") return "新股历史数据不足，暂不生成技术评分和买卖价格区间，谨慎交易。";
+  return `当前AI判断：${decision.rating}；${typeof decision.score === "number" ? `综合评分${decision.score}/100仅作辅助，` : `${decision.score ?? "不评分"}，`}策略为${decision.action}。`;
+}
+
+function buildStockAnalysisText(stock = {}, decision = {}) {
+  const type = stock.securityType ?? stock.securityProfile?.securityType;
+  if (stock.dataQuality?.level === "insufficient") return "关键数据严重缺失，AI不生成硬性结论。";
+  if (type === "etf") return `${stock.name ?? stock.code}：ETF分析以跟踪方向、成交额、流动性和板块持续性为主，当前判断${decision.rating}。`;
+  if (type === "newStock") return `${stock.name ?? stock.code}：新股样本不足，只观察上市后换手、成交额和公告，不生成技术区间。`;
+  if (type === "st") return `${stock.name ?? stock.code}：ST风险权重优先，当前判断${decision.rating}，不因短期涨幅降低退市和流动性风险。`;
+  return `${stock.name ?? stock.code ?? "当前标的"}：当前判断 ${decision.rating}，${typeof decision.score === "number" ? `综合评分 ${decision.score}/100仅作辅助，` : ""}核心依据来自行情、行业、新闻公告和财务变化。`;
 }
 
 function buildMarketSummary(marketData = {}) {
@@ -1275,6 +1363,7 @@ function scoreCapital(stock = {}, marketData = {}) {
 
 function scoreFundamental(stock = {}) {
   if (stock.assetType === "ETF") return 12;
+  if (stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
   let score = 8;
   if (stock.financials?.revenue && !String(stock.financials.revenue).includes("数据源未返回")) score += 4;
   if (stock.financials?.netProfit && !String(stock.financials.netProfit).includes("数据源未返回")) score += 4;

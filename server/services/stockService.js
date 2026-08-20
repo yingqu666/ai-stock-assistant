@@ -1,4 +1,12 @@
 import { getEtfKnowledge, getSecurityUniverseStatus, searchSecurityUniverse } from "./stockUniverseService.js";
+import {
+  analyzeAnnouncement,
+  assessDataQuality,
+  buildPriceLevels,
+  classifySecurity,
+  dedupeEvents,
+  validateFinancials,
+} from "../../shared/securityClassifier.js";
 
 const eastmoneyQuoteApi = "https://push2.eastmoney.com/api/qt/ulist.np/get";
 const eastmoneySearchApi = "https://searchapi.eastmoney.com/api/suggest/get";
@@ -123,13 +131,21 @@ export async function getStockDetail(query) {
       () => buildUnavailableFinancials(stock, "\u8d22\u52a1\u63a5\u53e3\u54cd\u5e94\u8d85\u65f6\uff0c\u4e0d\u5f71\u54cd\u57fa\u7840\u884c\u60c5\u5c55\u793a"),
     ),
   ]);
+  const securityProfile = classifySecurity({ ...stock, financials, announcements });
+  const validatedFinancials = validateFinancials(financials, securityProfile);
   const detail = enrichResearchFields({
     ...stock,
-    announcements,
-    financials,
+    securityProfile,
+    securityType: securityProfile.securityType,
+    assetType: securityProfile.assetType,
+    announcements: dedupeEvents(announcements),
+    financials: validatedFinancials,
     dataSource: announcements.length ? `${stock.dataSource || SOURCE_EASTMONEY} / \u4e1c\u65b9\u8d22\u5bcc\u516c\u544a` : stock.dataSource,
-    dataStatus: stock.dataStatus === STATUS_REAL && (announcements.length || financials.status === STATUS_REAL) ? STATUS_REAL : stock.dataStatus,
+    dataStatus: stock.dataStatus === STATUS_REAL && (announcements.length || validatedFinancials.status === STATUS_REAL) ? STATUS_REAL : stock.dataStatus,
   });
+  detail.dataQuality = assessDataQuality(detail);
+  detail.priceLevels = buildPriceLevels(detail, detail.dataQuality);
+  detail.riskTips = [...new Set([...(detail.securityProfile?.warnings ?? []), ...(detail.dataQuality?.financials?.issues ?? []), ...(detail.riskTips ?? [])].filter(Boolean))];
   console.info("[stock-detail]", {
     code: detail.code,
     quote: detail.price && detail.price !== UNKNOWN ? "success" : "fail",
@@ -220,6 +236,9 @@ async function fetchQuote(stock) {
 function mergeBackupQuotes(sina, tencent) {
   const missing = new Set([UNKNOWN, "\u6682\u65e0", "", undefined, null]);
   const value = (primary, secondary) => missing.has(primary) ? secondary : primary;
+  const sinaPrice = normalizeNumber(sina.price);
+  const tencentPrice = normalizeNumber(tencent.price);
+  const conflict = sinaPrice > 0 && tencentPrice > 0 && Math.abs(sinaPrice - tencentPrice) / Math.max(sinaPrice, tencentPrice) > 0.03;
   return {
     ...tencent,
     ...sina,
@@ -229,7 +248,9 @@ function mergeBackupQuotes(sina, tencent) {
     pb: value(sina.pb, tencent.pb),
     dataSource: `${SOURCE_SINA} / ${SOURCE_TENCENT}`,
     quoteSource: `${SOURCE_SINA} / ${SOURCE_TENCENT}`,
-    dataStatus: STATUS_PARTIAL,
+    dataStatus: conflict ? STATUS_MOCK : STATUS_PARTIAL,
+    dataConflict: conflict ? `新浪/腾讯价格冲突：${sina.price} vs ${tencent.price}` : "",
+    dataMessage: conflict ? "关键行情源价格差异异常，已降低数据质量，不交给AI生成强结论。" : undefined,
   };
 }
 
@@ -465,16 +486,20 @@ async function fetchAnnouncements(code) {
   const url = `${eastmoneyNoticeApi}?sr=-1&page_size=5&page_index=1&ann_type=A&client_source=web&stock_list=${encodeURIComponent(code)}`;
   const json = await fetchJson(url);
   const rows = json?.data?.list ?? json?.data?.items ?? [];
-  return rows.slice(0, 5).map((item) => ({
-    title: item.title || item.notice_title || "\u516c\u544a",
-    date: String(item.notice_date || item.eiTime || item.display_time || "").slice(0, 10) || nowText(),
-    type: classifyAnnouncement(item.title || item.notice_title || ""),
-    source: "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a",
-    relatedStock: code,
-    link: item.art_code ? `https://data.eastmoney.com/notices/detail/${code}/${item.art_code}.html` : "",
-    impact: classifyImpact(item.title || item.notice_title || ""),
-    analysis: analyzeAnnouncementImpact(item.title || item.notice_title || "", code),
-  }));
+  return dedupeEvents(rows.slice(0, 8).map((item) => {
+    const title = item.title || item.notice_title || "\u516c\u544a";
+    const analysis = analyzeAnnouncementImpact(title, code);
+    return {
+      title,
+      date: String(item.notice_date || item.eiTime || item.display_time || "").slice(0, 10) || nowText(),
+      type: analysis.type,
+      source: "\u4e1c\u65b9\u8d22\u5bcc\u516c\u544a",
+      relatedStock: code,
+      link: item.art_code ? `https://data.eastmoney.com/notices/detail/${code}/${item.art_code}.html` : "",
+      impact: analysis.direction,
+      analysis,
+    };
+  })).slice(0, 5);
 }
 
 async function fetchFinancials(stock) {
@@ -513,7 +538,7 @@ async function fetchFinancials(stock) {
   const json = await fetchJson(`${eastmoneyFinanceApi}?${params.toString()}`);
   const row = json?.result?.data?.[0] ?? json?.data?.[0];
   if (!row) return buildUnavailableFinancials(stock);
-  return {
+  return validateFinancials({
     revenue: formatAmount(row.TOTALOPERATEREVE),
     revenueYoY: formatPercent(row.TOTALOPERATEREVETZ),
     netProfit: formatAmount(row.PARENTNETPROFIT),
@@ -528,7 +553,7 @@ async function fetchFinancials(stock) {
     updatedAt: nowText(),
     status: STATUS_REAL,
     credibility: { level: "\u9ad8", reason: "\u6765\u81ea\u4e1c\u65b9\u8d22\u5bccF10\u8d22\u52a1\u63a5\u53e3\uff0c\u4f46\u4ecd\u5efa\u8bae\u4e0e\u516c\u544a\u539f\u6587\u590d\u6838" },
-  };
+  }, classifySecurity(stock));
 }
 
 function mergeKnown(stock) {
@@ -588,13 +613,17 @@ function pickReferenceMetadata(stock = {}) {
 function enrichResearchFields(stock) {
   const code = stock.code ?? "";
   const name = stock.name ?? stock.stockName ?? code;
-  const assetType = stock.assetType ?? (isEtfCode(code) ? "ETF" : "\u80a1\u7968");
+  const securityProfile = stock.securityProfile ?? classifySecurity(stock);
+  const assetType = securityProfile.assetType ?? stock.assetType ?? (isEtfCode(code) ? "ETF" : "\u80a1\u7968");
   const industry = normalizeIndustry(stock.industry, assetType === "ETF");
+  const financials = validateFinancials(stock.financials ?? buildFinancials({ ...stock, assetType }), securityProfile);
   const base = {
     ...stock,
     code,
     name,
     assetType,
+    securityType: securityProfile.securityType,
+    securityProfile,
     pinyin: stock.pinyin ?? "",
     aliases: stock.aliases ?? [],
     market: stock.market ?? inferMarket(code),
@@ -625,12 +654,14 @@ function enrichResearchFields(stock) {
     profile: stock.profile ?? `${name}\u7684\u57fa\u7840\u8d44\u6599\u6765\u81ea\u884c\u60c5\u63a5\u53e3\u548c\u672c\u5730\u7814\u7a76\u5e93\uff0c\u540e\u7eed\u53ef\u63a5\u5165\u5b8c\u6574\u5e74\u62a5\u548c\u884c\u4e1a\u6570\u636e\u6821\u9a8c\u3002`,
     mainBusiness: stock.mainBusiness ?? (assetType === "ETF" ? `\u8ddf\u8e2a${stock.trackingIndex ?? "\u76f8\u5173\u6307\u6570"}` : `${industry}\u76f8\u5173\u4e1a\u52a1\uff0c\u9700\u7ed3\u5408\u5e74\u62a5\u548c\u516c\u544a\u7ee7\u7eed\u9a8c\u8bc1\u3002`),
     industryPosition: stock.industryPosition ?? `${industry}\u65b9\u5411\u9700\u7ed3\u5408\u666f\u6c14\u5ea6\u3001\u4f30\u503c\u548c\u8d44\u91d1\u6301\u7eed\u6027\u89c2\u5bdf\u3002`,
-    financials: stock.financials ?? buildFinancials(stock),
+    financials,
     valuationRange: stock.valuationRange ?? { pe: "\u5386\u53f2PE\u7531\u6570\u636e\u6e90\u8865\u5145", pb: "\u5386\u53f2PB\u7531\u6570\u636e\u6e90\u8865\u5145" },
     announcements: stock.announcements ?? [],
     riskTips: stock.riskTips ?? defaultRiskTips,
   };
-  return { ...base, researchReport: stock.researchReport ?? buildResearchReport(base) };
+  const dataQuality = stock.dataQuality ?? assessDataQuality(base);
+  const priceLevels = stock.priceLevels ?? buildPriceLevels(base, dataQuality);
+  return { ...base, dataQuality, priceLevels, researchReport: stock.researchReport ?? buildResearchReport({ ...base, dataQuality, priceLevels }) };
 }
 
 function buildFinancials(stock) {
@@ -936,21 +967,7 @@ function classifyImpact(title) {
 }
 
 function analyzeAnnouncementImpact(title, code) {
-  const type = classifyAnnouncement(title);
-  const direction = classifyImpact(title);
-  const impactMap = {
-    "\u5229\u597d": "\u53ef\u80fd\u6539\u5584\u5e02\u573a\u5bf9\u516c\u53f8\u57fa\u672c\u9762\u6216\u80a1\u4e1c\u56de\u62a5\u7684\u9884\u671f\uff0c\u9700\u7ee7\u7eed\u770b\u6570\u636e\u843d\u5730\u3002",
-    "\u5229\u7a7a": "\u53ef\u80fd\u5bf9\u77ed\u671f\u60c5\u7eea\u3001\u4f30\u503c\u6216\u7ecf\u8425\u9884\u671f\u5f62\u6210\u538b\u529b\uff0c\u9700\u91cd\u70b9\u590d\u6838\u516c\u544a\u539f\u6587\u3002",
-    "\u4e2d\u6027": "\u6682\u65f6\u66f4\u504f\u4fe1\u606f\u62ab\u9732\u6216\u5e38\u89c4\u4e8b\u9879\uff0c\u9700\u7ed3\u5408\u540e\u7eed\u884c\u60c5\u548c\u57fa\u672c\u9762\u9a8c\u8bc1\u3002",
-  };
-  return {
-    event: `${type}\uff1a${title}`,
-    impact: impactMap[direction],
-    direction,
-    risk: "\u9700\u5173\u6ce8\u516c\u544a\u539f\u6587\u3001\u8d22\u52a1\u6307\u6807\u53d8\u5316\u3001\u5e02\u573a\u662f\u5426\u5df2\u7ecf\u5145\u5206\u53cd\u6620\u9884\u671f\u3002",
-    relatedStock: code,
-    confidence: "\u4e2d",
-  };
+  return { ...analyzeAnnouncement(title, { code }), relatedStock: code };
 }
 
 function toFinanceSecuCode(code) {
@@ -998,17 +1015,25 @@ function normalizeNumber(value) {
   return Number.isFinite(number) ? number : 0;
 }
 
+function isMissingValue(value) {
+  const text = String(value ?? "").trim();
+  return value === undefined || value === null || text === "" || text === "-" || /^(暂无|数据不足|undefined|null|NaN|Infinity|-Infinity)$/i.test(text);
+}
+
 function formatPrice(value) {
+  if (isMissingValue(value)) return "\u6682\u65e0";
   const number = normalizeNumber(value);
   return number ? number.toFixed(2) : "\u6682\u65e0";
 }
 
 function formatPercent(value) {
-  const number = normalizeNumber(value);
+  if (isMissingValue(value)) return "\u6682\u65e0";
+  const number = Number(value);
   return Number.isFinite(number) ? `${number >= 0 ? "+" : ""}${number.toFixed(2)}%` : "\u6682\u65e0";
 }
 
 function formatMetric(value) {
+  if (isMissingValue(value)) return UNKNOWN;
   const number = normalizeNumber(value);
   return number ? number.toFixed(2) : UNKNOWN;
 }

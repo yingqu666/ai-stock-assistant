@@ -27,6 +27,7 @@ import { addSyncedWatchlist, deleteSyncedWatchlist, getSyncStatus, syncWatchlist
 import { getUserStoragePrefix } from "./userService.js";
 import { getSyncedWatchlist } from "./watchlistSyncService.js";
 import { getPortfolioSummary } from "./portfolioService.js";
+import { assessDataQuality, dedupeEvents } from "../../shared/securityClassifier.js";
 
 export const currentDataMode = DATA_MODE;
 const DATA_MISSING = "数据源未返回";
@@ -403,7 +404,8 @@ export async function getStockSearchData() {
   const stockNews = newsResult.status === "fulfilled" ? newsResult.value : [];
   const aiHistoryRecords = historyResult.status === "fulfilled" ? historyResult.value : [];
   const savedReports = reportsResult.status === "fulfilled" ? reportsResult.value : [];
-  const mergedStockNews = [...(stockDetail.stockNews ?? []), ...stockNews];
+  const mergedStockNews = dedupeEvents([...(stockDetail.stockNews ?? []), ...stockNews]);
+  stockDetail.dataQuality = stockDetail.dataQuality ?? assessDataQuality({ ...stockDetail, stockNews: mergedStockNews });
   const stockEvents = getStockEvents(stockDetail.code);
   const riskData = analyzeRisks({ watchlist: [stockDetail], newsEvents: mergedStockNews, marketData });
   const aiInput = buildAiResearchInput({
@@ -417,12 +419,12 @@ export async function getStockSearchData() {
     historicalReports: savedReports,
   });
   const hasBasicQuote = hasUsableQuote(stockDetail);
-  const aiAnalysis = !hasBasicQuote
+  const aiAnalysis = !hasBasicQuote || stockDetail.dataQuality?.level === "insufficient"
     ? {
-      source: "\u57fa\u7840\u884c\u60c5\u4e0d\u8db3",
-      summary: "\u57fa\u7840\u884c\u60c5\u672a\u6709\u6548\u8fd4\u56de\uff0c\u6682\u4e0d\u8c03\u7528AI\u751f\u6210\u6295\u7814\u5224\u65ad\u3002",
-      stockAnalysis: stockDetail.dataMessage ?? "\u6570\u636e\u4e0d\u8db3",
-      risks: [stockDetail.dataMessage ?? "\u57fa\u7840\u884c\u60c5\u4e0d\u8db3\uff0c\u9700\u5148\u786e\u8ba4\u4ee3\u7801\u548c\u6570\u636e\u6e90"],
+      source: "\u6570\u636e\u4e0d\u8db3",
+      summary: stockDetail.dataQuality?.message ?? "\u57fa\u7840\u884c\u60c5\u672a\u6709\u6548\u8fd4\u56de\uff0c\u6682\u4e0d\u8c03\u7528AI\u751f\u6210\u6295\u7814\u5224\u65ad\u3002",
+      stockAnalysis: stockDetail.dataMessage ?? stockDetail.dataQuality?.message ?? "\u6570\u636e\u4e0d\u8db3",
+      risks: [stockDetail.dataMessage ?? stockDetail.dataQuality?.message ?? "\u57fa\u7840\u884c\u60c5\u4e0d\u8db3\uff0c\u9700\u5148\u786e\u8ba4\u4ee3\u7801\u548c\u6570\u636e\u6e90"],
       opportunities: [],
     }
     : stockDetail.aiReport?.investmentDecision
