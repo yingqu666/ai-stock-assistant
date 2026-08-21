@@ -59,7 +59,7 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
       score: report.investmentDecision?.score,
       error: report.aiStatus?.errorMessage ?? report.error ?? "",
     });
-    res.json({ ok: true, data: report, report, aiStatus: report.aiStatus ?? { source: report.source ?? "fallback" } });
+    res.json({ ok: true, data: report, report, ...buildAiResponseMeta(report) });
   } catch (error) {
     const fallback = generateFallbackResearchReport(input, `AI本地处理异常：${error.message}`);
     console.info("[stock-ai-report] AI response:", {
@@ -68,7 +68,7 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
       mode: getAiRuntimeStatus().aiMode,
       error: error.message,
     });
-    res.json({ ok: true, data: fallback, report: fallback, aiStatus: fallback.aiStatus ?? { source: "fallback", errorMessage: error.message } });
+    res.json({ ok: true, data: fallback, report: fallback, ...buildAiResponseMeta(fallback, error.message) });
   }
 }));
 
@@ -90,7 +90,7 @@ aiRouter.post("/market-analysis", asyncHandler(async (req, res) => {
       mode: getAiRuntimeStatus().aiMode,
       error: analysis.aiStatus?.errorMessage ?? analysis.error ?? "",
     });
-    res.json({ ok: true, data: analysis, analysis, aiStatus: analysis.aiStatus ?? { source: analysis.source ?? "fallback" } });
+    res.json({ ok: true, data: analysis, analysis, ...buildAiResponseMeta(analysis) });
   } catch (error) {
     console.info("[market-ai-analysis] AI response:", {
       source: "fallback",
@@ -99,7 +99,7 @@ aiRouter.post("/market-analysis", asyncHandler(async (req, res) => {
       error: error.message,
     });
     const fallback = generateFallbackResearchReport(input, `AI市场分析异常：${error.message}`);
-    res.json({ ok: true, data: fallback, analysis: fallback, aiStatus: fallback.aiStatus ?? { source: "fallback", errorMessage: error.message } });
+    res.json({ ok: true, data: fallback, analysis: fallback, ...buildAiResponseMeta(fallback, error.message) });
   }
 }));
 
@@ -110,6 +110,14 @@ aiRouter.get("/logs", asyncHandler(async (_req, res) => {
 }));
 
 aiRouter.post("/report", asyncHandler(async (req, res) => {
+  const runtime = getAiRuntimeStatus();
+  console.info("[ai-entry] request:", {
+    entry: "report",
+    provider: runtime.provider,
+    mode: runtime.aiMode,
+    hasApiKey: runtime.hasApiKey,
+    type: req.body?.type ?? "ai-report",
+  });
   const input = await buildUserAiInput(req.user.id, req.body ?? {});
   const report = await generateResearchReport(input);
   const saved = await saveReport(req.user.id, {
@@ -119,7 +127,12 @@ aiRouter.post("/report", asyncHandler(async (req, res) => {
     sourceData: input,
   });
   await saveReportPredictions(req.user.id, report);
-  res.json({ ok: true, data: saved, report, aiStatus: report.aiStatus ?? { source: report.source ?? "fallback" } });
+  console.info("[ai-entry] response:", {
+    entry: "report",
+    source: report.aiStatus?.source ?? report.source ?? "fallback",
+    error: report.aiStatus?.errorMessage ?? report.error ?? "",
+  });
+  res.json({ ok: true, data: saved, report, ...buildAiResponseMeta(report) });
 }));
 
 aiRouter.post("/ask", asyncHandler(async (req, res) => {
@@ -144,7 +157,7 @@ aiRouter.post("/ask", asyncHandler(async (req, res) => {
     source: answer.aiStatus?.source ?? answer.source ?? "fallback",
     error: answer.aiStatus?.errorMessage ?? answer.error ?? "",
   });
-  res.json({ ok: true, data: answer, aiStatus: answer.aiStatus ?? { source: answer.source ?? "fallback" } });
+  res.json({ ok: true, data: answer, ...buildAiResponseMeta(answer) });
 }));
 
 aiRouter.post("/feedback", asyncHandler(async (req, res) => {
@@ -171,8 +184,24 @@ aiRouter.post("/research-team", asyncHandler(async (req, res) => {
     source: workflow.report?.aiStatus?.source ?? workflow.report?.source ?? "fallback",
     error: workflow.report?.aiStatus?.errorMessage ?? workflow.report?.error ?? "",
   });
-  res.json({ ok: true, data: workflow, aiStatus: workflow.report?.aiStatus ?? { source: workflow.report?.source ?? "fallback" } });
+  res.json({ ok: true, data: workflow, ...buildAiResponseMeta(workflow.report) });
 }));
+
+function buildAiResponseMeta(payload = {}, fallbackReason = "") {
+  const aiStatus = payload?.aiStatus ?? { source: payload?.source ?? "fallback" };
+  const source = normalizeAiSource(aiStatus.source ?? payload?.source);
+  const failureReason = aiStatus.errorMessage ?? payload?.failureReason ?? payload?.error ?? fallbackReason ?? "";
+  return {
+    source,
+    aiStatus: { ...aiStatus, source },
+    failureReason,
+    errorCategory: aiStatus.errorCategory ?? "",
+  };
+}
+
+function normalizeAiSource(source = "") {
+  return ["deepseek", "openai", "ai-api"].includes(source) ? source : "fallback";
+}
 
 async function buildUserAiInput(userId, extra) {
   const [portfolio, historyReports, settings, aiHistory] = await Promise.all([

@@ -166,7 +166,8 @@ export async function renderDailyReport() {
         <article class="data-card"><strong>下跌风险</strong><p>${morning.downsideRisk ?? (morning.risks ?? []).join("；")}</p></article>
         <article class="data-card"><strong>关注方向</strong>${tagList(morning.focus ?? [])}</article>
         <article class="data-card"><strong>明日观察</strong>${tagList(morning.tomorrowPlan ?? [])}</article>
-        <article class="data-card"><strong>AI状态</strong><p>${morning.aiStatus ?? "fallback"} · 来源：${(morning.sources ?? []).join("、")}</p></article>
+        <article class="data-card"><strong>AI状态</strong><p>AI来源：${morning.aiSource ?? morning.aiStatus ?? "fallback"} · 生成时间：${morning.generatedAt ?? "手动生成"}</p></article>
+        <article class="data-card"><strong>失败原因</strong><p>${morning.aiFailureReason || "无"}</p></article>
       </div>
       <div class="detail-grid compact">
         <article class="data-card"><strong>行情依据</strong><p>${(morning.evidence?.market ?? []).join("；") || "数据源未返回"}</p></article>

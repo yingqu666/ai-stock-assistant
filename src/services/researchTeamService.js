@@ -21,14 +21,21 @@ export async function getResearchTeamWorkflow() {
     const result = await cloudDataApi.runResearchTeam(input);
     const cloudReport = result.data?.report;
     if (cloudReport) {
-      const normalized = normalizeReport(cloudReport, input, normalizeAiSource(result.aiStatus ?? cloudReport.aiStatus ?? cloudReport));
-      return { agents: buildLocalAgents(input, normalized), roles: researchRoles, report: normalized, source: normalized.source };
+      const aiMeta = normalizeAiMeta(result.aiStatus ?? cloudReport.aiStatus ?? result);
+      const normalized = normalizeReport(cloudReport, input, aiMeta.source, aiMeta);
+      return { agents: buildLocalAgents(input, normalized), roles: researchRoles, report: normalized, source: normalized.source, aiStatus: normalized.aiStatus, failureReason: normalized.failureReason };
     }
-  } catch {
+  } catch (error) {
     // fallback below keeps the page usable.
+    const report = normalizeReport(generateRuleBasedAnalysis(input), input, "fallback", {
+      source: "fallback",
+      failureReason: error.message,
+      errorCategory: "network_or_api_error",
+    });
+    return { agents: buildLocalAgents(input, report), roles: researchRoles, report, source: report.source, aiStatus: report.aiStatus, failureReason: report.failureReason };
   }
-  const report = normalizeReport(generateRuleBasedAnalysis(input), input, "\u672c\u5730\u89c4\u5219fallback");
-  return { agents: buildLocalAgents(input, report), roles: researchRoles, report, source: report.source };
+  const report = normalizeReport(generateRuleBasedAnalysis(input), input, "fallback");
+  return { agents: buildLocalAgents(input, report), roles: researchRoles, report, source: report.source, aiStatus: report.aiStatus, failureReason: report.failureReason };
 }
 
 async function buildWorkflowInput() {
@@ -87,7 +94,7 @@ function buildLocalAgents(input, report) {
   ];
 }
 
-function normalizeReport(report, input, source) {
+function normalizeReport(report, input, source, meta = {}) {
   const opportunities = asArray(report.opportunities);
   const risks = asArray(report.risks);
   return {
@@ -98,14 +105,20 @@ function normalizeReport(report, input, source) {
     observationAdvice: report.observationAdvice ?? asArray(report.tomorrowPlan).join("\uff1b") ?? "\u7b49\u5f85\u6570\u636e\u8fdb\u4e00\u6b65\u786e\u8ba4",
     evidence: report.evidence ?? report.conclusionBasis ?? {},
     source,
+    aiStatus: { ...(report.aiStatus ?? {}), source },
+    failureReason: meta.failureReason ?? report.aiStatus?.errorMessage ?? report.error ?? "",
+    errorCategory: meta.errorCategory ?? report.aiStatus?.errorCategory ?? "",
   };
 }
 
-function normalizeAiSource(status = {}) {
+function normalizeAiMeta(status = {}) {
   const source = status.source ?? status.aiStatus?.source;
-  if (source === "deepseek") return "deepseek";
-  if (source === "openai" || source === "ai-api") return source;
-  return "fallback";
+  const normalized = source === "deepseek" ? "DeepSeek" : (source === "openai" || source === "ai-api" ? "OpenAI" : "fallback");
+  return {
+    source: normalized,
+    failureReason: status.failureReason ?? status.errorMessage ?? status.aiStatus?.errorMessage ?? "",
+    errorCategory: status.errorCategory ?? status.aiStatus?.errorCategory ?? "",
+  };
 }
 
 function asArray(value) {

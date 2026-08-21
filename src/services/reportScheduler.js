@@ -213,7 +213,8 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
   const investmentDecision = aiAnalysis?.investmentDecision ?? report.morning?.investmentDecision ?? {};
   const nextFocus = aiAnalysis?.tomorrowPlan ?? report.close?.nextFocus ?? [...hotNames, ...watchNames, "观察成交额变化", "检查自选股公告"].slice(0, 6);
   const evidence = aiAnalysis?.evidence ?? report.morning?.evidence ?? {};
-  const aiSource = normalizeAiSource(aiAnalysis);
+  const aiMeta = normalizeAiMeta(aiAnalysis);
+  const aiSource = aiMeta.source;
 
   return {
     generatedAt,
@@ -264,6 +265,9 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       credibility: aiAnalysis?.credibility ?? report.morning?.credibility ?? {},
       quality,
       aiStatus: aiSource,
+      aiSource,
+      aiFailureReason: aiMeta.failureReason,
+      aiErrorCategory: aiMeta.errorCategory,
     },
     close: {
       date: new Date().toLocaleDateString("zh-CN"),
@@ -295,6 +299,9 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       credibility: aiAnalysis?.credibility ?? report.close?.credibility ?? {},
       quality,
       aiStatus: aiSource,
+      aiSource,
+      aiFailureReason: aiMeta.failureReason,
+      aiErrorCategory: aiMeta.errorCategory,
     },
     history: report.history ?? [],
     taskType,
@@ -593,11 +600,16 @@ function normalizeRiskTexts(risks = [], fallback = []) {
   return source.map((item) => typeof item === "string" ? item : item.message ?? item.title ?? "风险待跟踪").filter(Boolean).slice(0, 6);
 }
 
-function normalizeAiSource(aiAnalysis = {}) {
+function normalizeAiMeta(aiAnalysis = {}) {
   const source = aiAnalysis?.aiStatus?.source ?? aiAnalysis?.source;
-  if (source === "deepseek" || source === "DeepSeek") return "DeepSeek";
-  if (source === "openai" || source === "ai-api" || source === "OpenAI") return "OpenAI";
-  return "fallback";
+  const normalized = source === "deepseek" || source === "DeepSeek"
+    ? "DeepSeek"
+    : (source === "openai" || source === "ai-api" || source === "OpenAI" ? "OpenAI" : "fallback");
+  return {
+    source: normalized,
+    failureReason: aiAnalysis?.failureReason ?? aiAnalysis?.aiStatus?.errorMessage ?? aiAnalysis?.error ?? "",
+    errorCategory: aiAnalysis?.errorCategory ?? aiAnalysis?.aiStatus?.errorCategory ?? "",
+  };
 }
 
 function scoreQuality({ marketData, newsEvents, risks }) {

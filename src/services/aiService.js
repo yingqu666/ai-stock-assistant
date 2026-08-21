@@ -141,7 +141,7 @@ function aiSourceLabel(source) {
   if (source === "deepseek") return "DeepSeek";
   if (source === "openai" || source === "ai-api") return "OpenAI";
   if (source === "fallback") return "fallback";
-  return source ?? "云端AI";
+  return source ?? "fallback";
 }
 
 export async function testAiConnection(config) {
@@ -168,17 +168,28 @@ export async function answerInvestmentQuestion(question, context) {
   try {
     const result = await cloudDataApi.askAi({ question, context });
     const aiStatus = result.aiStatus ?? result.data?.aiStatus;
+    const source = aiSourceLabel(aiStatus?.source ?? result.source ?? result.data?.source ?? "fallback");
     return {
       question,
       answer: formatCloudAnswer(result.data),
       raw: result.data,
-      source: aiSourceLabel(aiStatus?.source ?? result.data?.source ?? "fallback"),
+      source,
       aiStatus,
+      failureReason: result.failureReason ?? aiStatus?.errorMessage ?? result.data?.error ?? "",
+      errorCategory: result.errorCategory ?? aiStatus?.errorCategory ?? "",
       context,
     };
   } catch (error) {
     addAiLog("AI助手云端问答失败", error);
-    return { question, answer: buildProfessionalFallbackAnswer(question, context), source: "本地规则fallback", context };
+    return {
+      question,
+      answer: buildProfessionalFallbackAnswer(question, context),
+      source: "fallback",
+      aiStatus: { source: "fallback", errorMessage: error.message, errorCategory: "network_or_api_error" },
+      failureReason: error.message,
+      errorCategory: "network_or_api_error",
+      context,
+    };
   }
 }
 

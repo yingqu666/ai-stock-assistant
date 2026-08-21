@@ -70,7 +70,7 @@ export function mountAiAssistant() {
     const result = await askAiAssistant(question);
     lastAnswer = result;
     if (answer) answer.textContent = result.answer;
-    if (message) message.textContent = `AI来源：${result.source}`;
+    if (message) message.textContent = formatAiSourceLine(result);
     if (feedbackActions) feedbackActions.style.display = "flex";
     if (feedbackMessage) feedbackMessage.textContent = "";
   }
@@ -104,4 +104,17 @@ export function mountAiAssistant() {
 
   document.querySelector("#feedback-good")?.addEventListener("click", () => submitFeedback(1));
   document.querySelector("#feedback-bad")?.addEventListener("click", () => submitFeedback(-1));
+}
+
+function formatAiSourceLine(result = {}) {
+  const source = result.source ?? (result.aiStatus?.source === "deepseek" ? "DeepSeek" : "fallback");
+  const failure = result.failureReason ?? result.aiStatus?.errorMessage ?? "";
+  const category = result.errorCategory ?? result.aiStatus?.errorCategory ?? "";
+  const dataSource = result.context?.market?.source ?? result.context?.market?.dataSource ?? "市场/自选股/新闻上下文";
+  return [
+    `AI来源：${source}`,
+    failure ? `失败原因：${failure}` : "",
+    category ? `错误类型：${category}` : "",
+    `数据来源：${dataSource}`,
+  ].filter(Boolean).join(" · ");
 }

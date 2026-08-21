@@ -12,7 +12,7 @@ export async function renderResearchTeam() {
           <h2>AI研究团队</h2>
           <span>市场分析师 -> 行业分析师 -> 公司分析师 -> 技术分析师 -> 风险分析师 -> 投资经理AI</span>
         </div>
-        <span class="notice">${workflow.source ?? "fallback"}</span>
+        <span class="notice">AI来源：${workflow.source ?? "fallback"}${workflow.failureReason ? ` · 失败原因：${workflow.failureReason}` : ""}</span>
       </div>
       <div class="team-grid">
         ${workflow.agents.map((agent, index) => `
