@@ -357,8 +357,8 @@ function buildOpportunityDataGapReason(marketData = {}, newsSnapshot = {}) {
   return `${marketData.source ?? "行情服务"}；${reasons.join("；") || "候选标的未返回可用行情"}`;
 }
 
-export async function getWatchlistData() {
-  const [syncedWatchlist, newsSnapshot, marketData] = await Promise.all([getSyncedWatchlist(), getCachedNewsData(), getCachedMarketData()]);
+export async function getWatchlistData(preloadedWatchlist = null) {
+  const [syncedWatchlist, newsSnapshot, marketData] = await Promise.all([preloadedWatchlist ?? getSyncedWatchlist(), getCachedNewsData(), getCachedMarketData()]);
   const watchlistSnapshot = syncedWatchlist.items ?? [];
   const risks = analyzeRisks({ watchlist: watchlistSnapshot, newsEvents: newsSnapshot.stockNews, marketData });
   return { watchlist: watchlistSnapshot, userPortfolio: portfolioState, stockNews: newsSnapshot.stockNews, aiHistory: await getAiHistoryRecords(), accuracyStats: await getAiAccuracyStats(), riskSignals: risks };

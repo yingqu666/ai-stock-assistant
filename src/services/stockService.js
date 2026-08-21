@@ -8,6 +8,8 @@ const SOURCE_LOCAL = "本地备用数据";
 const STATUS_LOCAL = "数据不足";
 const STATUS_PARTIAL = "部分数据";
 const DATA_MISSING = "数据源未返回";
+const stockCacheKey = "ai-investment-stock-detail-cache";
+const stockCacheTtlMs = 10 * 60 * 1000;
 
 export async function getStockDatabase() {
   return stockDatabase;
@@ -25,7 +27,9 @@ export async function queryStock(query) {
     const detailResult = await cloudDataApi.getStockDetail(codeOrQuery);
     const detail = detailResult.data;
     if (!detail) throw new Error(detailResult.message || "\u672a\u627e\u5230\u80a1\u7968\u6216ETF");
-    return normalizeCloudStock(detail, fallback, detailResult);
+    const normalized = normalizeCloudStock(detail, fallback, detailResult);
+    saveCachedStock(normalized);
+    return normalized;
   } catch (detailError) {
     errors.push("\u8be6\u60c5\u63a5\u53e3\u5931\u8d25\uff1a" + detailError.message);
     addLog({
@@ -38,11 +42,18 @@ export async function queryStock(query) {
     });
   }
 
+  const cached = getCachedStock(codeOrQuery) ?? getCachedStock(fallback.code);
+  if (cached) {
+    return withCachedQuote(cached, errors.join("\uff1b"));
+  }
+
   try {
     const result = await cloudDataApi.getStocks(codeOrQuery);
     const stock = result.data?.[0];
     if (!stock) throw new Error(result.message || "\u672a\u627e\u5230\u80a1\u7968\u6216ETF");
-    return normalizeCloudStock(stock, fallback, result);
+    const normalized = normalizeCloudStock(stock, fallback, result);
+    saveCachedStock(normalized);
+    return normalized;
   } catch (error) {
     errors.push("\u641c\u7d22\u63a5\u53e3\u5931\u8d25\uff1a" + error.message);
     addLog({
@@ -336,6 +347,16 @@ function withLocalQuote(stock = {}, message = "") {
   };
 }
 
+function withCachedQuote(stock = {}, message = "") {
+  return {
+    ...stock,
+    dataStatus: STATUS_PARTIAL,
+    dataSource: `${stock.dataSource ?? stock.quoteSource ?? "最近成功缓存"} / 保留上次成功数据`,
+    quoteSource: `${stock.quoteSource ?? stock.dataSource ?? "最近成功缓存"} / 保留上次成功数据`,
+    dataMessage: `${message || "实时接口暂未返回"}；已保留最近一次成功行情，新闻/公告/财务可能暂缺。`,
+  };
+}
+
 function withUnavailableQuote(stock = {}, message = "") {
   return {
     ...stock,
@@ -366,6 +387,41 @@ function withUnavailableQuote(stock = {}, message = "") {
     dataMessage: message || "真实行情获取失败，请稍后重试。",
     updatedAt: nowText(),
   };
+}
+
+function getCachedStock(query) {
+  const key = normalizeCacheKey(query);
+  if (!key) return null;
+  try {
+    const cache = JSON.parse(window.localStorage.getItem(stockCacheKey) ?? "{}");
+    const entry = cache[key];
+    if (!entry || Date.now() - entry.savedAt > stockCacheTtlMs) return null;
+    return entry.data;
+  } catch {
+    return null;
+  }
+}
+
+function saveCachedStock(stock = {}) {
+  const keys = [stock.code, stock.name].map(normalizeCacheKey).filter(Boolean);
+  if (!keys.length || !hasUsableQuote(stock)) return;
+  try {
+    const cache = JSON.parse(window.localStorage.getItem(stockCacheKey) ?? "{}");
+    const nextEntry = { savedAt: Date.now(), data: stock };
+    keys.forEach((item) => { cache[item] = nextEntry; });
+    const entries = Object.entries(cache).sort((a, b) => b[1].savedAt - a[1].savedAt).slice(0, 100);
+    window.localStorage.setItem(stockCacheKey, JSON.stringify(Object.fromEntries(entries)));
+  } catch {
+    // Stock cache is best-effort only.
+  }
+}
+
+function normalizeCacheKey(query) {
+  return String(query ?? "").trim().toUpperCase();
+}
+
+function hasUsableQuote(stock = {}) {
+  return Boolean(stock.price && stock.changePercent && ![DATA_MISSING, "暂无", "数据不足", "不可用"].includes(stock.price) && ![DATA_MISSING, "暂无", "数据不足", "不可用"].includes(stock.changePercent));
 }
 
 function localSearch(keyword) {

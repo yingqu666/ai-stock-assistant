@@ -37,6 +37,8 @@ const defaultRiskTips = [
   "\u884c\u60c5\u3001\u4f30\u503c\u548c\u8d22\u52a1\u6570\u636e\u53ef\u80fd\u5b58\u5728\u5ef6\u8fdf\uff0c\u9700\u7ed3\u5408\u4ea4\u6613\u6240\u548c\u516c\u53f8\u516c\u544a\u590d\u6838\u3002",
   "\u672c\u9875\u4ec5\u7528\u4e8e\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u63d0\u793a\uff0c\u4e0d\u6784\u6210\u4ea4\u6613\u6307\u4ee4\u3002",
 ];
+const detailCache = new Map();
+const detailCacheTtlMs = 5 * 60 * 1000;
 
 export const fallbackStocks = [
   buildFallbackStock({
@@ -110,14 +112,14 @@ export async function searchStockCandidates(query) {
 
 export async function getStockDetail(query) {
   const keyword = normalizeQuery(query);
-  const startedAt = Date.now();
   const isCodeQuery = isSupportedSecurityCode(keyword);
+  const cached = getCachedDetail(keyword);
   const result = isCodeQuery ? null : await withTimeout(
     searchStockCandidates(keyword),
     4500,
     () => ({ ok: true, source: SOURCE_MOCK, status: STATUS_MOCK, updatedAt: nowText(), data: [], message: "\u641c\u7d22\u8d85\u65f6\uff0c\u8bf7\u76f4\u63a5\u8f93\u51656\u4f4d\u4ee3\u7801" }),
   );
-  const stock = isCodeQuery ? await getFastQuoteByCode(keyword) : result.data[0];
+  const stock = isCodeQuery ? await getFastQuoteByCode(keyword, cached?.data) : result.data[0];
   if (!stock) {
     return { ok: false, message: `\u672a\u627e\u5230\u5339\u914d\u6807\u7684\uff1a${query}`, source: result.source, status: result.status, updatedAt: result.updatedAt, data: null };
   }
@@ -146,14 +148,17 @@ export async function getStockDetail(query) {
   detail.priceLevels = buildPriceLevels(detail, detail.dataQuality);
   detail.researchReport = buildResearchReport(detail);
   detail.riskTips = [...new Set([...(detail.securityProfile?.warnings ?? []), ...(detail.dataQuality?.financials?.issues ?? []), ...(detail.riskTips ?? [])].filter(Boolean))];
-  return { ok: true, source: detail.dataSource, status: detail.dataStatus, updatedAt: detail.updatedAt, data: detail };
+  const response = { ok: true, source: detail.dataSource, status: detail.dataStatus, updatedAt: detail.updatedAt, data: detail };
+  setCachedDetail(detail.code, response);
+  if (keyword !== detail.code) setCachedDetail(keyword, response);
+  return response;
 }
 
-async function getFastQuoteByCode(code) {
+async function getFastQuoteByCode(code, cachedDetail = null) {
   const quoteCode = normalizeQuoteCode(code);
   const fallback = fallbackStocks.find((item) => item.code === code);
   const base = enrichResearchFields({
-    ...pickReferenceMetadata(fallback),
+    ...pickReferenceMetadata(cachedDetail ?? fallback),
     code,
     quoteCode,
     secid: toSecid(quoteCode),
@@ -166,11 +171,22 @@ async function getFastQuoteByCode(code) {
   });
 
   try {
-    const quote = await withTimeout(fetchQuote(base), 3800, () => {
+    const quote = await withTimeout(fetchQuote(base), 5000, () => {
       throw new Error("\u884c\u60c5\u63a5\u53e3\u8d85\u8fc75\u79d2\u672a\u8fd4\u56de");
     });
     return enrichResearchFields({ ...base, ...quote });
   } catch (error) {
+    if (cachedDetail?.price && !isMissingValue(cachedDetail.price)) {
+      return enrichResearchFields({
+        ...base,
+        ...cachedDetail,
+        dataSource: `${cachedDetail.dataSource ?? cachedDetail.quoteSource ?? "\u5386\u53f2\u7f13\u5b58"} / \u5df2\u4fdd\u7559\u4e0a\u6b21\u6210\u529f\u884c\u60c5`,
+        quoteSource: `${cachedDetail.quoteSource ?? cachedDetail.dataSource ?? "\u5386\u53f2\u7f13\u5b58"} / \u5df2\u4fdd\u7559\u4e0a\u6b21\u6210\u529f\u884c\u60c5`,
+        dataStatus: STATUS_PARTIAL,
+        dataMessage: `\u672c\u6b21\u5b9e\u65f6\u884c\u60c5\u5931\u8d25\uff1a${error.message}\uff1b\u5df2\u4fdd\u7559\u6700\u8fd1\u4e00\u6b21\u6210\u529f\u6570\u636e\u5c55\u793a\u3002`,
+        updatedAt: cachedDetail.updatedAt ?? nowText(),
+      });
+    }
     return enrichResearchFields({
       ...base,
       name: fallback?.name ?? code,
@@ -210,18 +226,22 @@ async function searchEastmoney(keyword) {
 async function fetchQuote(stock) {
   const normalizedStock = { ...stock, quoteCode: normalizeQuoteCode(stock.quoteCode ?? stock.code) };
   try {
-    return restoreInputCode(await fetchEastmoneyQuote(normalizedStock), stock);
+    return restoreInputCode(await withRejectTimeout(fetchEastmoneyQuote(normalizedStock), 1600, "\u4e1c\u65b9\u8d22\u5bcc\u884c\u60c5\u8d85\u65f6"), stock);
   } catch (eastmoneyError) {
     const [sinaResult, tencentResult] = await Promise.allSettled([
-      fetchSinaQuote(normalizedStock),
-      fetchTencentQuote(normalizedStock, eastmoneyError.message),
+      withRejectTimeout(fetchSinaQuote(normalizedStock), 1800, "\u65b0\u6d6a\u884c\u60c5\u8d85\u65f6"),
+      withRejectTimeout(fetchTencentQuote(normalizedStock, eastmoneyError.message), 1800, "\u817e\u8baf\u884c\u60c5\u8d85\u65f6"),
     ]);
     if (sinaResult.status === "fulfilled" && tencentResult.status === "fulfilled") {
       return restoreInputCode(mergeBackupQuotes(sinaResult.value, tencentResult.value), stock);
     }
     if (sinaResult.status === "fulfilled") return restoreInputCode(sinaResult.value, stock);
     if (tencentResult.status === "fulfilled") return restoreInputCode(tencentResult.value, stock);
-    return restoreInputCode(await fetchEastmoneyKlineQuote(normalizedStock, `${eastmoneyError.message}; ${sinaResult.reason?.message}; ${tencentResult.reason?.message}`), stock);
+    return restoreInputCode(await withRejectTimeout(
+      fetchEastmoneyKlineQuote(normalizedStock, `${eastmoneyError.message}; ${sinaResult.reason?.message}; ${tencentResult.reason?.message}`),
+      1400,
+      "\u516c\u5f00\u65e5\u7ebf\u5907\u7528\u884c\u60c5\u8d85\u65f6",
+    ), stock);
   }
 }
 
@@ -1000,12 +1020,48 @@ function withTimeout(promise, timeoutMs, fallbackFactory) {
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
+function withRejectTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
+}
+
+function getCachedDetail(query) {
+  const key = normalizeCacheKey(query);
+  if (!key) return null;
+  const cached = detailCache.get(key);
+  if (!cached) return null;
+  if (Date.now() - cached.savedAt > detailCacheTtlMs) return null;
+  if (!hasUsablePrice(cached.value?.data)) return null;
+  return cached.value;
+}
+
+function setCachedDetail(query, value) {
+  const key = normalizeCacheKey(query);
+  if (!key || !hasUsablePrice(value?.data)) return;
+  detailCache.set(key, { value, savedAt: Date.now() });
+  if (detailCache.size > 200) {
+    const first = detailCache.keys().next().value;
+    detailCache.delete(first);
+  }
+}
+
+function normalizeCacheKey(query) {
+  return String(query ?? "").trim().toUpperCase();
+}
+
+function hasUsablePrice(stock = {}) {
+  return Boolean(stock?.price && !isMissingValue(stock.price) && stock.changePercent && !isMissingValue(stock.changePercent));
+}
+
 async function fetchJson(url) {
   const targets = buildEastmoneyUrls(url);
   let lastError;
   for (const target of targets) {
     const controller = new AbortController();
-      const timeout = setTimeout(() => controller.abort(), 1200);
+      const timeout = setTimeout(() => controller.abort(), 1000);
     try {
       const response = await fetch(target, {
         cache: "no-store",
@@ -1110,7 +1166,7 @@ function normalizeNumber(value) {
 
 function isMissingValue(value) {
   const text = String(value ?? "").trim();
-  return value === undefined || value === null || text === "" || text === "-" || /^(暂无|数据不足|undefined|null|NaN|Infinity|-Infinity)$/i.test(text);
+  return value === undefined || value === null || text === "" || text === "-" || text === UNKNOWN || /^(暂无|数据不足|undefined|null|NaN|Infinity|-Infinity)$/i.test(text);
 }
 
 function formatPrice(value) {

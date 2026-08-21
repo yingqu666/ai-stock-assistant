@@ -60,6 +60,7 @@ export async function renderStockSearch() {
         数据来源：${stockDetail.dataSource ?? "数据源未返回"} | 更新时间：${stockDetail.updatedAt ?? empty} | 状态：${stockDetail.dataStatus ?? "部分真实"} | 类型：${securityProfile.template}
         ${stockDetail.dataMessage ? ` | 说明：${stockDetail.dataMessage}` : ""}
       </p>
+      ${renderDataStatusBreakdown(stockDetail, stockNews, announcements, financials)}
       ${renderReliabilityNotice(securityProfile, dataQuality, priceLevels)}
       <div class="section-head compact">
         <h2>${stockDetail.name ?? "未选择标的"} ${stockDetail.code ?? ""}</h2>
@@ -366,6 +367,25 @@ export function mountStockSearch({ rerender }) {
 
 function infoCard(title, value) {
   return `<article class="data-card"><strong>${title}</strong><p>${value || empty}</p></article>`;
+}
+
+function renderDataStatusBreakdown(stock = {}, news = [], announcements = [], financials = {}) {
+  const quoteOk = hasField(stock.price) && hasField(stock.changePercent);
+  const newsOk = news.length > 0;
+  const announcementOk = announcements.length > 0;
+  const financialOk = /真实|real|partial|部分/.test(String(financials.status ?? "")) && (hasField(financials.revenue) || hasField(financials.netProfit) || hasField(financials.roe));
+  return `
+    <p class="form-message">
+      数据分项：行情${quoteOk ? "正常" : "暂缺"}；
+      新闻${newsOk ? "正常" : "暂缺"}；
+      公告${announcementOk ? "正常" : "暂缺"}；
+      财务${financialOk || stock.assetType === "ETF" ? "正常/不适用" : "暂缺"}。
+      ${quoteOk ? "基础行情可先查看，新闻、公告和AI会异步补充。" : "行情暂缺时不生成硬判断。"}
+    </p>`;
+}
+
+function hasField(value) {
+  return ![undefined, null, "", empty, "暂无", "数据不足", "不适用"].includes(value);
 }
 
 function renderReliabilityNotice(profile = {}, quality = {}, priceLevels = {}) {

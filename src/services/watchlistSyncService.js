@@ -130,7 +130,7 @@ export async function moveSyncedStockToGroup(idOrCode, groupName) {
 
 async function enrichWatchlistQuotes(items) {
   const enriched = await Promise.all(items.map(async (item) => {
-    const stock = await findStock(item.code).catch(() => null);
+    const stock = await withTimeout(findStock(item.code), 1800, () => null).catch(() => null);
     if (!stock) return item;
     return normalizeItem({
       ...item,
@@ -154,10 +154,16 @@ async function enrichWatchlistQuotes(items) {
 
 async function findStock(keyword) {
   try {
+    const detail = await cloudDataApi.getStockDetail(keyword);
+    if (detail.data) return detail.data;
+  } catch {
+    // fallback to search below
+  }
+  try {
     const result = await cloudDataApi.getStocks(keyword);
     if (result.data?.[0]) return result.data[0];
   } catch {
-    // fallback below
+    // fallback to local metadata below
   }
   return stockDatabase.find((stock) => matchesStock(stock, keyword));
 }
@@ -265,6 +271,14 @@ function normalizeItem(item) {
     riskTips: item.riskTips ?? [],
     researchReport: item.researchReport,
   };
+}
+
+function withTimeout(promise, timeoutMs, fallbackFactory) {
+  let timeoutId;
+  const timeout = new Promise((resolve) => {
+    timeoutId = window.setTimeout(() => resolve(fallbackFactory()), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => window.clearTimeout(timeoutId));
 }
 
 function pickLatestNews(item) {

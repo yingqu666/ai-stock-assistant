@@ -183,7 +183,7 @@ async function resolveSecurity(query) {
 async function fetchQuoteWithFallback(security) {
   const errors = [];
   try {
-    const data = await fetchEastmoneyQuote(security);
+    const data = await withRejectTimeout(fetchEastmoneyQuote(security), 1800, "东方财富行情超时");
     markSource(data.providerKey, "ok", "真实行情返回");
     return { status: "real", source: data.source, data: cleanQuoteIndustry(data), message: "", updatedAt: data.updatedAt };
   } catch (error) {
@@ -192,8 +192,8 @@ async function fetchQuoteWithFallback(security) {
   }
 
   const [sinaResult, tencentResult] = await Promise.allSettled([
-    fetchSinaQuote(security),
-    fetchTencentQuote(security),
+    withRejectTimeout(fetchSinaQuote(security), 1800, "新浪行情超时"),
+    withRejectTimeout(fetchTencentQuote(security), 1800, "腾讯行情超时"),
   ]);
   if (sinaResult.status === "fulfilled") markSource("sina", "ok", "真实行情返回");
   else {
@@ -602,7 +602,7 @@ async function fetchJson(url, source) {
   let lastError;
   for (const target of targets) {
     const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 10000);
+    const timeout = setTimeout(() => controller.abort(), 1800);
     try {
       const response = await fetch(target, {
         cache: "no-store",
@@ -622,6 +622,14 @@ async function fetchJson(url, source) {
     }
   }
   throw lastError ?? new Error(`${source} fetch failed`);
+}
+
+function withRejectTimeout(promise, timeoutMs, message) {
+  let timeoutId;
+  const timeout = new Promise((_, reject) => {
+    timeoutId = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timeoutId));
 }
 
 function buildThirdPartyUrls(url) {

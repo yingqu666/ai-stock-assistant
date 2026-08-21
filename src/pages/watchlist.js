@@ -60,10 +60,9 @@ function stockDetailCard(stock) {
 }
 
 export async function renderWatchlist() {
-  const [{ stockNews, aiHistory, accuracyStats, riskSignals }, synced] = await Promise.all([
-    getWatchlistData(),
-    getSyncedWatchlist(),
-  ]);
+  const syncedPromise = getSyncedWatchlist();
+  const dataPromise = syncedPromise.then((syncedWatchlist) => getWatchlistData(syncedWatchlist));
+  const [{ stockNews, aiHistory, accuracyStats, riskSignals }, synced] = await Promise.all([dataPromise, syncedPromise]);
   const syncStatus = synced.syncStatus;
   const groups = synced.groups ?? [];
   const sortMode = getSortMode();
