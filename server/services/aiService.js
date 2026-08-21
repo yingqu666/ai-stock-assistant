@@ -259,12 +259,6 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
   const startedAt = Date.now();
   const configs = resolveAiConfigs();
   const config = configs[0] ?? resolveAiConfig();
-  console.info("[ai-config]", {
-    provider: config.provider,
-    mode: config.mode,
-    keyConfigured: Boolean(config.apiKey),
-    model: config.model,
-  });
   if (config.mode !== "api") {
     recordAiCall({ task, model: config.model, startedAt, success: true, source: "fallback", tokenUsage: null });
     return { ...normalizeOutput({}, fallback()), source: "fallback" };
@@ -742,14 +736,19 @@ function compactOutputSchema() {
     financialReview: { status: "状态", source: "财务来源", revenue: "营收", netProfit: "净利润", roe: "ROE", grossMargin: "毛利率", netMargin: "净利率", debtRatio: "资产负债率", cashFlow: "现金流", summary: "财务评价" },
     valuationReview: { pe: "PE", pb: "PB", level: "估值状态", summary: "估值评价" },
     scoreBreakdown: { industryTrend: "行业趋势0-20", financialQuality: "财务质量0-20", valuationLevel: "估值水平0-20", marketAttention: "市场关注0-20", riskControl: "风险控制0-20", total: "综合0-100", classification: "成长/价值/周期/ETF/综合" },
-    riskLevel: "低/中/高",
-    investorMatch: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
-    upsideLogic: ["看好逻辑，最多3条"],
+  riskLevel: "低/中/高",
+  investorMatch: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
+  attentionReasons: [{ type: "行情/板块/新闻/公告", reason: "必须引用真实数据的关注理由", source: "数据来源" }],
+  observeConditions: { continue: ["继续关注条件"], abandon: ["放弃条件"] },
+  currentOpportunityLogic: "当前机会逻辑，必须引用行情、板块、新闻或公告",
+  maximumRisk: "最大风险，必须具体到数据或事件",
+  validationPoints: ["关键验证点"],
+  upsideLogic: ["看好逻辑，最多3条"],
     valuationAnalysis: "估值分析，引用PE/PB和可用财务",
     shortTermObservation: "短期观察，1-5天",
     midLongTermObservation: "长期观察，1-4周",
     riskAnalysis: { industryRisks: ["行业风险"], companyRisks: ["公司/标的风险"], marketRisks: ["市场风险"] },
-    investmentDecision: { score: "0-100辅助分", rating: "重点关注/可以观察/等待机会/暂不参与/风险较高", action: "关注/等待/持有/降低仓位/回避", positionAdvice: "仓位参考", reasons: ["必须引用行业/行情/财务/新闻/公告依据"], risks: ["风险"], watchPoints: ["观察条件"] },
+    investmentDecision: { score: "0-100辅助分", rating: "重点关注/可以观察/等待机会/暂不参与/风险较高", action: "关注/等待/持有/降低仓位/回避", positionAdvice: "仓位参考", reasons: ["必须引用行业/行情/财务/新闻/公告依据"], risks: ["风险"], watchPoints: ["观察条件"], basis: { quote: ["行情依据"], technical: ["技术依据"], financial: ["财务依据"], announcement: ["公告依据"], news: ["新闻依据"], market: ["市场依据"], operation: ["操作依据"] } },
     investorFit: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
     dataSources: { quote: "行情来源", announcement: "公告来源", news: "新闻来源", ai: "DeepSeek" },
     evidence: { stock: ["行情/行业依据"], news: ["新闻依据"], announcement: ["公告依据"], financial: ["财务依据"], risk: ["风险依据"] },
@@ -796,6 +795,11 @@ function fallbackReport(input) {
     companyRisks: investmentDecision.risks.slice(0, 3),
     marketRisks: ["市场成交不足", "指数回撤", "高位题材波动放大"],
   };
+  const attentionReasons = buildAttentionReasons(normalized, investmentDecision);
+  const observeConditions = buildObserveConditions(normalized, investmentDecision);
+  const opportunityLogic = buildCurrentOpportunityLogic(normalized, investmentDecision);
+  const maximumRisk = buildMaximumRisk(normalized, investmentDecision);
+  const validationPoints = buildValidationPoints(normalized, investmentDecision);
   return {
     stockData: stock,
     stockBasics,
@@ -807,6 +811,11 @@ function fallbackReport(input) {
     scoreBreakdown,
     riskLevel: buildRiskLevel(investmentDecision.score, riskAnalysis),
     investorMatch: investorFit,
+    attentionReasons,
+    observeConditions,
+    currentOpportunityLogic: opportunityLogic,
+    maximumRisk,
+    validationPoints,
     upsideLogic: investmentDecision.reasons.slice(0, 5),
     valuationAnalysis: buildValuationAnalysis(stock),
     shortTermObservation: investmentDecision.shortTerm,
@@ -852,6 +861,7 @@ function normalizeOutput(output, fallback) {
   const evidence = output.evidence ?? output.conclusionBasis ?? fallback.evidence ?? {};
   const basis = Array.isArray(output.basis) ? output.basis : flattenEvidence(evidence);
   const riskAnalysis = output.riskAnalysis ?? fallback.riskAnalysis;
+  const blocked = shouldBlockJudgement(fallback.stockData ?? fallback.stockBasics ?? fallback);
   return {
     ...fallback,
     ...output,
@@ -861,9 +871,14 @@ function normalizeOutput(output, fallback) {
     industryLogic: output.industryLogic ?? fallback.industryLogic,
     financialReview: output.financialReview ?? fallback.financialReview,
     valuationReview: output.valuationReview ?? fallback.valuationReview,
-    scoreBreakdown: output.scoreBreakdown ?? fallback.scoreBreakdown,
+    scoreBreakdown: blocked ? buildBlockedScoreBreakdown(fallback.stockData ?? {}) : output.scoreBreakdown ?? fallback.scoreBreakdown,
     riskLevel: output.riskLevel ?? fallback.riskLevel,
     investorMatch: output.investorMatch ?? output.investorFit ?? fallback.investorMatch ?? fallback.investorFit,
+    attentionReasons: Array.isArray(output.attentionReasons) ? output.attentionReasons : fallback.attentionReasons,
+    observeConditions: output.observeConditions ?? fallback.observeConditions,
+    currentOpportunityLogic: output.currentOpportunityLogic ?? fallback.currentOpportunityLogic,
+    maximumRisk: output.maximumRisk ?? fallback.maximumRisk,
+    validationPoints: Array.isArray(output.validationPoints) ? output.validationPoints : fallback.validationPoints,
     upsideLogic: Array.isArray(output.upsideLogic) ? output.upsideLogic : fallback.upsideLogic,
     valuationAnalysis: output.valuationAnalysis ?? fallback.valuationAnalysis,
     shortTermObservation: output.shortTermObservation ?? fallback.shortTermObservation,
@@ -906,6 +921,7 @@ function normalizeInvestmentDecision(decision = {}, fallback = {}) {
     reasons: asStringList(source.reasons ?? fallbackDecision.reasons).slice(0, 6),
     risks: asStringList(source.risks ?? fallbackDecision.risks).slice(0, 6),
     watchPoints: asStringList(source.watchPoints ?? fallbackDecision.watchPoints).slice(0, 6),
+    basis: source.basis ?? fallbackDecision.basis ?? buildDecisionBasis({ stockData: fallback.stockData ?? fallback.stockBasics ?? {} }, {}),
   };
 }
 
@@ -1041,6 +1057,7 @@ function buildRiskLevel(score, riskAnalysis = {}) {
 
 function buildScoreBreakdown(input = {}, totalScore = 60) {
   const stock = input.stockData ?? {};
+  if (shouldBlockJudgement(stock)) return buildBlockedScoreBreakdown(stock);
   const industryTrend = scoreIndustryTrend(stock, input.marketData);
   const financialQuality = scoreFundamental(stock);
   const valuationLevel = scoreValuation(stock);
@@ -1054,6 +1071,19 @@ function buildScoreBreakdown(input = {}, totalScore = 60) {
     riskControl,
     total: clampScore(totalScore),
     classification: classifyStockStyle(stock),
+  };
+}
+
+function buildBlockedScoreBreakdown(stock = {}) {
+  return {
+    industryTrend: null,
+    financialQuality: null,
+    valuationLevel: null,
+    marketAttention: null,
+    riskControl: null,
+    total: null,
+    classification: classifyStockStyle(stock),
+    message: stock.dataQuality?.message ?? "数据不足，无法生成可靠判断。",
   };
 }
 
@@ -1146,6 +1176,7 @@ function buildInvestmentDecision(input) {
   const newsScore = scoreNews(input.newsData, input.announcementData);
   const score = clampScore(technicalScore + capitalScore + fundamentalScore + newsScore + marketScore);
   const stock = input.stockData ?? {};
+  const basis = buildDecisionBasis(input, { technicalScore, capitalScore, fundamentalScore, newsScore, marketScore, score });
   const reasons = [
     `技术面${technicalScore}/20：参考涨跌幅、短期趋势和波动状态。`,
     `资金面${capitalScore}/20：参考成交额、成交量和热点活跃度。`,
@@ -1175,6 +1206,7 @@ function buildInvestmentDecision(input) {
       "热点行业是否保持成交和新闻催化",
       "新闻、公告和财报是否出现反向变化",
     ],
+    basis,
   }, stock);
 }
 
@@ -1182,26 +1214,10 @@ function applyQualityGate(decision = {}, stock = {}) {
   const quality = stock.dataQuality ?? {};
   const profile = stock.securityProfile ?? {};
   const securityType = stock.securityType ?? profile.securityType;
-  if (quality.level === "insufficient") {
-    return {
-      ...decision,
-      score: "数据不足，无法评分",
-      rating: "暂不参与",
-      marketTrend: "数据不足",
-      shortTerm: "关键行情/财务/新闻字段缺失，无法生成可靠短线判断。",
-      midTerm: "数据不足，需等待真实数据补齐后再观察。",
-      action: "等待",
-      positionAdvice: "不增加仓位",
-      probability: { up: "不生成", flat: "不生成", down: "不生成" },
-      reasons: [quality.message ?? "数据不足，无法生成可靠判断。"],
-      risks: [...asStringList(decision.risks), ...(quality.missingFields ?? []).map((item) => `缺失字段：${item}`)].slice(0, 6),
-      watchPoints: ["等待真实行情、公告、财务和新闻数据补齐。"],
-    };
-  }
   if (securityType === "newStock") {
     return {
       ...decision,
-      score: "新股不评分",
+      score: null,
       rating: "等待机会",
       shortTerm: "新股历史数据不足，暂不生成技术趋势判断。",
       midTerm: "等待更多交易日、换手率和公告数据验证。",
@@ -1209,6 +1225,25 @@ function applyQualityGate(decision = {}, stock = {}) {
       positionAdvice: "不增加仓位",
       reasons: ["新股上市交易日不足，历史价格和技术样本不足。"],
       risks: [...asStringList(decision.risks), "新股波动大，技术价格区间无可靠样本。"].slice(0, 6),
+      basis: decision.basis ?? buildDecisionBasis({ stockData: stock }, {}),
+    };
+  }
+  if (shouldBlockJudgement(stock)) {
+    const missing = quality.missingFields ?? [];
+    return {
+      ...decision,
+      score: null,
+      rating: "数据不足",
+      marketTrend: "数据不足",
+      shortTerm: "数据不足，无法生成可靠判断。",
+      midTerm: "数据不足，无法生成可靠判断。",
+      action: "不生成",
+      positionAdvice: "不生成",
+      probability: null,
+      reasons: [quality.message ?? "数据不足，无法生成可靠判断。", missing.length ? `缺失字段：${missing.join("、")}` : ""].filter(Boolean),
+      risks: [...asStringList(decision.risks), ...missing.map((item) => `缺失字段：${item}`)].slice(0, 6),
+      watchPoints: ["等待真实行情、公告、财务和新闻数据补齐。"],
+      basis: decision.basis ?? buildDecisionBasis({ stockData: stock }, {}),
     };
   }
   if (securityType === "st") {
@@ -1220,24 +1255,161 @@ function applyQualityGate(decision = {}, stock = {}) {
       action: "回避",
       positionAdvice: "降低风险暴露",
       risks: ["ST/*ST退市风险", "流动性风险", "财务风险", ...asStringList(decision.risks)].slice(0, 6),
+      basis: decision.basis ?? buildDecisionBasis({ stockData: stock }, {}),
     };
   }
   return decision;
 }
 
 function buildOverallJudgement(decision = {}, stock = {}) {
-  if (stock.dataQuality?.level === "insufficient") return "数据不足，无法生成可靠判断；当前只展示真实返回的数据。";
-  if ((stock.securityType ?? stock.securityProfile?.securityType) === "newStock") return "新股历史数据不足，暂不生成技术评分和买卖价格区间，谨慎交易。";
+  if (shouldBlockJudgement(stock)) return "数据不足，无法生成可靠判断；当前只展示真实返回的数据。";
+  if ((stock.securityType ?? stock.securityProfile?.securityType) === "newStock") return "新股历史数据不足，暂不生成技术评分和价格区间，仅作风险观察。";
   return `当前AI判断：${decision.rating}；${typeof decision.score === "number" ? `综合评分${decision.score}/100仅作辅助，` : `${decision.score ?? "不评分"}，`}策略为${decision.action}。`;
 }
 
 function buildStockAnalysisText(stock = {}, decision = {}) {
   const type = stock.securityType ?? stock.securityProfile?.securityType;
-  if (stock.dataQuality?.level === "insufficient") return "关键数据严重缺失，AI不生成硬性结论。";
+  if (shouldBlockJudgement(stock)) return "关键数据严重缺失，AI不生成硬性结论。";
   if (type === "etf") return `${stock.name ?? stock.code}：ETF分析以跟踪方向、成交额、流动性和板块持续性为主，当前判断${decision.rating}。`;
   if (type === "newStock") return `${stock.name ?? stock.code}：新股样本不足，只观察上市后换手、成交额和公告，不生成技术区间。`;
   if (type === "st") return `${stock.name ?? stock.code}：ST风险权重优先，当前判断${decision.rating}，不因短期涨幅降低退市和流动性风险。`;
   return `${stock.name ?? stock.code ?? "当前标的"}：当前判断 ${decision.rating}，${typeof decision.score === "number" ? `综合评分 ${decision.score}/100仅作辅助，` : ""}核心依据来自行情、行业、新闻公告和财务变化。`;
+}
+
+function shouldBlockJudgement(stock = {}) {
+  const quality = stock.dataQuality ?? {};
+  const threshold = Number(quality.missingThreshold ?? 999);
+  const missingCount = Number(quality.criticalMissingCount ?? 0);
+  return Boolean(
+    quality.blocked
+    || quality.canGenerateDecision === false
+    || quality.level === "insufficient"
+    || missingCount >= threshold,
+  );
+}
+
+function buildDecisionBasis(input = {}, scores = {}) {
+  const stock = input.stockData ?? {};
+  const market = input.marketData ?? {};
+  const news = asArray(input.newsData);
+  const announcements = asArray(input.announcementData);
+  const financials = stock.financials ?? {};
+  const firstNews = news[0];
+  const firstAnnouncement = announcements[0] ?? stock.announcements?.[0];
+  const sentiment = market.marketSentiment ?? {};
+  return {
+    quote: [
+      `来源行情：${stock.quoteSource ?? stock.dataSource ?? "行情来源未返回"}`,
+      `当前价${stock.price ?? "缺失"}，涨跌幅${stock.changePercent ?? "缺失"}，成交额${stock.amount ?? "缺失"}，换手率${stock.turnoverRate ?? "缺失"}`,
+    ],
+    technical: [
+      `技术依据：涨跌幅${stock.changePercent ?? "缺失"}，最高/最低${stock.highPrice ?? "缺失"}/${stock.lowPrice ?? "缺失"}，技术分${scores.technicalScore ?? "未生成"}`,
+    ],
+    financial: stock.assetType === "ETF"
+      ? ["ETF不使用公司财务评分，重点看跟踪方向、成交活跃度和流动性。"]
+      : [`财务依据：营收${financials.revenue ?? "缺失"}，净利润${financials.netProfit ?? "缺失"}，ROE${financials.roe ?? "缺失"}，毛利率${financials.grossMargin ?? "缺失"}。`],
+    announcement: [
+      `公告依据：${firstAnnouncement?.title ?? "公告接口本次未返回强相关公告"}${firstAnnouncement?.analysis?.factSummary ? `；${firstAnnouncement.analysis.factSummary}` : ""}`,
+    ],
+    news: [
+      `新闻依据：${firstNews?.title ?? "新闻接口本次未返回强相关新闻"}${firstNews?.source ? `（${firstNews.source}）` : ""}`,
+    ],
+    market: [
+      `市场依据：上涨${sentiment.upCount ?? "缺失"}家，下跌${sentiment.downCount ?? "缺失"}家，热点${asArray(market.hotSectors).slice(0, 3).map((item) => item.name).filter(Boolean).join("、") || "缺失"}。`,
+    ],
+    operation: [
+      "操作思路依据行情、技术、财务、公告、新闻和市场环境生成，仅作为观察框架。",
+    ],
+  };
+}
+
+function buildAttentionReasons(input = {}, decision = {}) {
+  const stock = input.stockData ?? {};
+  const market = input.marketData ?? {};
+  const news = asArray(input.newsData);
+  const announcements = asArray(input.announcementData);
+  const hotSector = matchHotSector(stock, market);
+  if (shouldBlockJudgement(stock)) {
+    return [
+      { type: "数据质量", reason: stock.dataQuality?.message ?? "数据不足，无法生成可靠判断。", source: "dataQuality" },
+    ];
+  }
+  return [
+    { type: "行情", reason: `${stock.name ?? stock.code}当前价${stock.price ?? "缺失"}，涨跌幅${stock.changePercent ?? "缺失"}，成交额${stock.amount ?? "缺失"}。`, source: stock.quoteSource ?? stock.dataSource ?? "行情来源未返回" },
+    { type: "板块", reason: hotSector ? `${stock.industry ?? "所属行业"}匹配热点板块${hotSector.name}，板块表现${hotSector.changePercent ?? hotSector.change ?? hotSector.rankingReason ?? "待复核"}。` : `${stock.industry ?? "行业数据暂缺"}未匹配到强热点板块。`, source: market.source ?? "市场快照" },
+    { type: "新闻", reason: news[0]?.title ? `${news[0].title}，影响方向${news[0].impact ?? news[0].category ?? "中性"}。` : "本次新闻接口未返回强相关新闻。", source: news[0]?.source ?? "新闻接口" },
+    { type: "公告", reason: announcements[0]?.title ? `${announcements[0].title}；${announcements[0].analysis?.factSummary ?? "需阅读公告原文。"}` : "公告接口本次未返回强相关公告。", source: announcements[0]?.source ?? "公告接口" },
+    { type: "AI判断", reason: `当前判断${decision.rating ?? "待生成"}，评分仅作为辅助，不替代风险复核。`, source: "AI/fallback" },
+  ];
+}
+
+function buildObserveConditions(input = {}, decision = {}) {
+  const stock = input.stockData ?? {};
+  const market = input.marketData ?? {};
+  const hotSector = matchHotSector(stock, market);
+  const priceLevels = stock.priceLevels ?? {};
+  const watchArea = asArray(priceLevels.levels).find((item) => item.name === "关注区域")?.value;
+  const riskArea = asArray(priceLevels.levels).find((item) => item.name === "风险区域")?.value;
+  if (shouldBlockJudgement(stock)) {
+    return {
+      continue: ["真实行情、公告、新闻和财务数据补齐后再恢复研究。"],
+      abandon: ["关键数据继续缺失时，不生成参与判断。"],
+    };
+  }
+  return {
+    continue: [
+      watchArea ? `价格保持在关注区域${watchArea}附近且不放量走弱。` : `当前价${stock.price ?? "缺失"}和成交额${stock.amount ?? "缺失"}继续有效返回。`,
+      hotSector ? `热点板块${hotSector.name}成交和涨跌表现不转弱。` : "所属行业出现明确市场热度或新闻催化。",
+      "公告、新闻和财务没有出现反向变化。",
+    ],
+    abandon: [
+      riskArea ? `跌破风险区域${riskArea}且成交放大。` : "真实行情无法持续返回，无法验证价格风险。",
+      "热点板块退潮或行业逻辑被新闻/公告证伪。",
+      "财务、公告或重大新闻出现超预期负面变化。",
+    ],
+  };
+}
+
+function buildCurrentOpportunityLogic(input = {}, decision = {}) {
+  const stock = input.stockData ?? {};
+  if (shouldBlockJudgement(stock)) return stock.dataQuality?.message ?? "数据不足，无法生成可靠判断。";
+  const basis = decision.basis ?? buildDecisionBasis(input, {});
+  const quote = asArray(basis.quote)[1] ?? `当前价${stock.price ?? "缺失"}，涨跌幅${stock.changePercent ?? "缺失"}。`;
+  const industry = asArray(basis.market)[0] ?? `行业${stock.industry ?? "行业数据暂缺"}。`;
+  const news = asArray(basis.news)[0] ?? "新闻催化待验证。";
+  return `当前机会逻辑来自三类证据：${quote}；${industry}；${news} 这些条件共同支持“${decision.rating ?? "观察"}”结论，但需要持续验证。`;
+}
+
+function buildMaximumRisk(input = {}, decision = {}) {
+  const stock = input.stockData ?? {};
+  if (shouldBlockJudgement(stock)) return stock.dataQuality?.message ?? "数据不足，最大风险是判断依据不足。";
+  const risks = asStringList(decision.risks);
+  if ((stock.securityType ?? stock.securityProfile?.securityType) === "st") return "最大风险：ST退市、财务和流动性风险优先于短期价格波动。";
+  if ((stock.securityType ?? stock.securityProfile?.securityType) === "newStock") return "最大风险：上市时间短，历史样本不足，换手和波动可能快速变化。";
+  if (stock.assetType === "ETF") return "最大风险：跟踪方向热度退潮、成交萎缩或板块资金快速流出。";
+  return `最大风险：${risks[0] ?? "行情、财务、新闻或公告出现反向验证。"} `;
+}
+
+function buildValidationPoints(input = {}, decision = {}) {
+  const stock = input.stockData ?? {};
+  const news = asArray(input.newsData);
+  const announcements = asArray(input.announcementData);
+  if (shouldBlockJudgement(stock)) return ["补齐行情、财务、新闻和公告后再验证。"];
+  return [
+    `行情验证：当前价${stock.price ?? "缺失"}、成交额${stock.amount ?? "缺失"}、换手率${stock.turnoverRate ?? "缺失"}是否持续有效。`,
+    `板块验证：${stock.industry ?? "所属行业"}是否继续位于热点方向或成交活跃方向。`,
+    `新闻验证：${news[0]?.title ?? "等待新的相关新闻"}。`,
+    `公告验证：${announcements[0]?.title ?? "等待新的公司公告"}。`,
+    `策略验证：${decision.action ?? "观察"}是否仍与风险和数据质量匹配。`,
+  ];
+}
+
+function matchHotSector(stock = {}, market = {}) {
+  const industry = String(stock.industry ?? "");
+  return asArray(market.hotSectors).find((item) => {
+    const name = String(item.name ?? "");
+    return industry && name && (industry.includes(name) || name.includes(industry));
+  });
 }
 
 function buildMarketSummary(marketData = {}) {

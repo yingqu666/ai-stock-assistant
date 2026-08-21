@@ -16,10 +16,12 @@ export async function renderStockSearch() {
   const isEtf = securityProfile.isEtf;
   const isSt = securityProfile.isSt;
   const isNewStock = securityProfile.isNewStock;
-  const canScore = dataQuality.canScore && !isNewStock && !isSt;
-  const canShowPriceLevels = dataQuality.canGeneratePriceLevels && !isNewStock && priceLevels.status === "available";
+  const dataBlocked = dataQuality.blocked || dataQuality.level === "insufficient";
+  const decisionBlocked = dataBlocked || dataQuality.canGenerateDecision === false;
+  const canScore = dataQuality.canScore && !decisionBlocked && !isNewStock && !isSt;
+  const canShowPriceLevels = dataQuality.canGeneratePriceLevels && !dataBlocked && !isNewStock && priceLevels.status === "available";
   const decision = aiAnalysis.investmentDecision ?? {};
-  const hasAiDecision = Boolean(aiAnalysis.investmentDecision);
+  const hasAiDecision = Boolean(aiAnalysis.investmentDecision) && !decisionBlocked;
   const aiPending = aiAnalysis.source === "AI\u5206\u6790\u751f\u6210\u4e2d";
   const aiStateText = aiPending ? "AI\u751f\u6210\u4e2d" : hasAiDecision ? (aiAnalysis.source ?? "AI") : (aiAnalysis.source ?? "AI\u672a\u751f\u6210");
   const report = buildAiDisplayReport(stockDetail, stockNews, aiAnalysis);
@@ -126,7 +128,7 @@ export async function renderStockSearch() {
           { label: "一周判断", value: hasAiDecision ? decision.midTerm : aiStateText, change: hasAiDecision ? decision.action : "等待AI返回" },
           { label: "仓位建议", value: hasAiDecision ? decision.positionAdvice : "暂不生成", change: hasAiDecision ? `上涨${decision.probability?.up ?? "需观察"}` : "基础行情不受影响" },
         ] : [
-          { label: "当前判断", value: dataQuality.level === "insufficient" ? "数据不足" : isNewStock ? "新股降级观察" : "暂不评分", change: dataQuality.message },
+          { label: "当前判断", value: dataBlocked ? "数据不足" : isNewStock ? "新股降级观察" : "暂不评分", change: dataQuality.message },
           { label: "数据质量", value: dataQuality.label, change: `可用字段 ${dataQuality.availableCount}/${dataQuality.requiredCount}` },
           { label: "当前策略", value: isSt ? "风险较高" : "等待机会", change: "不生成明确评分" },
           { label: "技术结论", value: isNewStock ? "不生成" : "数据不足", change: "避免硬编结论" },
@@ -141,6 +143,20 @@ export async function renderStockSearch() {
         ${infoCard("核心原因", canScore ? (decision.reasons ?? []).join("；") : "数据不足或特殊标的降级，不生成硬性结论。")}
         ${infoCard("风险", ensureAtLeast(decision.risks, ["行情波动", "数据延迟", "行业预期变化"], 3).join("；"))}
         ${infoCard("观察思路", buildOperationIdea(qualityOpportunity, decision))}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>AI判断依据</h2><span>评分、风险、价格区间和操作思路必须有数据依据</span></div>
+      <div class="detail-grid compact">
+        ${renderDecisionBasis(stockDetail, aiAnalysis, decision, priceLevels, dataQuality)}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>投资研究流程</h2><span>关注理由、观察条件、短中线判断和验证点</span></div>
+      <div class="detail-grid compact">
+        ${renderResearchDecisionChain(stockDetail, stockNews, announcements, aiAnalysis, decision, aiInput, dataQuality, cycle)}
       </div>
     </section>
 
@@ -169,7 +185,7 @@ export async function renderStockSearch() {
           { label: "数据质量", value: dataQuality.label, change: dataQuality.message },
           { label: "趋势状态", value: isNewStock ? "新股不判断" : tradingPosition.trend, change: dataQuality.canGenerateTechnicalView ? "可观察" : "数据不足" },
           { label: "信号强度", value: dataQuality.level === "complete" ? "强" : dataQuality.level === "partial" ? "中" : "弱", change: `缺失：${(dataQuality.missingFields ?? []).join("、") || "无"}` },
-          { label: "当前策略", value: isSt ? "风险较高" : dataQuality.level === "insufficient" ? "暂不参与" : "等待机会", change: "不输出交易指令" },
+          { label: "当前策略", value: isSt ? "风险较高" : dataBlocked ? "暂不参与" : "等待机会", change: "不输出交易指令" },
         ].map(metricCard).join("")}
       </div>
     </section>`}
@@ -260,7 +276,7 @@ export async function renderStockSearch() {
     </section>` : `<section class="wide-section">
       <div class="section-head"><h2>AI个股研究报告</h2><span>${aiStateText}</span></div>
       <article class="data-card">
-        <strong>${aiPending ? "AI分析正在后台生成" : isNewStock ? "新股降级展示" : dataQuality.level === "insufficient" ? "数据不足，无法生成可靠判断" : "AI分析未生成"}</strong>
+        <strong>${aiPending ? "AI分析正在后台生成" : isNewStock ? "新股降级展示" : dataBlocked ? "数据不足，无法生成可靠判断" : "AI分析未生成"}</strong>
         <p>${isNewStock ? "新股历史数据不足，仅展示上市信息、成交情况和风险限制。" : aiAnalysis.stockAnalysis ?? aiAnalysis.summary ?? "基础行情可以正常查看，当前没有可展示的AI投资判断。"}</p>
       </article>
     </section>`}
@@ -356,7 +372,7 @@ function renderReliabilityNotice(profile = {}, quality = {}, priceLevels = {}) {
   const warnings = [
     ...(profile.warnings ?? []),
     ...(quality.financials?.issues ?? []),
-    quality.level === "insufficient" ? "数据不足，无法生成可靠判断。" : "",
+    quality.blocked || quality.level === "insufficient" ? "数据不足，无法生成可靠判断。" : "",
   ].filter(Boolean);
   if (!warnings.length && quality.level === "complete") return "";
   return `
@@ -367,6 +383,139 @@ function renderReliabilityNotice(profile = {}, quality = {}, priceLevels = {}) {
       ${warnings.length ? `<p>提示：${warnings.join("；")}</p>` : ""}
       ${priceLevels.status !== "available" ? `<p>价格区间：${priceLevels.message ?? "暂不生成无依据价格。"}</p>` : ""}
     </article>`;
+}
+
+function renderDecisionBasis(stock = {}, aiAnalysis = {}, decision = {}, priceLevels = {}, quality = {}) {
+  if (quality.blocked || quality.canGenerateDecision === false || quality.level === "insufficient") {
+    return [
+      infoCard("评分依据", "数据不足，评分已关闭。"),
+      infoCard("风险依据", `缺失字段：${(quality.missingFields ?? []).join("、") || "关键字段不足"}`),
+      infoCard("价格依据", priceLevels.message ?? "缺少可靠行情或高低点，不生成价格区间。"),
+      infoCard("操作依据", "仅展示真实返回数据，不生成参与判断。"),
+    ].join("");
+  }
+  const basis = decision.basis ?? aiAnalysis.evidence ?? stock.researchReport?.evidenceBasis ?? {};
+  const scoreBasis = collectBasis(basis.score, basis.quote, basis.financial, stock.researchReport?.scoreBasis);
+  const riskBasis = collectBasis(basis.risk, stock.researchReport?.riskBasis, basis.announcement, basis.news);
+  const priceBasis = priceLevels.status === "available"
+    ? priceLevels.levels.map((item) => `${item.name}：${item.basis}`)
+    : [priceLevels.message ?? "暂不生成无依据价格。"];
+  const operationBasis = collectBasis(basis.operation, basis.market, basis.technical, stock.researchReport?.operationBasis);
+  return [
+    infoCard("评分依据", scoreBasis.join("；") || "评分依据由行情、财务、新闻和市场数据共同生成。"),
+    infoCard("风险依据", riskBasis.join("；") || "风险依据由公告、新闻、估值和行情波动共同生成。"),
+    infoCard("价格依据", priceBasis.join("；")),
+    infoCard("操作依据", operationBasis.join("；") || "操作思路只作为观察框架，不输出确定交易指令。"),
+  ].join("");
+}
+
+function renderResearchDecisionChain(stock = {}, news = [], announcements = [], aiAnalysis = {}, decision = {}, aiInput = {}, quality = {}, cycle = {}) {
+  const blocked = quality.blocked || quality.canGenerateDecision === false || quality.level === "insufficient";
+  if (blocked) {
+    return [
+      infoCard("关注理由", quality.message ?? "数据不足，无法生成可靠判断。"),
+      infoCard("继续关注条件", "等待真实行情、公告、新闻和财务数据补齐。"),
+      infoCard("放弃条件", "关键数据继续缺失时，不生成参与判断。"),
+      infoCard("短线1-5交易日", "数据不足，无法生成可靠短线判断。"),
+      infoCard("中线1-4周", "数据不足，无法生成可靠中线判断。"),
+      infoCard("当前机会逻辑", "数据不足，不生成机会逻辑。"),
+      infoCard("最大风险", "数据不足导致判断依据不足。"),
+      infoCard("关键验证点", `缺失字段：${(quality.missingFields ?? []).join("、") || "关键字段不足"}`),
+    ].join("");
+  }
+  const attentionReasons = normalizeAttentionReasons(aiAnalysis.attentionReasons, stock, news, announcements, aiInput?.marketData);
+  const observe = normalizeObserveConditions(aiAnalysis.observeConditions, stock, decision);
+  const opportunityLogic = aiAnalysis.currentOpportunityLogic ?? buildLocalOpportunityLogic(stock, news, announcements, decision, aiInput?.marketData);
+  const maximumRisk = aiAnalysis.maximumRisk ?? buildLocalMaximumRisk(stock, decision);
+  const validationPoints = ensureAtLeast(aiAnalysis.validationPoints, buildLocalValidationPoints(stock, news, announcements, decision), 5);
+  return [
+    infoCard("关注理由", attentionReasons.map((item) => `${item.type}：${item.reason}（${item.source ?? "来源待补充"}）`).join("；")),
+    infoCard("继续关注条件", observe.continue.join("；")),
+    infoCard("放弃条件", observe.abandon.join("；")),
+    infoCard("短线1-5交易日", cycle.shortTerm ?? decision.shortTerm ?? "观察成交额、价格位置和新闻催化是否延续。"),
+    infoCard("中线1-4周", cycle.midTerm ?? decision.midTerm ?? "观察行业趋势、公告和财务是否继续验证。"),
+    infoCard("当前机会逻辑", opportunityLogic),
+    infoCard("最大风险", maximumRisk),
+    infoCard("关键验证点", validationPoints.join("；")),
+  ].join("");
+}
+
+function normalizeAttentionReasons(reasons, stock = {}, news = [], announcements = [], marketData = {}) {
+  const values = Array.isArray(reasons) ? reasons : [];
+  if (values.length) {
+    return values.slice(0, 5).map((item) => typeof item === "string"
+      ? { type: "依据", reason: item, source: "AI" }
+      : { type: item.type ?? "依据", reason: item.reason ?? item.summary ?? "", source: item.source ?? "AI" });
+  }
+  const hotSector = matchHotSector(stock, marketData);
+  return [
+    { type: "行情", reason: `当前价${stock.price ?? empty}，涨跌幅${stock.changePercent ?? empty}，成交额${stock.amount ?? empty}。`, source: stock.quoteSource ?? stock.dataSource },
+    { type: "板块", reason: hotSector ? `匹配热点板块${hotSector.name}，表现${hotSector.changePercent ?? hotSector.change ?? "待复核"}。` : `${stock.industry ?? "行业数据暂缺"}暂未匹配强热点。`, source: marketData.source ?? "市场快照" },
+    { type: "新闻", reason: news[0]?.title ? `${news[0].title}，影响${normalizeImpact(news[0].impact ?? news[0].category)}。` : "本次新闻接口未返回强相关新闻。", source: news[0]?.source ?? "新闻接口" },
+    { type: "公告", reason: announcements[0]?.title ? `${announcements[0].title}；${announcements[0].analysis?.factSummary ?? "需阅读公告原文。"}` : "公告接口本次未返回强相关公告。", source: announcements[0]?.source ?? "公告接口" },
+  ];
+}
+
+function normalizeObserveConditions(conditions, stock = {}, decision = {}) {
+  const source = conditions && typeof conditions === "object" ? conditions : {};
+  const continued = asList(source.continue ?? source.continueConditions);
+  const abandon = asList(source.abandon ?? source.giveUpConditions);
+  if (continued.length && abandon.length) return { continue: continued, abandon };
+  return {
+    continue: [
+      `价格和成交继续验证：当前价${stock.price ?? empty}，成交额${stock.amount ?? empty}。`,
+      `${stock.industry ?? "所属行业"}热度不转弱。`,
+      "新闻、公告和财务没有出现反向变化。",
+    ],
+    abandon: [
+      "价格跌破风险区域且成交放大。",
+      "板块热点退潮或资金明显转弱。",
+      "公告、新闻或财务出现超预期负面变化。",
+    ],
+  };
+}
+
+function buildLocalOpportunityLogic(stock = {}, news = [], announcements = [], decision = {}, marketData = {}) {
+  const hotSector = matchHotSector(stock, marketData);
+  if (stock.securityProfile?.isNewStock) return "新股历史数据不足，只观察上市后换手、成交和公告，不生成机会结论。";
+  if (stock.securityProfile?.isSt) return "ST标的以风险识别为主，短期价格波动不能替代退市、财务和流动性风险复核。";
+  if (stock.assetType === "ETF") {
+    return `ETF机会逻辑来自跟踪方向${stock.trackingIndex ?? stock.industry ?? empty}、成交额${stock.amount ?? empty}和板块热度${hotSector?.name ?? "待确认"}。`;
+  }
+  return `当前机会逻辑来自行情${stock.changePercent ?? empty}、成交额${stock.amount ?? empty}、行业${stock.industry ?? empty}、新闻${news[0]?.title ?? "待补充"}和公告${announcements[0]?.title ?? "待补充"}，当前判断为${decision.rating ?? "观察"}。`;
+}
+
+function buildLocalMaximumRisk(stock = {}, decision = {}) {
+  if (stock.securityProfile?.isSt) return "最大风险是退市、财务异常和流动性风险。";
+  if (stock.securityProfile?.isNewStock) return "最大风险是上市时间短、波动和换手变化过快，历史样本不足。";
+  if (stock.assetType === "ETF") return "最大风险是跟踪板块热度退潮、成交萎缩或资金流出。";
+  return asList(decision.risks)[0] ?? "最大风险是行情、行业、公告或新闻出现反向验证。";
+}
+
+function buildLocalValidationPoints(stock = {}, news = [], announcements = [], decision = {}) {
+  return [
+    `行情：价格${stock.price ?? empty}、涨跌幅${stock.changePercent ?? empty}、成交额${stock.amount ?? empty}是否延续。`,
+    `板块：${stock.industry ?? "行业数据暂缺"}是否保持热度。`,
+    `新闻：${news[0]?.title ?? "等待相关新闻验证"}。`,
+    `公告：${announcements[0]?.title ?? "等待公司公告验证"}。`,
+    `AI判断：${decision.rating ?? "观察"}是否仍与风险和数据质量匹配。`,
+  ];
+}
+
+function matchHotSector(stock = {}, marketData = {}) {
+  const industry = String(stock.industry ?? "");
+  return (marketData?.hotSectors ?? []).find((item) => {
+    const name = String(item.name ?? "");
+    return industry && name && (industry.includes(name) || name.includes(industry));
+  });
+}
+
+function collectBasis(...groups) {
+  return groups.flatMap((group) => {
+    if (Array.isArray(group)) return group;
+    if (group && typeof group === "object") return Object.values(group).flatMap((item) => Array.isArray(item) ? item : [item]);
+    return group ? [group] : [];
+  }).filter(Boolean).slice(0, 5);
 }
 
 function linkOrText(title, link) {
@@ -670,7 +819,7 @@ function buildOperationIdea(scores, decision = {}) {
 
 function scoreFinancialQuality(stock, review = {}) {
   if (stock.assetType === "ETF") return 20;
-  if (stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
+  if (stock.dataQuality?.blocked || stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
   const financials = stock.financials ?? {};
   let score = 10;
   if (financials.netProfit && !String(financials.netProfit).includes("未返回")) score += 8;
@@ -682,7 +831,7 @@ function scoreFinancialQuality(stock, review = {}) {
 
 function scoreValuationQuality(stock, review = {}) {
   if (stock.assetType === "ETF") return 15;
-  if (stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
+  if (stock.dataQuality?.blocked || stock.dataQuality?.level === "insufficient" || stock.financials?.hasFatalIssue) return 0;
   const pe = Number(String(stock.pe ?? "").replace(",", ""));
   const pb = Number(String(stock.pb ?? "").replace(",", ""));
   let score = 12;

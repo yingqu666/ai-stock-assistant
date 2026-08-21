@@ -44,21 +44,31 @@ export function assessDataQuality(security = {}) {
     ];
   const availableCount = fields.filter(Boolean).length;
   const requiredCount = fields.length;
+  const missingFields = buildMissingFields(security, profile, financials);
+  const criticalMissingCount = missingFields.length;
+  const missingThreshold = profile.isEtf ? 3 : 4;
+  const hasTooManyMissingFields = criticalMissingCount >= missingThreshold;
   let level = availableCount >= Math.ceil(requiredCount * 0.75) ? "complete" : availableCount >= Math.ceil(requiredCount * 0.4) ? "partial" : "insufficient";
   if (!hasValue(security.price) || !hasValue(security.changePercent)) level = "insufficient";
+  if (hasTooManyMissingFields) level = "insufficient";
   if (security.dataConflict) level = "insufficient";
   if (profile.isNewStock && level === "complete") level = "partial";
   if (financials.hasFatalIssue && !profile.isEtf) level = level === "complete" ? "partial" : "insufficient";
+  const blocked = level === "insufficient" || hasTooManyMissingFields;
   return {
     level,
     label: level === "complete" ? "完整" : level === "partial" ? "部分缺失" : "严重缺失",
     availableCount,
     requiredCount,
-    canScore: level !== "insufficient" && !profile.isNewStock && !profile.isSt && !financials.hasFatalIssue,
-    canGeneratePriceLevels: level !== "insufficient" && !profile.isNewStock,
-    canGenerateTechnicalView: level !== "insufficient" && !profile.isNewStock,
+    criticalMissingCount,
+    missingThreshold,
+    blocked,
+    canScore: !blocked && !profile.isNewStock && !profile.isSt && !financials.hasFatalIssue,
+    canGeneratePriceLevels: !blocked && !profile.isNewStock,
+    canGenerateTechnicalView: !blocked && !profile.isNewStock,
+    canGenerateDecision: !blocked && !profile.isNewStock,
     message: security.dataConflict ? `数据源冲突：${security.dataConflict}` : buildQualityMessage(level, profile, financials),
-    missingFields: buildMissingFields(security, profile, financials),
+    missingFields,
     financials,
   };
 }
@@ -142,19 +152,19 @@ export function analyzeAnnouncement(title = "", context = {}) {
   const text = String(title ?? "");
   const type = classifyAnnouncementType(text);
   const numbers = extractAnnouncementNumbers(text);
+  const metrics = extractAnnouncementMetrics(text, type);
   const direction = classifyAnnouncementDirection(text, type);
-  const facts = numbers.length
-    ? `公告涉及关键数字：${numbers.slice(0, 4).join("、")}。`
-    : `${type}公告，标题未提供可校验的业绩数字，需阅读公告原文。`;
+  const facts = buildAnnouncementFactSummary(type, text, numbers, metrics);
   return {
     type,
     direction,
     event: `${type}：${text || "公告标题未返回"}`,
     factSummary: facts,
-    shortTermImpact: buildAnnouncementShortImpact(type, direction, numbers),
-    midLongTermImpact: buildAnnouncementLongImpact(type, direction, context),
-    risk: buildAnnouncementRisk(type, numbers),
+    shortTermImpact: buildAnnouncementShortImpact(type, direction, numbers, metrics),
+    midLongTermImpact: buildAnnouncementLongImpact(type, direction, context, metrics),
+    risk: buildAnnouncementRisk(type, numbers, metrics),
     numbers,
+    metrics,
     confidence: numbers.length || !/业绩|财报|预告/.test(text) ? "中" : "低",
   };
 }
@@ -268,25 +278,73 @@ function extractAnnouncementNumbers(title) {
   return [...normalized.matchAll(/(^|[^\d%.-])(-?\d+(?:\.\d+)?\s*(?:%|万元|亿元|元|股|万股|亿股))/g)].map((match) => match[2]);
 }
 
-function buildAnnouncementShortImpact(type, direction, numbers) {
-  if (type === "业绩预告" || type === "财报") return numbers.length ? `短期重点看业绩数字是否超预期，方向初判${direction}。` : `短期影响需依赖公告原文数字，标题信息不足，方向初判${direction}。`;
-  if (type === "股东增减持") return direction === "利空" ? "短期可能压制风险偏好，需观察减持规模和价格反应。" : "短期可能改善股东信心，但仍需看成交确认。";
-  if (type === "回购") return "短期可能改善情绪，需观察回购金额、价格上限和执行进度。";
+function extractAnnouncementMetrics(title, type) {
+  const text = String(title ?? "");
+  const percentages = [...text.matchAll(/(?:同比|增长|下降|变动|预增|预减)?\s*(-?\d+(?:\.\d+)?)\s*%/g)].map((match) => `${match[1]}%`);
+  const amounts = [...text.matchAll(/(\d+(?:\.\d+)?)\s*(亿元|万元|元)/g)].map((match) => `${match[1]}${match[2]}`);
+  const shares = [...text.matchAll(/(\d+(?:\.\d+)?)\s*(亿股|万股|股)/g)].map((match) => `${match[1]}${match[2]}`);
+  const shareholder = text.match(/控股股东|实际控制人|董监高|董事|监事|高管|一致行动人|股东/)?.[0] ?? "";
+  return {
+    profitChange: type === "业绩预告" || type === "财报" ? percentages.slice(0, 3) : [],
+    buybackAmount: type === "回购" ? amounts.slice(0, 3) : [],
+    buybackShares: type === "回购" ? shares.slice(0, 3) : [],
+    reduceHolder: type === "股东增减持" ? shareholder : "",
+    reduceRatio: type === "股东增减持" ? percentages.slice(0, 3) : [],
+    contractAmount: type === "重大合同/订单" ? amounts.slice(0, 3) : [],
+  };
+}
+
+function buildAnnouncementFactSummary(type, title, numbers, metrics) {
+  if (type === "业绩预告" || type === "财报") {
+    return metrics.profitChange.length
+      ? `业绩类公告涉及利润或同比变化：${metrics.profitChange.join("、")}。`
+      : "业绩类公告标题未提供可校验利润或同比数字，需阅读公告原文。";
+  }
+  if (type === "回购") {
+    const details = [...metrics.buybackAmount, ...metrics.buybackShares].slice(0, 4);
+    return details.length ? `回购公告涉及金额/股份：${details.join("、")}。` : "回购公告标题未提供金额或股份比例，需阅读公告原文。";
+  }
+  if (type === "股东增减持") {
+    const details = [metrics.reduceHolder, ...metrics.reduceRatio].filter(Boolean);
+    return details.length ? `增减持公告涉及：${details.join("、")}。` : "增减持公告标题未提供股东身份或比例，需阅读公告原文。";
+  }
+  if (type === "重大合同/订单") {
+    return metrics.contractAmount.length ? `合同/订单公告涉及金额：${metrics.contractAmount.join("、")}。` : "合同/订单公告标题未提供金额，需结合公告原文判断业务影响。";
+  }
+  if (type === "治理决议") return "治理类公告，重点看议案、授权、选举或会议决议对治理结构的影响。";
+  return numbers.length
+    ? `公告涉及关键数字：${numbers.slice(0, 4).join("、")}。`
+    : `${type}公告，标题未提供可校验数字，需阅读公告原文。`;
+}
+
+function buildAnnouncementShortImpact(type, direction, numbers, metrics = {}) {
+  if (type === "业绩预告" || type === "财报") return metrics.profitChange?.length ? `短期重点看利润变化${metrics.profitChange.join("、")}是否超预期，方向初判${direction}。` : `短期影响需依赖公告原文数字，标题信息不足，方向初判${direction}。`;
+  if (type === "股东增减持") return direction === "利空" ? `短期可能形成筹码压力，需观察${metrics.reduceHolder || "相关股东"}减持比例和成交反应。` : "短期可能改善股东信心，但仍需看成交确认。";
+  if (type === "回购") return metrics.buybackAmount?.length ? `回购金额${metrics.buybackAmount.join("、")}可能改善市场信号，需观察执行进度。` : "短期可能改善情绪，需观察回购金额、价格上限和执行进度。";
   if (type === "风险警示") return "短期风险显著抬升，优先关注流动性和退市风险。";
+  if (type === "重大合同/订单") return metrics.contractAmount?.length ? `合同金额${metrics.contractAmount.join("、")}需结合收入占比和毛利率判断短期影响。` : "短期影响取决于合同规模、收入确认节奏和市场预期。";
+  if (type === "治理决议") return "短期主要影响治理预期，不直接推导经营改善或恶化。";
   return `短期影响初判${direction}，需要结合行情反应验证。`;
 }
 
-function buildAnnouncementLongImpact(type, direction) {
+function buildAnnouncementLongImpact(type, direction, _context = {}, metrics = {}) {
   if (type === "业绩预告" || type === "财报") return "中长期取决于营收、利润、现金流和盈利质量是否持续改善。";
-  if (type === "重大合同/订单") return "中长期取决于合同落地、毛利率、回款和收入确认节奏。";
+  if (type === "重大合同/订单") return metrics.contractAmount?.length ? `中长期需评估${metrics.contractAmount.join("、")}对应合同落地、毛利率、回款和收入确认节奏。` : "中长期取决于合同落地、毛利率、回款和收入确认节奏。";
   if (type === "股权激励") return "中长期看激励目标能否兑现，以及是否带来经营效率改善。";
   if (type === "风险警示") return "中长期需优先评估退市、财务和持续经营风险。";
+  if (type === "回购") return "中长期取决于回购执行比例、资金来源和是否真正改善每股指标。";
+  if (type === "股东增减持") return "中长期需看股东变动是否改变治理、控制权稳定性或市场信心。";
+  if (type === "治理决议") return "中长期影响集中在治理效率、授权安排和管理层稳定性。";
   return `中长期影响目前为${direction}观察，需等待后续公告和财务验证。`;
 }
 
-function buildAnnouncementRisk(type, numbers) {
-  if ((type === "业绩预告" || type === "财报") && !numbers.length) return "业绩类公告标题缺少可校验数字，不能直接推导业绩改善或恶化。";
-  if (type === "股东增减持") return "需关注减持执行、价格区间和是否引发资金分歧。";
+function buildAnnouncementRisk(type, numbers, metrics = {}) {
+  if ((type === "业绩预告" || type === "财报") && !metrics.profitChange?.length) return "业绩类公告标题缺少可校验数字，不能直接推导业绩改善或恶化。";
+  if (type === "业绩预告" || type === "财报") return `需关注利润变化${metrics.profitChange.join("、")}是否来自主营改善，并复核收入质量、毛利率和现金流。`;
+  if (type === "股东增减持") return metrics.reduceRatio?.length ? `需关注减持比例${metrics.reduceRatio.join("、")}、执行节奏和是否引发资金分歧。` : "需关注减持执行、价格区间和是否引发资金分歧。";
+  if (type === "回购") return metrics.buybackAmount?.length ? `需关注回购金额${metrics.buybackAmount.join("、")}是否实际执行，以及资金来源和价格上限。` : "需关注回购金额、价格上限、资金来源和执行进度。";
+  if (type === "重大合同/订单") return metrics.contractAmount?.length ? `需关注合同金额${metrics.contractAmount.join("、")}对应毛利率、回款和收入确认风险。` : "需关注合同落地、回款、收入确认和毛利率风险。";
+  if (type === "治理决议") return "治理公告不等同于经营改善，需关注议案落地和后续公告。";
   if (type === "风险警示") return "需关注退市、停牌、流动性和交易规则变化。";
   return "需阅读公告原文，并结合财务、行情和行业变化复核。";
 }

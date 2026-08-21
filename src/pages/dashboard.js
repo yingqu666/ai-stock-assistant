@@ -18,6 +18,8 @@ export async function renderDashboard() {
     riskSignals,
     refreshStatus,
     portfolioSummary,
+    userDataOverview,
+    stockReviewSummary,
     opportunitySource,
     opportunityStatus,
     opportunityLoadingMessage,
@@ -34,8 +36,73 @@ export async function renderDashboard() {
 
   return `
     <div class="dashboard-grid">
+      <section class="hero-panel">
+        <div class="section-head">
+          <div>
+            <p class="eyebrow">个人投资助手 · 每日决策流</p>
+            <h2>市场判断 → 今日机会 → 持仓风险 → 自选变化 → 新闻影响</h2>
+          </div>
+          <button id="refresh-data-button" type="button">刷新数据</button>
+        </div>
+        <div class="strategy-grid">
+          <div><span>市场判断</span><strong>${aiSummary.currentMarketJudgment ?? marketStatusLabel(marketStats, rankedSectors)}</strong></div>
+          <div><span>赚钱效应</span><strong>${marketStats.moneyEffect}</strong></div>
+          <div><span>仓位参考</span><strong>${positionPercent(decision.positionAdvice ?? strategy.position)}</strong></div>
+        </div>
+        <p class="answer"><b>AI核心结论：</b>${aiSummary.marketSummary ?? buildMarketStatusDecision(marketStats, rankedSectors, marketNews)}</p>
+        <p class="ai-summary"><b>判断依据：</b>${extractBasis(aiSummary, rankedSectors, marketSentiment, marketStats, marketNews).slice(0, 5).join("；")}</p>
+        <p id="refresh-message" class="form-message">数据更新时间：${updatedAt ?? refreshStatus.updatedAt}｜来源：${source ?? "行情服务"}｜${refreshStatus.message}</p>
+      </section>
+
       <section class="wide-section">
-        <div class="section-head"><h2>全市场热点板块</h2><span>综合涨跌幅、成交金额、资金活跃度和市场热度，TOP12</span></div>
+        <div class="section-head"><h2>今日机会</h2><span>${opportunityStatus ?? "实时机会池"} · 优先展示可验证标的</span></div>
+        <div class="card-grid">${opportunities.slice(0, 3).map(opportunityCard).join("") || marketOpportunities.map(marketOpportunityCard).join("") || opportunityLoadingCard(opportunityStatus, opportunitySource)}</div>
+      </section>
+
+      <section class="wide-section">
+        <div class="section-head"><h2>持仓风险</h2><span>投资组合和风险集中度</span></div>
+        <div class="detail-grid compact">
+          ${renderPortfolioRiskSummary(portfolioSummary)}
+        </div>
+      </section>
+
+      <section class="wide-section">
+        <div class="section-head"><h2>自选变化</h2><span>观察池价格、新闻和AI观点</span></div>
+        <div class="detail-grid compact">
+          ${watchlist.slice(0, 4).map((item) => `
+            <article class="data-card">
+              <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.changePercent ?? "涨跌待更新"}</span></div>
+              <p><b>价格</b>${item.price ?? "数据源未返回"} · <b>风险</b>${item.riskLevel ?? item.riskTips?.[0] ?? "常规跟踪"}</p>
+              <p><b>新闻影响</b>${item.latestNews ?? "暂无强相关新闻"}</p>
+              <p><b>AI观点</b>${item.aiOpinion ?? "等待AI结合行情、新闻和公告继续更新。"}</p>
+            </article>
+          `).join("") || `<article class="data-card"><strong>暂无自选股</strong><p>添加观察标的后，这里会显示变化。</p></article>`}
+        </div>
+      </section>
+
+      <section class="wide-section">
+        <div class="section-head"><h2>新闻影响</h2><span>市场、行业、公司公告综合解读</span></div>
+        <div class="card-grid">${marketNews.slice(0, 4).map(newsInsightCard).join("") || missingNewsCard(refreshStatus.updatedAt)}</div>
+      </section>
+
+      <section class="wide-section">
+        <div class="section-head"><h2>用户数据管理</h2><span>兼容当前登录体系，本地/云端按已有服务同步</span></div>
+        <div class="metrics">
+          ${[
+            { label: "自选股", value: `${userDataOverview?.watchlistCount ?? watchlist.length}只`, change: "观察池" },
+            { label: "投资组合", value: `${userDataOverview?.portfolioCount ?? portfolioSummary?.positions?.length ?? 0}项`, change: "真实持仓记录" },
+            { label: "股票分析历史", value: `${userDataOverview?.stockAnalysisHistoryCount ?? 0}条`, change: userDataOverview?.lastStockAnalysisAt ?? "暂无" },
+            { label: "市场判断历史", value: `${userDataOverview?.marketAnalysisHistoryCount ?? 0}条`, change: userDataOverview?.lastMarketAnalysisAt ?? "暂无" },
+            { label: "历史日报", value: `${userDataOverview?.reportCount ?? 0}份`, change: "报告中心" },
+            { label: "复盘记录", value: `${userDataOverview?.reviewRecordCount ?? 0}条`, change: "人工复盘" },
+            { label: "股票判断复盘", value: `${stockReviewSummary?.successRate ?? 0}%`, change: `${stockReviewSummary?.success ?? 0}成/${stockReviewSummary?.failed ?? 0}败/${stockReviewSummary?.pending ?? 0}待看` },
+            { label: "偏好权重", value: (userDataOverview?.preferenceWeights ?? []).slice(0, 3).map((item) => item.industry).join("、") || "待学习", change: "自选/持仓/历史" },
+          ].map(metricCard).join("")}
+        </div>
+      </section>
+
+      <section class="wide-section">
+        <div class="section-head"><h2>详细：全市场热点板块</h2><span>综合涨跌幅、成交金额、资金活跃度和市场热度，TOP12</span></div>
         <div class="card-grid">${rankedSectors.map(enhancedSectorCard).join("") || missingSectorCard(source)}</div>
       </section>
 
@@ -45,7 +112,6 @@ export async function renderDashboard() {
             <p class="eyebrow">今日市场状态</p>
             <h2>${normalizeMarketState(strategy.state, marketSentiment.summary)} · ${marketSentiment.summary}</h2>
           </div>
-          <button id="refresh-data-button" type="button">刷新数据</button>
         </div>
         <div class="strategy-grid">
           <div><span>当前市场</span><strong>${marketStats.state}</strong></div>
@@ -67,7 +133,7 @@ export async function renderDashboard() {
         <p class="answer"><b>AI总结：</b>${marketStateReason(strategy, marketSentiment, marketOverview)}</p>
         <p class="ai-summary">${strategy.summary}</p>
         <div class="driver-strip">${strategy.drivers.map((item) => `<span>${item}</span>`).join("")}</div>
-        <p id="refresh-message" class="form-message">数据更新时间：${updatedAt ?? refreshStatus.updatedAt}｜来源：${source ?? "行情服务"}｜${refreshStatus.message}</p>
+        <p class="form-message">数据更新时间：${updatedAt ?? refreshStatus.updatedAt}｜来源：${source ?? "行情服务"}｜${refreshStatus.message}</p>
       </section>
 
       <section class="wide-section">
@@ -193,6 +259,43 @@ function tagListSafe(items = []) {
   const clean = [...new Set(items.filter(Boolean))].slice(0, 5);
   return `<ul class="tag-list">${clean.map((item) => `<li>${item}</li>`).join("") || "<li>暂无</li>"}</ul>`;
 }
+
+function renderPortfolioRiskSummary(portfolio = {}) {
+  const positions = portfolio?.positions ?? [];
+  if (!positions.length) {
+    return [
+      `<article class="data-card"><strong>暂无持仓记录</strong><p>投资组合为空时，不生成持仓风险判断。</p></article>`,
+      `<article class="data-card"><strong>现金状态</strong><p>现金余额：${portfolio?.cash ?? "未记录"}。</p></article>`,
+    ].join("");
+  }
+  const concentration = portfolio.concentrationRisk ?? {};
+  const topPosition = [...positions].sort((a, b) => Number(b.marketValue ?? 0) - Number(a.marketValue ?? 0))[0];
+  return [
+    `<article class="data-card"><strong>组合风险等级</strong><p>${concentration.level ?? "中"}：${concentration.message ?? "需要结合行业占比和单票仓位观察。"}</p></article>`,
+    `<article class="data-card"><strong>最大风险来源</strong><p>${topPosition?.name ?? topPosition?.stockName ?? "持仓待更新"}，市值${formatMoney(topPosition?.marketValue)}，盈亏${formatNumber(topPosition?.pnl)}。</p></article>`,
+    `<article class="data-card"><strong>行业集中度</strong><p>${(portfolio.industryAllocation ?? []).slice(0, 3).map((item) => `${item.industry ?? item.name}:${formatPercent(item.weight ?? item.percent ?? item.ratio)}`).join("；") || "行业占比待计算"}</p></article>`,
+    `<article class="data-card"><strong>AI组合提示</strong><p>${portfolio.aiAnalysis?.summary ?? "控制单一方向暴露，不做自动交易。"}</p></article>`,
+  ].join("");
+}
+
+function formatMoney(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "未记录";
+  return `${number.toFixed(2)}元`;
+}
+
+function formatPercent(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "待更新";
+  return number <= 1 ? `${(number * 100).toFixed(1)}%` : `${number.toFixed(1)}%`;
+}
+
+function formatNumber(value) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "未记录";
+  return `${number.toFixed(2)}元`;
+}
+
 function positionPercent(value = "") {
   if (/半仓/.test(value)) return "50%-60%";
   if (/低仓位/.test(value)) return "20%-30%";

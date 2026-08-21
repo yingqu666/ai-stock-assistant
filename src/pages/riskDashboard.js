@@ -27,6 +27,7 @@ export async function renderRiskDashboard() {
           { label: "趋势", value: data.trend, change: "上涨/下降/震荡" },
           { label: "风险评分", value: `${data.score}分`, change: data.scoreLevel },
           { label: "可信度", value: data.credibility.level, change: data.credibility.reason },
+          { label: "AI历史错误风险", value: `${data.aiHistoryRisk?.accuracy ?? 0}%`, change: `5日${data.aiHistoryRisk?.stock5dAccuracy ?? 0}% / 20日${data.aiHistoryRisk?.stock20dAccuracy ?? 0}%` },
         ].map(metricCard).join("")}
       </div>
     </section>
@@ -38,6 +39,18 @@ export async function renderRiskDashboard() {
         <article class="data-card"><strong>风险因素</strong><p>${data.risks.join("；")}</p></article>
         <article class="data-card"><strong>数据来源</strong><p>${data.credibility.sources.join("、")}</p><small>可信度：${data.credibility.level}</small></article>
         <article class="data-card"><strong>组合暴露</strong><p>${data.portfolioExposure !== undefined ? `${data.portfolioExposure.toFixed(2)}%` : "按当前对象不适用"}</p></article>
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>AI历史错误风险</h2><span>把历史判断偏差纳入风险中心</span></div>
+      <div class="detail-grid">
+        ${(data.aiHistoryRisk?.errorAnalysis ?? []).map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.label}</strong><span>${item.severity} · ${item.count}次</span></div>
+            <p>${item.reasons.join("；") || "暂无明显错误样本。"}</p>
+          </article>
+        `).join("") || `<article class="data-card"><strong>暂无AI错误样本</strong><p>系统会随着市场判断和股票分析复盘逐步积累。</p></article>`}
       </div>
     </section>
 

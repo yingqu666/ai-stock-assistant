@@ -7,6 +7,7 @@ import {
   riskOptions,
   saveInvestmentProfile,
   styleOptions,
+  trialCapitalOptions,
 } from "../services/investmentProfileService.js";
 
 export function renderInvestmentProfile() {
@@ -22,6 +23,7 @@ export function renderInvestmentProfile() {
       </div>
       <div class="detail-grid">
         <article class="data-card"><strong>投资画像</strong><p>${profile.preference}</p></article>
+        <article class="data-card"><strong>当前试水资金</strong><p>${profile.trialCapital ?? "5000元"}</p></article>
         <article class="data-card"><strong>风险接受</strong><p>${profile.riskLevel}</p></article>
         <article class="data-card"><strong>当前关注板块</strong>${tagList(profile.industries)}</article>
       </div>
@@ -45,6 +47,9 @@ export function renderInvestmentProfile() {
         </label>
         <label>资金规模
           <select name="capitalSize">${capitalOptions.map((item) => `<option value="${item}" ${item === profile.capitalSize ? "selected" : ""}>${item}</option>`).join("")}</select>
+        </label>
+        <label>当前试水资金
+          <select name="trialCapital">${trialCapitalOptions.map((item) => `<option value="${item}" ${item === profile.trialCapital ? "selected" : ""}>${item}</option>`).join("")}</select>
         </label>
         <label>持仓周期
           <select name="holdingPeriod">${holdingPeriodOptions.map((item) => `<option value="${item}" ${item === profile.holdingPeriod ? "selected" : ""}>${item}</option>`).join("")}</select>
@@ -73,6 +78,7 @@ export function mountInvestmentProfile({ rerender }) {
       industries: formData.getAll("industries"),
       style: formData.get("style"),
       capitalSize: formData.get("capitalSize"),
+      trialCapital: formData.get("trialCapital"),
       holdingPeriod: formData.get("holdingPeriod"),
       riskLevel: formData.get("riskLevel"),
     });

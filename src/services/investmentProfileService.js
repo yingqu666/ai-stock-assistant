@@ -7,18 +7,20 @@ const profileKey = "ai-investment-profile-v2";
 export const industryOptions = ["AI", "\u534a\u5bfc\u4f53", "\u5149\u6a21\u5757", "\u7535\u529b", "\u50a8\u80fd", "\u8d44\u6e90", "\u56fd\u4ea7\u66ff\u4ee3"];
 export const styleOptions = ["\u7a33\u5065", "\u6210\u957f", "\u6fc0\u8fdb"];
 export const capitalOptions = ["5000\u4ee5\u4e0b", "5000-50000", "5\u4e07\u4ee5\u4e0a"];
+export const trialCapitalOptions = ["5000元", "1万元", "2万元", "5万元"];
 export const holdingPeriodOptions = ["\u77ed\u7ebf", "\u6ce2\u6bb5", "\u957f\u671f"];
 export const riskOptions = ["\u4f4e", "\u4e2d", "\u9ad8"];
 
 export function getInvestmentProfile() {
   const saved = loadProfile();
   return {
-    preference: `${saved.style}\u98ce\u683c\uff0c\u8d44\u91d1\u89c4\u6a21${saved.capitalSize}\uff0c\u6301\u4ed3\u5468\u671f${saved.holdingPeriod}\uff0c\u98ce\u9669\u63a5\u53d7${saved.riskLevel}`,
+    preference: `${saved.style}\u98ce\u683c\uff0c\u8d44\u91d1\u89c4\u6a21${saved.capitalSize}\uff0c\u5f53\u524d\u8bd5\u6c34\u8d44\u91d1${saved.trialCapital}\uff0c\u6301\u4ed3\u5468\u671f${saved.holdingPeriod}\uff0c\u98ce\u9669\u63a5\u53d7${saved.riskLevel}`,
     industries: saved.industries,
     focus: saved.industries,
     riskLevel: saved.riskLevel,
     style: saved.style,
     capitalSize: saved.capitalSize,
+    trialCapital: saved.trialCapital,
     holdingPeriod: saved.holdingPeriod,
     updatedAt: saved.updatedAt,
   };
@@ -57,6 +59,7 @@ function normalizeProfile(input) {
     industries,
     style: styleOptions.includes(input.style) ? input.style : "\u6210\u957f",
     capitalSize: capitalOptions.includes(input.capitalSize) ? input.capitalSize : "5000-50000",
+    trialCapital: trialCapitalOptions.includes(input.trialCapital) ? input.trialCapital : "5000元",
     holdingPeriod: holdingPeriodOptions.includes(input.holdingPeriod) ? input.holdingPeriod : "\u6ce2\u6bb5",
     riskLevel: riskOptions.includes(input.riskLevel) ? input.riskLevel : "\u4e2d",
     updatedAt: input.updatedAt ?? new Date().toLocaleString("zh-CN", { hour12: false }),

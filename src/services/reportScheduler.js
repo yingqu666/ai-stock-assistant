@@ -2,73 +2,169 @@ import { buildAiResearchInput, generateAiAnalysis, generateDailyReports } from "
 import { getMarketSnapshot } from "./marketService.js";
 import { buildNotificationText, notifyUser } from "./notificationService.js";
 import { getNewsSnapshot } from "./newsService.js";
+import { getPortfolioSummary } from "./portfolioService.js";
 import { analyzeRisks } from "./riskService.js";
 import { saveSyncedReport, syncReports } from "./syncService.js";
 import { getSyncedWatchlist } from "./watchlistSyncService.js";
 import { getInvestmentProfile } from "./investmentProfileService.js";
+
+const schedulerStateKey = "ai-investment-report-scheduler-state-v1";
+const schedulerRunsKey = "ai-investment-report-scheduler-runs-v1";
+const scheduleConfig = [
+  {
+    id: "morning-auto",
+    name: "自动早盘日报",
+    time: "每天08:00",
+    hour: 8,
+    minute: 0,
+    windowEndHour: 11,
+    description: "生成市场日报、今日主线、风险方向和AI观察池。",
+  },
+  {
+    id: "close-auto",
+    name: "自动收盘复盘",
+    time: "每天20:00",
+    hour: 20,
+    minute: 0,
+    windowEndHour: 23,
+    description: "生成市场复盘、昨日判断验证和明日关注方向。",
+  },
+];
 
 let lastTaskStatus = {
   marketUpdated: false,
   newsFetched: false,
   reportGenerated: false,
   lastRunAt: "尚未生成",
+  schedulerMode: "浏览器本地定时",
+  schedulerStarted: false,
+  activeTask: "",
+  lastMorningRunAt: "尚未生成",
+  lastCloseRunAt: "尚未生成",
+  lastWatchlistChangeAt: "尚未分析",
+  lastPortfolioReportAt: "尚未生成",
+  lastError: "",
 };
+let schedulerTimer = null;
+let taskRunning = false;
 
 export function getTaskSchedule() {
   return [
+    ...scheduleConfig.map(({ id, name, time, description }) => ({ id, name, time, description })),
     { id: "manual", name: "手动生成AI日报", time: "用户点击", description: "获取行情、新闻、自选股、持仓和投资档案后生成今日研究报告。" },
   ];
 }
 
 export function getTaskStatus() {
-  return lastTaskStatus;
+  const saved = loadSchedulerState();
+  return {
+    ...lastTaskStatus,
+    ...saved,
+    schedulerStarted: lastTaskStatus.schedulerStarted || saved.schedulerStarted || false,
+    activeTask: lastTaskStatus.activeTask || "",
+    lastError: lastTaskStatus.lastError || saved.lastError || "",
+  };
 }
 
 export async function getSavedReports() {
   return (await syncReports()).data;
 }
 
+export function startReportScheduler() {
+  if (schedulerTimer) return getTaskStatus();
+  lastTaskStatus = {
+    ...getTaskStatus(),
+    schedulerStarted: true,
+    schedulerMode: "浏览器本地定时",
+  };
+  checkScheduledReportTasks();
+  schedulerTimer = window.setInterval(checkScheduledReportTasks, 60 * 1000);
+  return lastTaskStatus;
+}
+
+export function stopReportScheduler() {
+  if (schedulerTimer) window.clearInterval(schedulerTimer);
+  schedulerTimer = null;
+}
+
 export async function runReportTask(type = "manual") {
-  const [marketData, newsSnapshot, syncedWatchlist, savedReports] = await Promise.all([
+  if (taskRunning) {
+    return {
+      id: `skipped-${Date.now()}`,
+      date: new Date().toISOString().slice(0, 10),
+      type,
+      title: "AI日报任务已跳过",
+      generatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+      content: { message: "已有日报任务正在运行，本次任务已跳过。" },
+    };
+  }
+  taskRunning = true;
+  lastTaskStatus = { ...getTaskStatus(), activeTask: normalizeTaskName(type), lastError: "" };
+  try {
+    const [marketData, newsSnapshot, syncedWatchlist, savedReports, portfolioSummary] = await Promise.all([
     getMarketSnapshot(),
     getNewsSnapshot(),
     getSyncedWatchlist(),
     syncReports(),
+    getPortfolioSummary().catch((error) => ({
+      positions: [],
+      todayPnl: 0,
+      totalPnl: 0,
+      industryAllocation: [],
+      concentrationRisk: { level: "未知", message: `组合数据暂不可用：${error.message}` },
+      aiAnalysis: {},
+    })),
   ]);
   const watchlist = syncedWatchlist.items ?? [];
   const profile = getInvestmentProfile();
   const risks = analyzeRisks({ watchlist, newsEvents: newsSnapshot.stockNews, marketData });
+  const watchlistChanges = buildWatchlistChangeAnalysis(watchlist, marketData, newsSnapshot, risks);
+  const portfolioDaily = buildPortfolioDailyReport(portfolioSummary, marketData);
+  const yesterdayReview = buildYesterdayJudgementReview(savedReports.data ?? [], marketData);
 
   const aiInput = buildAiResearchInput({
     marketData,
     stockQuote: null,
-    newsEvents: newsSnapshot.stockNews,
+    newsEvents: [...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])],
     riskData: risks,
     investmentProfile: profile,
-    portfolio: watchlist,
+    portfolio: portfolioSummary?.positions ?? [],
     historicalReports: savedReports.data ?? [],
   });
   const aiAnalysis = await generateAiAnalysis(aiInput);
   const rawReport = generateDailyReports({
     marketData,
-    newsEvents: newsSnapshot.stockNews,
+    newsEvents: [...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])],
     watchlist,
     investmentProfile: profile,
     riskAlerts: risks,
   });
-  const report = normalizeDailyReport(rawReport, { marketData, newsEvents: newsSnapshot.stockNews, watchlist, risks, profile, aiAnalysis, newsSnapshot });
+  const report = normalizeDailyReport(rawReport, {
+    marketData,
+    newsEvents: [...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])],
+    watchlist,
+    risks,
+    profile,
+    aiAnalysis,
+    newsSnapshot,
+    portfolioSummary,
+    portfolioDaily,
+    watchlistChanges,
+    yesterdayReview,
+    taskType: type,
+  });
 
   const record = {
     id: `${Date.now()}`,
     date: new Date().toISOString().slice(0, 10),
     type,
-    title: "今日AI投资研究日报",
+    title: buildReportTitle(type),
     generatedAt: report.generatedAt,
     score: report.morning.score,
     marketState: report.morning.marketState,
     mainView: report.morning.strategy,
     content: report,
-    sourceData: ["东方财富行情", "东方财富公告/快讯", "stockService", "riskService", aiAnalysis.source ?? "aiService"],
+    sourceData: ["东方财富/新浪/腾讯行情", "东方财富公告/快讯", "stockService", "portfolioService", "riskService", aiAnalysis.source ?? "aiService"],
   };
 
   await saveSyncedReport(record);
@@ -77,14 +173,33 @@ export async function runReportTask(type = "manual") {
     newsFetched: true,
     reportGenerated: true,
     lastRunAt: record.generatedAt,
+    schedulerMode: "浏览器本地定时",
+    schedulerStarted: Boolean(schedulerTimer),
+    activeTask: "",
+    lastMorningRunAt: isMorningTask(type) ? record.generatedAt : getTaskStatus().lastMorningRunAt,
+    lastCloseRunAt: isCloseTask(type) ? record.generatedAt : getTaskStatus().lastCloseRunAt,
+    lastWatchlistChangeAt: record.generatedAt,
+    lastPortfolioReportAt: record.generatedAt,
+    lastError: "",
   };
+  saveSchedulerRun(type, record);
 
-  const message = buildNotificationText("manual-report");
+  const message = buildNotificationText(notificationTypeForTask(type));
   notifyUser(message.title, message.body);
   return record;
+  } catch (error) {
+    lastTaskStatus = {
+      ...getTaskStatus(),
+      activeTask: "",
+      lastError: `${normalizeTaskName(type)}失败：${error.message}`,
+    };
+    throw error;
+  } finally {
+    taskRunning = false;
+  }
 }
 
-function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks, profile, aiAnalysis, newsSnapshot }) {
+function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks, profile, aiAnalysis, newsSnapshot, portfolioSummary, portfolioDaily, watchlistChanges, yesterdayReview, taskType }) {
   const generatedAt = new Date().toLocaleString("zh-CN", { hour12: false });
   const strategy = marketData.strategy ?? {};
   const sentiment = marketData.marketSentiment ?? {};
@@ -108,6 +223,22 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       score: strategy.score ?? investmentDecision.score ?? report.morning?.score ?? 70,
       marketState: strategy.state ?? report.morning?.marketState ?? sentiment.summary ?? "震荡观察",
       marketSummary,
+      marketDaily: {
+        summary: marketSummary,
+        indices: (marketData.marketOverview ?? []).slice(0, 3),
+        breadth: {
+          upCount: sentiment.upCount,
+          downCount: sentiment.downCount,
+          flatCount: sentiment.flatCount,
+          limitUpCount: sentiment.limitUpCount,
+          limitDownCount: sentiment.limitDownCount,
+          turnover: sentiment.amount ?? sentiment.turnover,
+        },
+        dataSource: marketData.source ?? marketData.dataSource ?? "真实行情接口",
+      },
+      mainDirection: hotDirections.slice(0, 5),
+      riskDirections: riskTexts.slice(0, 5),
+      aiObservationPool: buildAiObservationPool(watchlistAnalysis, hotDirections),
       marketAnalysis: {
         title: "今日A股市场分析",
         performance: marketSummary,
@@ -121,6 +252,8 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       focus: hotNames,
       watchFocus: watchNames,
       watchlistAnalysis,
+      watchlistChanges,
+      portfolioDaily,
       risks: riskTexts,
       tomorrowPlan: nextFocus,
       positionAdvice: strategy.position ?? investmentDecision.positionAdvice ?? "保持观察仓位，避免追高。",
@@ -137,6 +270,12 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       generatedAt,
       performance: marketSummary,
       marketSummary,
+      marketReview: {
+        summary: marketSummary,
+        breadth: `上涨 ${sentiment.upCount ?? "数据源未返回"} 家，下跌 ${sentiment.downCount ?? "数据源未返回"} 家。`,
+        hotDirections: hotDirections.slice(0, 6),
+      },
+      yesterdayReview,
       breadth: `上涨 ${sentiment.upCount ?? "数据源未返回"} 家，下跌 ${sentiment.downCount ?? "数据源未返回"} 家。`,
       hotSectors: hotNames,
       hotDirections,
@@ -145,6 +284,9 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       summary: `今日市场总结：${marketSummary}`,
       aiReview: "当日判断需要结合后续市场和板块表现复盘，不代表未来结果。",
       nextFocus,
+      tomorrowFocus: nextFocus,
+      watchlistChanges,
+      portfolioDaily,
       positionAdvice: strategy.position ?? investmentDecision.positionAdvice ?? "控制仓位，关注风险收益比。",
       sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService", aiAnalysis?.source ?? "aiService"],
       basis: `基于收盘行情、新闻变化、关注股票表现和风险信号生成。行情更新时间：${marketData.updatedAt ?? generatedAt}；新闻更新时间：${newsSnapshot.updatedAt ?? generatedAt}。`,
@@ -154,7 +296,94 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       aiStatus: ["真实AI模型", "deepseek"].includes(aiAnalysis?.source) ? "真实AI" : "fallback",
     },
     history: report.history ?? [],
+    taskType,
   };
+}
+
+async function checkScheduledReportTasks() {
+  if (taskRunning) return;
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  for (const task of scheduleConfig) {
+    if (!isWithinTaskWindow(now, task) || hasRunTask(task.id, today)) continue;
+    try {
+      await runReportTask(task.id);
+    } catch (error) {
+      lastTaskStatus = {
+        ...getTaskStatus(),
+        activeTask: "",
+        lastError: `${task.name}失败：${error.message}`,
+      };
+      saveSchedulerState(lastTaskStatus);
+    }
+    break;
+  }
+}
+
+function isWithinTaskWindow(now, task) {
+  const start = new Date(now);
+  start.setHours(task.hour, task.minute, 0, 0);
+  const end = new Date(now);
+  end.setHours(task.windowEndHour, 59, 59, 999);
+  return now >= start && now <= end;
+}
+
+function hasRunTask(taskId, date) {
+  return loadSchedulerRuns().some((item) => item.taskId === taskId && item.date === date);
+}
+
+function saveSchedulerRun(type, record) {
+  const date = record.date ?? new Date().toISOString().slice(0, 10);
+  const runs = loadSchedulerRuns().filter((item) => !(item.taskId === type && item.date === date));
+  const nextRuns = [{ taskId: type, date, generatedAt: record.generatedAt, reportId: record.id }, ...runs].slice(0, 60);
+  window.localStorage.setItem(schedulerRunsKey, JSON.stringify(nextRuns));
+  saveSchedulerState(lastTaskStatus);
+}
+
+function loadSchedulerRuns() {
+  try {
+    return JSON.parse(window.localStorage.getItem(schedulerRunsKey) ?? "[]");
+  } catch {
+    return [];
+  }
+}
+
+function loadSchedulerState() {
+  try {
+    return JSON.parse(window.localStorage.getItem(schedulerStateKey) ?? "null") ?? {};
+  } catch {
+    return {};
+  }
+}
+
+function saveSchedulerState(status) {
+  window.localStorage.setItem(schedulerStateKey, JSON.stringify(status));
+}
+
+function buildReportTitle(type) {
+  if (isMorningTask(type)) return "AI早盘投资研究日报";
+  if (isCloseTask(type)) return "AI收盘复盘报告";
+  return "今日AI投资研究日报";
+}
+
+function normalizeTaskName(type) {
+  if (isMorningTask(type)) return "早盘自动日报";
+  if (isCloseTask(type)) return "收盘自动复盘";
+  return "手动生成AI日报";
+}
+
+function notificationTypeForTask(type) {
+  if (isMorningTask(type)) return "morning";
+  if (isCloseTask(type)) return "close";
+  return "manual-report";
+}
+
+function isMorningTask(type) {
+  return type === "morning-auto" || type === "morning" || type === "早盘";
+}
+
+function isCloseTask(type) {
+  return type === "close-auto" || type === "close" || type === "收盘";
 }
 
 function normalizeHotDirections(aiHotDirections, marketData = {}, newsEvents = []) {
@@ -191,6 +420,116 @@ function buildMarketFactors(marketData = {}, newsEvents = []) {
   if ((marketData.hotSectors ?? []).length) factors.push(`热点方向：${marketData.hotSectors.slice(0, 5).map((item) => item.name).join("、")}`);
   if (newsEvents.length) factors.push(`新闻催化：${newsEvents.slice(0, 3).map((item) => item.title).join("；")}`);
   return factors;
+}
+
+export function buildWatchlistChangeAnalysis(watchlist = [], marketData = {}, newsSnapshot = {}, risks = []) {
+  const newsEvents = [...(newsSnapshot.stockNews ?? []), ...(newsSnapshot.news ?? [])];
+  const hotSectors = marketData.hotSectors ?? [];
+  const updatedAt = new Date().toLocaleString("zh-CN", { hour12: false });
+  return watchlist.slice(0, 20).map((stock) => {
+    const relatedNews = newsEvents.filter((item) => {
+      const text = `${item.title ?? ""}${item.relatedStock ?? ""}${(item.relatedStocks ?? []).join("")}${item.relatedIndustry ?? ""}${(item.relatedIndustries ?? []).join("")}`;
+      return text.includes(stock.code) || text.includes(stock.name) || text.includes(stock.industry);
+    }).slice(0, 3);
+    const relatedHotSector = hotSectors.find((sector) => {
+      const text = `${sector.name ?? ""}${sector.reason ?? ""}${sector.aiReason ?? ""}${sector.rankingReason ?? ""}`;
+      return text.includes(stock.industry) || String(stock.industry ?? "").includes(sector.name);
+    });
+    const stockRisks = risks.filter((item) => item.target === stock.name || item.target === stock.code || String(item.message ?? item.title ?? "").includes(stock.name));
+    const changeValue = Number(String(stock.changePercent ?? "").replace("%", "").replace("+", ""));
+    const priceChange = Number.isFinite(changeValue)
+      ? `${changeValue >= 0 ? "上涨" : "下跌"} ${Math.abs(changeValue).toFixed(2)}%`
+      : "涨跌幅数据暂缺";
+    const attentionChange = buildAttentionChange({ stock, changeValue, relatedNews, relatedHotSector, stockRisks });
+    return {
+      code: stock.code,
+      name: stock.name,
+      assetType: stock.assetType ?? "股票",
+      price: stock.price ?? "数据源未返回",
+      changePercent: stock.changePercent ?? "数据源未返回",
+      priceChange,
+      attentionChange,
+      newsChange: relatedNews[0]?.title ?? "暂无新的强相关新闻",
+      hotspotChange: relatedHotSector ? `${relatedHotSector.name}处于热点方向，需观察持续性` : "暂未匹配到TOP热点板块",
+      riskChange: stockRisks[0]?.message ?? stockRisks[0]?.title ?? "未出现新增高风险信号",
+      updatedAt,
+    };
+  });
+}
+
+export function buildPortfolioDailyReport(portfolioSummary = {}, marketData = {}) {
+  const positions = portfolioSummary.positions ?? [];
+  const topIndustry = portfolioSummary.industryAllocation?.[0];
+  const concentrationRisk = portfolioSummary.concentrationRisk ?? {};
+  const todayPnl = Number(portfolioSummary.todayPnl ?? 0);
+  const marketHeat = marketData.marketSentiment?.heat ?? marketData.marketSentiment?.moneyEffect ?? "数据源未返回";
+  return {
+    generatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
+    positionCount: positions.length,
+    todayPnl,
+    todayPnlText: `${todayPnl >= 0 ? "+" : ""}${todayPnl.toFixed(2)}元`,
+    riskLevel: concentrationRisk.level ?? "暂无持仓",
+    riskChange: positions.length ? `当前组合风险${concentrationRisk.level ?? "中等"}，需结合市场热度${marketHeat}复核。` : "暂无持仓，未生成组合风险变化。",
+    industryConcentration: topIndustry ? `${topIndustry.industry}占比${topIndustry.weight.toFixed(1)}%` : "暂无行业集中度",
+    industryChange: topIndustry ? `${topIndustry.industry}是当前主要风险暴露方向。` : "暂无持仓行业变化。",
+    summary: positions.length
+      ? `今日组合盈亏${todayPnl >= 0 ? "为正" : "为负"}，最大行业集中在${topIndustry?.industry ?? "数据不足"}，不涉及自动交易。`
+      : "暂无持仓记录，组合日报仅保留入口。",
+    source: portfolioSummary.syncStatus?.source ?? "portfolioService",
+  };
+}
+
+function buildYesterdayJudgementReview(savedReports = [], marketData = {}) {
+  const today = new Date().toISOString().slice(0, 10);
+  const previous = savedReports
+    .filter((record) => record.date && record.date < today)
+    .sort((a, b) => String(b.date).localeCompare(String(a.date)))[0];
+  if (!previous) {
+    return {
+      status: "pending",
+      prediction: "暂无昨日AI判断",
+      actual: marketData.marketSentiment?.summary ?? "等待市场数据",
+      result: "待积累历史报告",
+      basis: "需要至少一条前一交易日报告。",
+    };
+  }
+  const predicted = previous.content?.morning?.marketState ?? previous.marketState ?? previous.mainView ?? "历史判断未记录";
+  const actual = marketData.marketSentiment?.summary ?? marketData.strategy?.state ?? "当前市场状态数据不足";
+  return {
+    status: "pending",
+    date: previous.date,
+    prediction: predicted,
+    actual,
+    result: "待人工复核",
+    basis: `上一份报告生成于${previous.generatedAt ?? previous.date}，本次仅展示对照，不自动判定准确率。`,
+  };
+}
+
+function buildAiObservationPool(watchlistAnalysis = [], hotDirections = []) {
+  const stockIdeas = watchlistAnalysis.slice(0, 5).map((item) => ({
+    name: item.name,
+    code: item.code,
+    rating: item.rating,
+    reason: item.reasons?.[0] ?? item.aiOpinion,
+    risk: item.risks?.[0] ?? "需观察成交和新闻变化",
+  }));
+  const sectorIdeas = hotDirections.slice(0, 5).map((item) => ({
+    name: item.name,
+    code: "板块",
+    rating: item.sustainability ?? "持续性观察",
+    reason: item.reason,
+    risk: item.risk,
+  }));
+  return [...stockIdeas, ...sectorIdeas].slice(0, 10);
+}
+
+function buildAttentionChange({ stock, changeValue, relatedNews, relatedHotSector, stockRisks }) {
+  if (stockRisks.length) return "关注变化：风险信号上升，优先复核原因";
+  if (relatedNews.length && relatedHotSector) return "关注变化：新闻与热点共振，观察优先级提高";
+  if (relatedHotSector) return "关注变化：所属方向进入热点，观察成交延续";
+  if (relatedNews.length) return "关注变化：出现相关新闻，复核影响方向";
+  if (Number.isFinite(changeValue) && Math.abs(changeValue) >= 3) return "关注变化：价格波动放大，观察是否异动";
+  return "关注变化：暂无明显新增变化，维持跟踪";
 }
 
 function buildWatchlistDailyAnalysis(watchlist = [], marketData = {}, newsEvents = [], risks = []) {

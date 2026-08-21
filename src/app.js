@@ -20,6 +20,7 @@ import { mountWatchlist, renderWatchlist } from "./pages/watchlist.js";
 import { getNavigation, getSidePanelData } from "./services/mockService.js";
 import { initNotificationSchedule } from "./services/notificationService.js";
 import { initAutoRefresh } from "./services/refreshService.js";
+import { startReportScheduler } from "./services/reportScheduler.js";
 import { checkCloudStatus, getSyncStatus, getTopSyncStatus, registerNetworkSync } from "./services/syncService.js";
 import { getCurrentUser, isLoggedIn, logout } from "./services/userService.js";
 
@@ -179,6 +180,7 @@ function initApp() {
   });
   renderNavigation();
   initNotificationSchedule();
+  startReportScheduler();
   registerNetworkSync(() => {
     renderUserStatus();
     renderSidePanel();

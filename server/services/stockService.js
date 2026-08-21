@@ -119,7 +119,6 @@ export async function getStockDetail(query) {
   );
   const stock = isCodeQuery ? await getFastQuoteByCode(keyword) : result.data[0];
   if (!stock) {
-    console.info("[stock-detail]", { code: keyword, quote: "fail", elapsedMs: Date.now() - startedAt, failureReason: result.message });
     return { ok: false, message: `\u672a\u627e\u5230\u5339\u914d\u6807\u7684\uff1a${query}`, source: result.source, status: result.status, updatedAt: result.updatedAt, data: null };
   }
 
@@ -145,15 +144,8 @@ export async function getStockDetail(query) {
   });
   detail.dataQuality = assessDataQuality(detail);
   detail.priceLevels = buildPriceLevels(detail, detail.dataQuality);
+  detail.researchReport = buildResearchReport(detail);
   detail.riskTips = [...new Set([...(detail.securityProfile?.warnings ?? []), ...(detail.dataQuality?.financials?.issues ?? []), ...(detail.riskTips ?? [])].filter(Boolean))];
-  console.info("[stock-detail]", {
-    code: detail.code,
-    quote: detail.price && detail.price !== UNKNOWN ? "success" : "fail",
-    source: detail.dataSource,
-    status: detail.dataStatus,
-    elapsedMs: Date.now() - startedAt,
-    failureReason: detail.dataMessage || "",
-  });
   return { ok: true, source: detail.dataSource, status: detail.dataStatus, updatedAt: detail.updatedAt, data: detail };
 }
 
@@ -659,12 +651,9 @@ function enrichResearchFields(stock) {
     announcements: stock.announcements ?? [],
     riskTips: stock.riskTips ?? defaultRiskTips,
   };
-  const dataQuality = stock.dataQuality ?? assessDataQuality(base);
-  const priceLevels = stock.priceLevels ?? buildPriceLevels(base, dataQuality);
-  const mustUseSpecificTemplate = securityProfile.isEtf || securityProfile.isSt || securityProfile.isNewStock;
-  const researchReport = mustUseSpecificTemplate
-    ? buildResearchReport({ ...base, dataQuality, priceLevels })
-    : stock.researchReport ?? buildResearchReport({ ...base, dataQuality, priceLevels });
+  const dataQuality = assessDataQuality(base);
+  const priceLevels = buildPriceLevels(base, dataQuality);
+  const researchReport = buildResearchReport({ ...base, dataQuality, priceLevels });
   return { ...base, dataQuality, priceLevels, researchReport };
 }
 
@@ -704,6 +693,10 @@ function buildResearchReport(stock) {
   if (isEtf) return buildEtfResearchReport(stock);
   if (profile.isNewStock) return buildNewStockResearchReport(stock);
   if (profile.isSt) return buildStResearchReport(stock);
+  if (stock.dataQuality?.blocked || stock.dataQuality?.canGenerateDecision === false || stock.dataQuality?.level === "insufficient") {
+    return buildInsufficientResearchReport(stock);
+  }
+  const evidenceBasis = buildResearchEvidenceBasis(stock);
   return {
     company: `${stock.name}\u5df2\u7eb3\u5165\u4e2a\u80a1\u7814\u7a76\u89c6\u56fe\uff0c\u9700\u7ed3\u5408\u516c\u544a\u3001\u8d22\u62a5\u548c\u884c\u4e1a\u6570\u636e\u6301\u7eed\u9a8c\u8bc1\u3002`,
     industry: `${stock.industry}\u65b9\u5411\u9700\u89c2\u5bdf\u653f\u7b56\u3001\u666f\u6c14\u5ea6\u3001\u4f30\u503c\u4f4d\u7f6e\u548c\u8d44\u91d1\u6301\u7eed\u6027\u3002`,
@@ -717,7 +710,54 @@ function buildResearchReport(stock) {
     technicalTrend: `\u6da8\u8dcc\u5e45 ${stock.changePercent ?? UNKNOWN}\uff0c\u6362\u624b\u7387 ${stock.turnoverRate ?? UNKNOWN}\uff0c\u77ed\u7ebf\u9700\u89c2\u5bdf\u91cf\u4ef7\u914d\u5408\u3002`,
     risks: stock.riskTips ?? defaultRiskTips,
     aiScore: scoreStock(stock),
+    evidenceBasis,
+    scoreBasis: evidenceBasis.score,
+    riskBasis: evidenceBasis.risk,
+    priceBasis: stock.priceLevels?.levels?.map((item) => `${item.name}：${item.basis}`).filter(Boolean) ?? [],
+    operationBasis: evidenceBasis.operation,
     summary: "\u5f53\u524d\u5b9a\u4f4d\u4e3a\u673a\u4f1a\u89c2\u5bdf\u548c\u98ce\u9669\u8ddf\u8e2a\uff0c\u4e0d\u8f93\u51fa\u4ea4\u6613\u6307\u4ee4\u6216\u4fdd\u8bc1\u4e0a\u6da8\u7ed3\u8bba\u3002",
+  };
+}
+
+function buildInsufficientResearchReport(stock = {}) {
+  const quality = stock.dataQuality ?? {};
+  return {
+    status: "insufficient",
+    assetType: stock.assetType ?? stock.securityType ?? "股票",
+    summary: quality.message ?? "数据不足，无法生成可靠判断。",
+    dataLimit: "关键字段缺失较多，本次不生成评分、价格区间、强评级或操作思路。",
+    missingFields: quality.missingFields ?? [],
+    evidenceBasis: {
+      score: ["数据质量不足，评分已关闭。"],
+      risk: [`缺失字段：${(quality.missingFields ?? []).join("、") || "关键字段不足"}`],
+      price: ["缺少可靠行情或高低点，价格区间已关闭。"],
+      operation: ["仅展示真实返回数据，不生成参与判断。"],
+    },
+    risks: [
+      quality.message ?? "数据不足，无法生成可靠判断。",
+      ...(quality.missingFields ?? []).map((item) => `缺失字段：${item}`),
+    ].slice(0, 6),
+  };
+}
+
+function buildResearchEvidenceBasis(stock = {}) {
+  const firstAnnouncement = (stock.announcements ?? [])[0];
+  return {
+    score: [
+      `来源行情：${stock.quoteSource ?? stock.dataSource ?? UNKNOWN}，当前价${stock.price ?? UNKNOWN}，涨跌幅${stock.changePercent ?? UNKNOWN}。`,
+      `财务依据：营收${stock.financials?.revenue ?? UNKNOWN}，净利润${stock.financials?.netProfit ?? UNKNOWN}，ROE${stock.financials?.roe ?? UNKNOWN}。`,
+      `新闻/公告依据：${firstAnnouncement?.title ?? "本次未匹配到重大公告"}`,
+    ],
+    risk: [
+      `估值依据：PE ${stock.pe ?? UNKNOWN}，PB ${stock.pb ?? UNKNOWN}。`,
+      `行情依据：成交额${stock.amount ?? UNKNOWN}，换手率${stock.turnoverRate ?? UNKNOWN}。`,
+      `公告依据：${firstAnnouncement?.analysis?.risk ?? firstAnnouncement?.title ?? "公告接口未返回强风险事件"}`,
+    ],
+    operation: [
+      `行业依据：${stock.industry ?? INDUSTRY_MISSING}。`,
+      `技术依据：日内高低点${stock.highPrice ?? UNKNOWN}/${stock.lowPrice ?? UNKNOWN}，涨跌幅${stock.changePercent ?? UNKNOWN}。`,
+      "操作思路只作为观察框架，不输出确定交易指令。",
+    ],
   };
 }
 

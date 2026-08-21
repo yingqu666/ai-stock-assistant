@@ -32,6 +32,7 @@ export function opportunityCard(item) {
       <p><b>当前价格</b>${item.price ?? "数据源未返回"} · <b>涨跌幅</b>${item.changePercent ?? "数据源未返回"}</p>
       <p><b>为什么关注</b>${item.whyFocus ?? reasons.slice(0, 3).join("；") ?? "数据不足，等待行情和新闻补充。"}</p>
       <p><b>为什么暂不参与</b>${item.whyWait ?? "需要等待价格、成交额和新闻催化继续确认。"}</p>
+      <p><b>用户匹配度</b>${item.userMatchText ?? "暂无明显画像匹配，仅按市场机会排序。"}</p>
       <p><b>当前判断</b>${item.currentJudgment ?? "等待机会"}。只作为观察池排序，不代表直接买入。</p>
       <details>
         <summary>展开详细原因、价格观察和风险</summary>

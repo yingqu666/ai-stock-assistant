@@ -14,19 +14,19 @@ import {
 } from "../data.js";
 import { buildAiResearchInput, buildPrompt, generateAiAnalysis, generateDailyReports, getAiStatus } from "./aiService.js";
 import { answerInvestmentQuestion } from "./aiService.js";
-import { getAiAccuracyStats, getAiHistoryRecords, saveMarketAnalysisHistory } from "./historyService.js";
+import { getAiAccuracyStats, getAiHistoryRecords, getStockReviewSummary, getUserPreferenceWeights, getUserResearchDataSummary, saveMarketAnalysisHistory, saveStockAnalysisHistory } from "./historyService.js";
 import { getMarketSnapshot } from "./marketService.js";
 import { getNewsSnapshot, getStockNews } from "./newsService.js";
 import { getInvestmentProfile } from "./investmentProfileService.js";
 import { getCachedMarketData, getCachedNewsData, getCachedWatchlistData, getRefreshStatus, refreshAllData } from "./refreshService.js";
-import { getSavedReports, getTaskSchedule, getTaskStatus, runReportTask } from "./reportScheduler.js";
+import { buildPortfolioDailyReport, buildWatchlistChangeAnalysis, getSavedReports, getTaskSchedule, getTaskStatus, runReportTask } from "./reportScheduler.js";
+import { getPortfolioSummary } from "./portfolioService.js";
 import { getLogs, clearLogs } from "./logService.js";
 import { analyzeRisks } from "./riskService.js";
 import { findMockStock, getStockEvents, getWatchlistSnapshot, queryStock, searchStocks } from "./stockService.js";
 import { addSyncedWatchlist, deleteSyncedWatchlist, getSyncStatus, syncWatchlist } from "./syncService.js";
 import { getUserStoragePrefix } from "./userService.js";
 import { getSyncedWatchlist } from "./watchlistSyncService.js";
-import { getPortfolioSummary } from "./portfolioService.js";
 import { assessDataQuality, dedupeEvents } from "../../shared/securityClassifier.js";
 
 export const currentDataMode = DATA_MODE;
@@ -134,12 +134,14 @@ function getPortfolioKey() {
 }
 
 export async function getDashboardData() {
-  const [market, newsSnapshot, syncedWatchlist, portfolio, aiStatus] = await Promise.all([
+  const [market, newsSnapshot, syncedWatchlist, portfolio, aiStatus, savedReports, stockReviewSummary] = await Promise.all([
     getCachedMarketData(),
     getCachedNewsData(),
     getSyncedWatchlist(),
     getPortfolioSummary().catch(() => null),
     getAiStatus().catch(() => ({ label: "Fallback模式", connected: false, provider: "fallback" })),
+    getSavedReports().catch(() => []),
+    getStockReviewSummary().catch(() => ({ total: 0, success: 0, failed: 0, pending: 0 })),
   ]);
   const watchlistSnapshot = syncedWatchlist.items ?? [];
   const risks = analyzeRisks({ watchlist: watchlistSnapshot, newsEvents: newsSnapshot.stockNews, marketData: market });
@@ -151,7 +153,15 @@ export async function getDashboardData() {
     riskData: risks,
   });
   await saveMarketAnalysisHistory(aiSummary, market, newsSnapshot).catch(() => null);
-  const realtimeOpportunityPool = await getDashboardOpportunityPreview(market, newsSnapshot, watchlistSnapshot);
+  const realtimeOpportunityPool = await getDashboardOpportunityPreview(market, newsSnapshot, watchlistSnapshot, portfolio);
+  const userDataOverview = await getUserResearchDataSummary({ watchlist: watchlistSnapshot, portfolio, reports: savedReports }).catch(() => ({
+    watchlistCount: watchlistSnapshot.length,
+    portfolioCount: portfolio?.positions?.length ?? 0,
+    reportCount: savedReports.length,
+    stockAnalysisHistoryCount: 0,
+    marketAnalysisHistoryCount: 0,
+    reviewRecordCount: 0,
+  }));
   return {
     ...market,
     opportunities: realtimeOpportunityPool.opportunities ?? [],
@@ -163,6 +173,8 @@ export async function getDashboardData() {
     riskAlerts,
     watchlist: watchlistSnapshot,
     portfolioSummary: portfolio,
+    userDataOverview,
+    stockReviewSummary,
     aiSummary,
     aiStatus,
     taskStatus: getTaskStatus(),
@@ -190,22 +202,24 @@ export function getOpportunityData() {
 }
 
 export async function getAiOpportunityPool() {
-  const [marketData, newsSnapshot, syncedWatchlist] = await Promise.all([
+  const [marketData, newsSnapshot, syncedWatchlist, portfolio] = await Promise.all([
     getCachedMarketData().catch(() => ({ hotSectors: [], marketSentiment: {}, source: "行情数据不足" })),
     getCachedNewsData().catch(() => ({ stockNews: [], news: [], source: "新闻数据不足" })),
     getSyncedWatchlist().catch(() => ({ items: [] })),
+    getPortfolioSummary().catch(() => null),
   ]);
   const result = await buildOpportunityPoolFromContext(marketData, newsSnapshot, syncedWatchlist.items ?? [], {
     candidateLimit: 24,
     resultLimit: 10,
     queryTimeoutMs: 5000,
+    portfolio,
   });
   if (result.opportunities.length) aiOpportunityPoolCache = { ...result, cachedAt: Date.now() };
   return result;
 }
 
-async function getDashboardOpportunityPreview(marketData = {}, newsSnapshot = {}, watchlistItems = []) {
-  const fullRefresh = refreshFullOpportunityPoolInBackground(marketData, newsSnapshot, watchlistItems);
+async function getDashboardOpportunityPreview(marketData = {}, newsSnapshot = {}, watchlistItems = [], portfolio = null) {
+  const fullRefresh = refreshFullOpportunityPoolInBackground(marketData, newsSnapshot, watchlistItems, portfolio);
   const cached = getFreshOpportunityCache();
   const preview = await withTimeout(
     buildOpportunityPoolFromContext(marketData, newsSnapshot, watchlistItems, {
@@ -213,6 +227,7 @@ async function getDashboardOpportunityPreview(marketData = {}, newsSnapshot = {}
       resultLimit: 3,
       queryTimeoutMs: 2500,
       searchKeywordLimit: 2,
+      portfolio,
     }),
     6500,
     () => null,
@@ -254,12 +269,13 @@ async function getDashboardOpportunityPreview(marketData = {}, newsSnapshot = {}
   };
 }
 
-function refreshFullOpportunityPoolInBackground(marketData = {}, newsSnapshot = {}, watchlistItems = []) {
+function refreshFullOpportunityPoolInBackground(marketData = {}, newsSnapshot = {}, watchlistItems = [], portfolio = null) {
   if (!aiOpportunityPoolInFlight) {
     aiOpportunityPoolInFlight = buildOpportunityPoolFromContext(marketData, newsSnapshot, watchlistItems, {
       candidateLimit: 24,
       resultLimit: 10,
       queryTimeoutMs: 5000,
+      portfolio,
     })
       .then((result) => {
         if (result.opportunities.length) {
@@ -286,6 +302,11 @@ function getFreshOpportunityCache() {
 }
 
 async function buildOpportunityPoolFromContext(marketData = {}, newsSnapshot = {}, watchlistItems = [], options = {}) {
+  const userMemory = await getUserPreferenceWeights({
+    watchlist: watchlistItems,
+    portfolio: options.portfolio,
+    investmentProfile: getInvestmentProfileData(),
+  }).catch(() => []);
   const candidates = await buildOpportunityCandidates(marketData, newsSnapshot, watchlistItems, {
     searchKeywordLimit: options.searchKeywordLimit ?? 3,
     searchResultLimit: options.searchResultLimit ?? 3,
@@ -316,7 +337,7 @@ async function buildOpportunityPoolFromContext(marketData = {}, newsSnapshot = {
   });
   const rankedPool = stocks
     .filter((stock) => hasUsableQuote(stock) && isOpportunityTradableStock(stock))
-    .map((stock) => buildOpportunityItem(stock, marketData, newsSnapshot, stock.opportunitySector))
+    .map((stock) => buildOpportunityItem(stock, marketData, newsSnapshot, stock.opportunitySector, userMemory, options.portfolio))
     .filter((item) => !String(item.dataStatus ?? "").includes("数据不足"))
     .sort((a, b) => b.rankScore - a.rankScore);
   const pool = selectOpportunityPool(rankedPool, options.resultLimit ?? 10);
@@ -419,19 +440,29 @@ export async function getStockSearchData() {
     historicalReports: savedReports,
   });
   const hasBasicQuote = hasUsableQuote(stockDetail);
-  const aiAnalysis = !hasBasicQuote || stockDetail.dataQuality?.level === "insufficient"
+  const qualityBlocked = stockDetail.dataQuality?.blocked
+    || stockDetail.dataQuality?.canGenerateDecision === false
+    || stockDetail.dataQuality?.level === "insufficient";
+  const aiAnalysis = !hasBasicQuote || qualityBlocked
     ? {
       source: "\u6570\u636e\u4e0d\u8db3",
       summary: stockDetail.dataQuality?.message ?? "\u57fa\u7840\u884c\u60c5\u672a\u6709\u6548\u8fd4\u56de\uff0c\u6682\u4e0d\u8c03\u7528AI\u751f\u6210\u6295\u7814\u5224\u65ad\u3002",
       stockAnalysis: stockDetail.dataMessage ?? stockDetail.dataQuality?.message ?? "\u6570\u636e\u4e0d\u8db3",
       risks: [stockDetail.dataMessage ?? stockDetail.dataQuality?.message ?? "\u57fa\u7840\u884c\u60c5\u4e0d\u8db3\uff0c\u9700\u5148\u786e\u8ba4\u4ee3\u7801\u548c\u6570\u636e\u6e90"],
       opportunities: [],
+      basis: ["数据不足，无法生成可靠判断。"],
     }
     : stockDetail.aiReport?.investmentDecision
     ? { ...stockDetail.aiReport, source: ["deepseek", "ai-api"].includes(stockDetail.aiReport.source) ? "\u771f\u5b9eAI\u6a21\u578b" : stockDetail.aiReport.source ?? "\u89c4\u5219\u5206\u6790" }
     : getAsyncStockAiAnalysis(stockDetail, aiInput);
+  persistStockAnalysisHistory(aiAnalysis, stockDetail, aiInput);
   const aiPrompt = buildPrompt(aiInput);
   return { stockDetail, stockDatabase, stockNews: mergedStockNews, stockEvents, aiInput, aiPrompt, aiAnalysis };
+}
+
+function persistStockAnalysisHistory(aiAnalysis, stockDetail, aiInput) {
+  if (!aiAnalysis || aiAnalysis.source === "AI\u5206\u6790\u751f\u6210\u4e2d") return;
+  saveStockAnalysisHistory(aiAnalysis, stockDetail, aiInput).catch(() => null);
 }
 
 function hasUsableQuote(stock) {
@@ -457,6 +488,7 @@ function getAsyncStockAiAnalysis(stockDetail, aiInput) {
     generateAiAnalysis(aiInput)
       .then((data) => {
         stockAiCache.set(key, { status: "success", data, updatedAt: Date.now() });
+        saveStockAnalysisHistory(data, stockDetail, aiInput).catch(() => null);
         window.dispatchEvent(new CustomEvent("stock-ai-report-ready", { detail: { code: key, success: true } }));
       })
       .catch((error) => {
@@ -538,13 +570,16 @@ export function selectDailyReport(index) {
 }
 
 export async function getDailyReportData() {
-  const [marketData, newsSnapshot, syncedWatchlist] = await Promise.all([
+  const [marketData, newsSnapshot, syncedWatchlist, portfolioSummary] = await Promise.all([
     getCachedMarketData(),
     getCachedNewsData(),
     getSyncedWatchlist(),
+    getPortfolioSummary().catch(() => ({ positions: [], industryAllocation: [], concentrationRisk: {} })),
   ]);
   const watchlistSnapshot = syncedWatchlist.items ?? [];
   const risks = analyzeRisks({ watchlist: watchlistSnapshot, newsEvents: newsSnapshot.stockNews, marketData });
+  const watchlistChanges = buildWatchlistChangeAnalysis(watchlistSnapshot, marketData, newsSnapshot, risks);
+  const portfolioDaily = buildPortfolioDailyReport(portfolioSummary, marketData);
   const generatedReport = generateDailyReports({
     marketData,
     newsEvents: newsSnapshot.stockNews,
@@ -552,6 +587,8 @@ export async function getDailyReportData() {
     investmentProfile: getInvestmentProfileData(),
     riskAlerts: risks,
   });
+  generatedReport.morning = { ...generatedReport.morning, watchlistChanges, portfolioDaily };
+  generatedReport.close = { ...generatedReport.close, watchlistChanges, portfolioDaily };
   const savedReports = await getSavedReports();
   const savedHistory = savedReports.map((record) => ({
     date: record.date,
@@ -701,12 +738,13 @@ async function buildOpportunityCandidates(marketData = {}, newsSnapshot = {}, wa
   return [...candidates.values()].sort((a, b) => sectorScore(b.sector) - sectorScore(a.sector));
 }
 
-function buildOpportunityItem(stock = {}, marketData = {}, newsSnapshot = {}, preferredSector = null) {
+function buildOpportunityItem(stock = {}, marketData = {}, newsSnapshot = {}, preferredSector = null, userMemory = [], portfolio = null) {
   const assetType = isOpportunityEtf(stock) ? "ETF" : "股票";
   const hotSector = preferredSector ?? findRelatedHotSector(stock, marketData.hotSectors ?? []);
   const relatedNews = findRelatedOpportunityNews(stock, newsSnapshot, hotSector);
   const relatedCatalysts = [...relatedNews, ...(stock.announcements ?? [])];
-  const scoreParts = scoreOpportunity(stock, hotSector, relatedCatalysts, marketData);
+  const userMatch = buildOpportunityUserMatch(stock, hotSector, userMemory, portfolio);
+  const scoreParts = scoreOpportunity(stock, hotSector, relatedCatalysts, marketData, userMatch);
   const rankScore = scoreParts.total;
   const judgment = opportunityJudgment(rankScore, stock);
   const priceObservation = buildOpportunityPriceObservation(stock, scoreParts, hotSector);
@@ -717,6 +755,8 @@ function buildOpportunityItem(stock = {}, marketData = {}, newsSnapshot = {}, pr
     currentJudgment: judgment,
     whyFocus: buildOpportunityFocusReason(stock, hotSector, relatedCatalysts, scoreParts),
     whyWait: buildOpportunityWaitReason(stock, hotSector, relatedCatalysts, scoreParts),
+    userMatch,
+    userMatchText: `${userMatch.level} · ${userMatch.reasons.join("；") || "与当前画像暂无强匹配"}`,
     score: rankScore,
     rankScore,
     price: stock.price ?? DATA_MISSING,
@@ -733,6 +773,7 @@ function buildOpportunityItem(stock = {}, marketData = {}, newsSnapshot = {}, pr
         ? `ETF跟踪方向：重点观察${stock.trackingIndex ?? stock.industry ?? "跟踪板块"}、成交额${stock.amount ?? DATA_MISSING}、规模流动性和板块持续性`
         : `公司基本面：营收${stock.financials?.revenue ?? DATA_MISSING}，净利润${stock.financials?.netProfit ?? DATA_MISSING}，ROE${stock.financials?.roe ?? DATA_MISSING}`,
       `新闻/公告影响：${relatedCatalysts[0] ? `${relatedCatalysts[0].title}（${relatedCatalysts[0].source ?? "新闻/公告"}，${relatedCatalysts[0].impact ?? relatedCatalysts[0].analysis?.direction ?? "中性"}）` : "未匹配到强相关新闻或公告，机会评分已降低"}`,
+      `用户匹配度：${userMatch.level}，${userMatch.reasons.join("；") || "暂无自选/持仓/画像关联"}`,
       stock.opportunityReason ? `入选路径：${stock.opportunityReason}` : "",
     ].filter(Boolean),
     risks: [
@@ -865,7 +906,7 @@ function buildOpportunityWaitReason(stock = {}, hotSector = {}, relatedNews = []
   return `${warnings.join("；")}。不满足观察条件时暂不参与，避免把热点波动当成确定机会。`;
 }
 
-function scoreOpportunity(stock = {}, hotSector, relatedNews = [], marketData = {}) {
+function scoreOpportunity(stock = {}, hotSector, relatedNews = [], marketData = {}, userMatch = {}) {
   const isEtf = isOpportunityEtf(stock);
   const industryHeat = hotSector ? 18 : 9;
   const liquidity = opportunityLiquidityScore(stock);
@@ -876,10 +917,40 @@ function scoreOpportunity(stock = {}, hotSector, relatedNews = [], marketData = 
   const news = relatedNews.length ? 16 : -6;
   const valuation = scoreOpportunityValuation(stock);
   const riskPenalty = opportunityRiskPenalty(stock, marketData);
-  const rawTotal = Math.round(industryHeat + capital + quality + financial + news + valuation - riskPenalty);
+  const userFit = Math.min(12, Math.max(0, Number(userMatch.score ?? 0) / 8));
+  const rawTotal = Math.round(industryHeat + capital + quality + financial + news + valuation + userFit - riskPenalty);
   const capped = relatedNews.length ? rawTotal : Math.min(rawTotal, 72);
   const total = Math.max(0, Math.min(100, capped));
-  return { industryHeat, capital, liquidity, quality, financial, news, valuation, riskPenalty, catalystCount: relatedNews.length, total };
+  return { industryHeat, capital, liquidity, quality, financial, news, valuation, userFit, riskPenalty, catalystCount: relatedNews.length, total };
+}
+
+function buildOpportunityUserMatch(stock = {}, hotSector = {}, preferenceWeights = [], portfolio = null) {
+  const text = `${stock.name ?? ""}${stock.industry ?? ""}${stock.trackingIndex ?? ""}${hotSector?.name ?? ""}`;
+  const matchedPreferences = preferenceWeights.filter((item) => item.industry && text.includes(item.industry)).slice(0, 3);
+  const holding = (portfolio?.positions ?? []).find((position) => (
+    position.code === stock.code
+    || (position.industry && text.includes(position.industry))
+    || (stock.industry && String(position.industry ?? "").includes(stock.industry))
+  ));
+  let score = matchedPreferences.reduce((sum, item) => sum + Number(item.weight ?? 0), 0);
+  const reasons = [];
+  if (matchedPreferences.length) {
+    reasons.push(`匹配偏好：${matchedPreferences.map((item) => item.industry).join("、")}`);
+  }
+  if (holding) {
+    score += 18;
+    reasons.push(`与持仓${holding.name ?? holding.code}存在方向关联`);
+  }
+  if (stock.assetType === "ETF" && matchedPreferences.length) {
+    score += 6;
+    reasons.push("ETF适合按主题方向观察");
+  }
+  const level = score >= 70 ? "高匹配" : score >= 35 ? "中匹配" : score > 0 ? "低匹配" : "未匹配";
+  return {
+    score: Math.min(100, Math.round(score)),
+    level,
+    reasons: reasons.slice(0, 3),
+  };
 }
 
 function scoreOpportunityValuation(stock = {}) {

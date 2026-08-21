@@ -1,6 +1,6 @@
 import { metricCard } from "../components/cards.js";
 import { getReviewDetailData, runAiReview } from "../services/chartService.js";
-import { getMarketAnalysisHistory, updateMarketAnalysisReview } from "../services/historyService.js";
+import { getAiPerformanceReport, getMarketAnalysisHistory, getStockReviewSummary, updateMarketAnalysisReview } from "../services/historyService.js";
 
 let selectedReviewDate = null;
 const tradeReviewKey = "ai-investment-trade-review-records";
@@ -19,9 +19,11 @@ function accuracyCard(label, stat) {
 }
 
 export async function renderReviewAnalysis() {
-  const [data, marketAnalysisHistory] = await Promise.all([
+  const [data, marketAnalysisHistory, stockReviewSummary, performanceReport] = await Promise.all([
     getReviewDetailData(selectedReviewDate),
     getMarketAnalysisHistory(),
+    getStockReviewSummary(),
+    getAiPerformanceReport(),
   ]);
   const detail = data.detail;
   const tradeRecords = loadTradeRecords();
@@ -51,6 +53,51 @@ export async function renderReviewAnalysis() {
         ].map(metricCard).join("")}
       </div>
       <p id="ai-review-message" class="form-message">选择日期查看当天市场、板块、自选股表现和AI观点。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head">
+        <div>
+          <h2>AI表现报告</h2>
+          <span>市场判断、股票5日/20日结果和错误类型统计</span>
+        </div>
+      </div>
+      <div class="metrics">
+        ${[
+          { label: "总判断次数", value: `${performanceReport.total.count}次`, change: `准确率${performanceReport.total.accuracy}%` },
+          { label: "市场判断成功率", value: `${performanceReport.market.accuracy}%`, change: `${performanceReport.market.success}成/${performanceReport.market.failed}败/${performanceReport.market.pending}待看` },
+          { label: "股票5日结果", value: `${performanceReport.stock5d.accuracy}%`, change: `${performanceReport.stock5d.success}成/${performanceReport.stock5d.failed}败/${performanceReport.stock5d.pending}待看` },
+          { label: "股票20日结果", value: `${performanceReport.stock20d.accuracy}%`, change: `${performanceReport.stock20d.success}成/${performanceReport.stock20d.failed}败/${performanceReport.stock20d.pending}待看` },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid">
+        ${performanceReport.errorAnalysis.map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.label}</strong><span>${item.severity} · ${item.count}次</span></div>
+            <p>${item.reasons.join("；") || "暂无明显错误样本，继续积累复盘数据。"}</p>
+          </article>
+        `).join("")}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head">
+        <div>
+          <h2>股票AI判断复盘</h2>
+          <span>自动记录5日/20日后续表现，帮助AI长期校准</span>
+        </div>
+      </div>
+      <div class="metrics">
+        ${[
+          { label: "股票判断样本", value: `${stockReviewSummary.total ?? 0}条`, change: "分析历史" },
+          { label: "判断成功", value: `${stockReviewSummary.success ?? 0}条`, change: `${stockReviewSummary.successRate ?? 0}%` },
+          { label: "判断失败", value: `${stockReviewSummary.failed ?? 0}条`, change: "需复核原因" },
+          { label: "待观察", value: `${stockReviewSummary.pending ?? 0}条`, change: "等待5日/20日表现" },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid">
+        ${(stockReviewSummary.latest ?? []).map(stockReviewCard).join("") || `<article class="data-card"><strong>暂无股票复盘样本</strong><p>生成股票AI分析后，系统会记录当时价格、市场环境、新闻催化，并在后续分析时更新表现。</p></article>`}
+      </div>
     </section>
 
     <section class="wide-section">
@@ -295,4 +342,17 @@ function statusLabel(status) {
   if (status === "correct") return "判断正确";
   if (status === "wrong") return "判断错误";
   return "待复盘";
+}
+
+function stockReviewCard(item = {}) {
+  const follow5 = item.followUp5d ?? {};
+  const follow20 = item.followUp20d ?? {};
+  return `
+    <article class="data-card">
+      <div class="card-head"><strong>${item.name ?? item.code}</strong><span>${item.date ?? "日期待补充"} · ${statusLabel(item.reviewStatus)}</span></div>
+      <p><b>AI判断</b>${item.rating ?? "判断待补充"}</p>
+      <p><b>5日表现</b>${follow5.summary ?? follow5.message ?? "等待后续行情复盘"}</p>
+      <p><b>20日表现</b>${follow20.summary ?? follow20.message ?? "等待后续行情复盘"}</p>
+      <p><b>可能原因</b>${item.possibleReason ?? "等待后续数据积累"}</p>
+    </article>`;
 }

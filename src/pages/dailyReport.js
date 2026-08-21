@@ -1,19 +1,25 @@
 import { metricCard, riskCard, tagList } from "../components/cards.js";
 import { reportList } from "../components/lists.js";
 import { getReviewChartData } from "../services/chartService.js";
+import { getMarketAnalysisHistory } from "../services/historyService.js";
 import { generateTodayReport, getDailyReportData, selectDailyReport } from "../services/mockService.js";
 import { notifyByType } from "../services/notificationService.js";
 import { getSyncStatus } from "../services/syncService.js";
 
 export async function renderDailyReport() {
-  const [{ dailyReport, selectedReport, taskSchedule, taskStatus, savedReports }, reviewData] = await Promise.all([
+  const [{ dailyReport, selectedReport, taskSchedule, taskStatus, savedReports }, reviewData, marketHistory] = await Promise.all([
     getDailyReportData(),
     getReviewChartData(),
+    getMarketAnalysisHistory().catch(() => []),
   ]);
   const { morning, close, history } = dailyReport;
   const decision = morning.investmentDecision ?? close.investmentDecision ?? {};
   const reportSync = getSyncStatus().reports ?? { status: "尚未同步", lastSyncAt: "尚未同步", source: "本地/云端" };
   const hotDirections = morning.hotDirections ?? close.hotDirections ?? [];
+  const latestMarketReview = marketHistory[0];
+  const watchlistChanges = morning.watchlistChanges ?? close.watchlistChanges ?? [];
+  const portfolioDaily = morning.portfolioDaily ?? close.portfolioDaily ?? {};
+  const yesterdayAutoReview = close.yesterdayReview ?? {};
 
   return `
     <section class="wide-section">
@@ -30,12 +36,25 @@ export async function renderDailyReport() {
           { label: "新闻已获取", value: taskStatus.newsFetched ? "是" : "待执行", change: taskStatus.newsFetched ? "完成" : "手动生成" },
           { label: "报告已生成", value: taskStatus.reportGenerated ? "是" : "待执行", change: taskStatus.lastRunAt },
           { label: "已保存报告", value: `${savedReports.length}份`, change: "历史" },
+          { label: "早盘自动任务", value: taskStatus.lastMorningRunAt ?? "尚未生成", change: taskStatus.schedulerMode ?? "本地定时" },
+          { label: "收盘自动任务", value: taskStatus.lastCloseRunAt ?? "尚未生成", change: taskStatus.lastError ? "有异常" : "等待到点" },
         ].map(metricCard).join("")}
       </div>
       <div class="detail-grid compact">
         ${taskSchedule.map((task) => `<article class="data-card"><strong>${task.name}</strong><p>${task.time} · ${task.description}</p></article>`).join("")}
       </div>
       <p id="daily-report-message" class="form-message">点击按钮后会采集市场、自选股、新闻、公告和风险数据，生成并保存日报。</p>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>昨日判断复盘</h2><span>读取AI市场判断历史，暂不自动判定准确率</span></div>
+      <div class="detail-grid compact">
+        <article class="data-card"><strong>昨日AI判断</strong><p>${latestMarketReview?.predictionContent?.marketState ?? latestMarketReview?.prediction?.marketDirection ?? "暂无历史判断"}</p></article>
+        <article class="data-card"><strong>当时主线</strong>${tagList((latestMarketReview?.prediction?.sectors ?? latestMarketReview?.predictionContent?.mainDirections?.map((item) => item.name) ?? []).slice(0, 6))}</article>
+        <article class="data-card"><strong>风险方向</strong>${tagList((latestMarketReview?.prediction?.risks ?? []).slice(0, 6))}</article>
+        <article class="data-card"><strong>复盘状态</strong><p>${formatReviewStatus(latestMarketReview?.reviewStatus)} · ${latestMarketReview?.actualResult?.marketMove ?? "等待人工填写实际走势"}</p></article>
+        <article class="data-card"><strong>自动复盘对照</strong><p>${yesterdayAutoReview.prediction ?? "暂无自动日报历史"} → ${yesterdayAutoReview.actual ?? "等待市场数据"}；${yesterdayAutoReview.result ?? "待复核"}</p></article>
+      </div>
     </section>
 
     <section class="wide-section">
@@ -93,6 +112,32 @@ export async function renderDailyReport() {
             <p><b>风险：</b>${(item.risks ?? []).slice(0, 3).join("；")}</p>
           </article>
         `).join("") || `<article class="data-card"><strong>关注股票</strong><p>先在“我的关注股票”添加标的，生成日报时会逐只分析。</p></article>`}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>关注变化</h2><span>价格、新闻、热点和风险变化检测</span></div>
+      <div class="detail-grid">
+        ${watchlistChanges.map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.assetType}</span></div>
+            <p><b>${item.attentionChange}</b></p>
+            <p><b>价格：</b>${item.price ?? "数据源未返回"} · ${item.priceChange ?? item.changePercent ?? "涨跌数据暂缺"}</p>
+            <p><b>新闻：</b>${item.newsChange}</p>
+            <p><b>热点：</b>${item.hotspotChange}</p>
+            <p><b>风险：</b>${item.riskChange}</p>
+          </article>
+        `).join("") || `<article class="data-card"><strong>关注变化</strong><p>暂无关注股票变化。先在“我的关注股票”添加标的后，日报会自动检测。</p></article>`}
+      </div>
+    </section>
+
+    <section class="wide-section">
+      <div class="section-head"><h2>投资组合日报</h2><span>盈亏、风险等级和行业集中度变化</span></div>
+      <div class="detail-grid compact">
+        <article class="data-card"><strong>今日盈亏</strong><p>${portfolioDaily.todayPnlText ?? "暂无持仓数据"}</p></article>
+        <article class="data-card"><strong>风险等级变化</strong><p>${portfolioDaily.riskChange ?? "暂无持仓风险变化。"}</p></article>
+        <article class="data-card"><strong>行业集中度变化</strong><p>${portfolioDaily.industryChange ?? portfolioDaily.industryConcentration ?? "暂无行业集中度数据。"}</p></article>
+        <article class="data-card"><strong>组合日报总结</strong><p>${portfolioDaily.summary ?? "暂无持仓记录，组合日报等待数据。"}</p></article>
       </div>
     </section>
 
@@ -178,4 +223,10 @@ export function mountDailyReport({ rerender }) {
       rerender();
     });
   });
+}
+
+function formatReviewStatus(status) {
+  if (status === "correct") return "判断正确";
+  if (status === "wrong") return "判断错误";
+  return "待复盘";
 }
