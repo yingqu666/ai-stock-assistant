@@ -823,13 +823,13 @@ function buildPrompt({ task, input, outputSchema }) {
     task,
     rules: [
       "只基于输入数据做A股/ETF投研，不编造行情、新闻、公告或财务。",
-      "报告必须简短，固定包含：股票概况、看好逻辑、风险因素、估值分析、短期观察、长期观察、仓位参考。",
+      "报告必须简短，固定包含：当前状态、关注逻辑、看多因素、看空因素、最大风险、短线观察(1-5天)、中线观察(1-4周)、AI结论。",
       "必须引用当前价格、涨跌幅、成交额、PE、PB、行业；如果财务字段存在，也要引用ROE和净利润。",
       "新闻最多使用输入中的3条，公告最多使用3条，优先个股相关新闻，保留真实来源名称。",
       "结合投资者画像输出匹配度、关注理由、风险提醒和仓位参考。",
-      "评级只能使用：重点关注、可以观察、等待机会、暂不参与、风险较高。",
-      "评分只能作为辅助信息，必须先给当前判断，再说明行业、行情、财务、新闻、公告和风险依据。",
-      "action只能使用：关注、等待、持有、降低仓位、回避。",
+      "AI结论只能使用：关注、等待、谨慎观察、风险较高。",
+      "评分只能作为辅助信息，不能作为主要结论；必须先给当前判断，再说明行业、行情、财务、新闻、公告和风险依据。",
+      "仓位参考只能表达风险暴露，不得写成交易指令。",
       "禁止确定买入、确定卖出、保证收益。没有数据时明确写数据缺失。",
     ],
     requiredInputFields: ["marketData", "stockData", "newsData", "announcementData", "investmentProfile", "riskData"],
@@ -877,6 +877,10 @@ function compactOutputSchema() {
     financialReview: { status: "状态", source: "财务来源", revenue: "营收", netProfit: "净利润", roe: "ROE", grossMargin: "毛利率", netMargin: "净利率", debtRatio: "资产负债率", cashFlow: "现金流", summary: "财务评价" },
     valuationReview: { pe: "PE", pb: "PB", level: "估值状态", summary: "估值评价" },
     scoreBreakdown: { industryTrend: "行业趋势0-20", financialQuality: "财务质量0-20", valuationLevel: "估值水平0-20", marketAttention: "市场关注0-20", riskControl: "风险控制0-20", total: "综合0-100", classification: "成长/价值/周期/ETF/综合" },
+  currentState: "当前状态，引用价格、涨跌幅、成交额和行业",
+  attentionLogic: "关注逻辑，必须引用行情、板块、新闻或公告",
+  bullishFactors: ["看多因素，最多3条，每条带依据"],
+  bearishFactors: ["看空因素，最多3条，每条带依据"],
   riskLevel: "低/中/高",
   investorMatch: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
   attentionReasons: [{ type: "行情/板块/新闻/公告", reason: "必须引用真实数据的关注理由", source: "数据来源" }],
@@ -888,6 +892,7 @@ function compactOutputSchema() {
     valuationAnalysis: "估值分析，引用PE/PB和可用财务",
     shortTermObservation: "短期观察，1-5天",
     midLongTermObservation: "长期观察，1-4周",
+    aiConclusion: "关注/等待/谨慎观察/风险较高",
     riskAnalysis: { industryRisks: ["行业风险"], companyRisks: ["公司/标的风险"], marketRisks: ["市场风险"] },
     investmentDecision: { score: "0-100辅助分", rating: "重点关注/可以观察/等待机会/暂不参与/风险较高", action: "关注/等待/持有/降低仓位/回避", positionAdvice: "仓位参考", reasons: ["必须引用行业/行情/财务/新闻/公告依据"], risks: ["风险"], watchPoints: ["观察条件"], basis: { quote: ["行情依据"], technical: ["技术依据"], financial: ["财务依据"], announcement: ["公告依据"], news: ["新闻依据"], market: ["市场依据"], operation: ["操作依据"] } },
     investorFit: { score: "0-100", level: "高/中/低", reasons: ["匹配理由"], riskReminders: ["风险提醒"], positionReference: "仓位参考" },
@@ -952,6 +957,10 @@ function fallbackReport(input) {
     scoreBreakdown,
     riskLevel: buildRiskLevel(investmentDecision.score, riskAnalysis),
     investorMatch: investorFit,
+    currentState: buildCurrentStateText(stock, investmentDecision),
+    attentionLogic: opportunityLogic,
+    bullishFactors: investmentDecision.reasons.slice(0, 3),
+    bearishFactors: investmentDecision.risks.slice(0, 3),
     attentionReasons,
     observeConditions,
     currentOpportunityLogic: opportunityLogic,
@@ -961,6 +970,7 @@ function fallbackReport(input) {
     valuationAnalysis: buildValuationAnalysis(stock),
     shortTermObservation: investmentDecision.shortTerm,
     midLongTermObservation: investmentDecision.midTerm,
+    aiConclusion: normalizeAiConclusion(investmentDecision.rating, investmentDecision.score),
     overallJudgement: buildOverallJudgement(investmentDecision, stock),
     investorFit,
     dataSources,
@@ -1275,7 +1285,8 @@ function buildInvestorFit(input = {}) {
       : ["当前标的与用户成长科技方向的直接匹配度不高，更多作为分散观察或基本面研究对象。"],
     riskReminders: [
       `用户当前试水资金${profile.trialCapital ?? "5000元"}，单一标的不宜过度集中。`,
-      `用户偏${profile.style ?? "成长科技方向"}，需防范题材波动和估值回撤。`,
+      `用户偏${profile.style ?? "成长科技方向"}，风险偏好${profile.riskPreference ?? "平衡"}，需防范题材波动和估值回撤。`,
+      `用户持仓周期${profile.holdingPeriod ?? "波段观察"}，短线结论必须等待价格和成交确认。`,
       "如果行情、新闻或公告数据不完整，需要降低本次判断权重。",
     ],
     positionReference: score >= 75 ? "低仓位观察，等待数据和趋势继续确认" : score >= 55 ? "保持观察仓位，不因单日波动提高暴露" : "暂不增加仓位，优先等待更明确的匹配信号",
@@ -1288,12 +1299,13 @@ function inferThemeMatch(text, theme) {
   const groups = {
     "AI基础设施": /AI|人工智能|算力|服务器|光模块|通信|芯片|电力/,
     "芯片": /芯片|半导体|集成电路|科创半导体/,
+    "新能源": /新能源|电池|储能|光伏|风电|电力设备/,
     "电力": /电力|电网|能源|储能/,
     "储能": /储能|电池|新能源|电力设备/,
     "资源": /资源|煤炭|有色|石油|化工|玻纤|玻璃/,
     "国产替代": /国产|替代|半导体|光刻机|芯片|信创/,
     "光模块": /光模块|光通信|通信|CPO/,
-    "光刻机": /光刻机|半导体设备|芯片设备/,
+    "光刻机": /光刻机|半导体设备|国产替代|芯片/,
   };
   return groups[target]?.test(source) ?? source.includes(target);
 }
@@ -1403,10 +1415,37 @@ function applyQualityGate(decision = {}, stock = {}) {
   return decision;
 }
 
+function buildCurrentStateText(stock = {}, decision = {}) {
+  if (shouldBlockJudgement(stock)) return "数据质量不足，当前只展示已返回字段，不生成可靠判断。";
+  const quote = [
+    `当前价${stock.price ?? "未返回"}`,
+    `涨跌幅${stock.changePercent ?? "未返回"}`,
+    `成交额${stock.amount ?? "未返回"}`,
+    `行业${stock.industry ?? "行业数据暂缺"}`,
+  ].join("，");
+  return `${quote}；AI当前判断为${normalizeAiConclusion(decision.rating, decision.score)}。`;
+}
+
+function normalizeAiConclusion(rating, score) {
+  const text = String(rating ?? "");
+  if (/风险|回避|暂不/.test(text)) return "风险较高";
+  if (/等待|机会/.test(text)) return "等待";
+  if (/谨慎|观察|中性/.test(text)) return "谨慎观察";
+  const numeric = Number(score);
+  if (Number.isFinite(numeric)) {
+    if (numeric >= 75) return "关注";
+    if (numeric >= 55) return "谨慎观察";
+    if (numeric >= 40) return "等待";
+    return "风险较高";
+  }
+  if (/关注/.test(text)) return "关注";
+  return "谨慎观察";
+}
+
 function buildOverallJudgement(decision = {}, stock = {}) {
   if (shouldBlockJudgement(stock)) return "数据不足，无法生成可靠判断；当前只展示真实返回的数据。";
   if ((stock.securityType ?? stock.securityProfile?.securityType) === "newStock") return "新股历史数据不足，暂不生成技术评分和价格区间，仅作风险观察。";
-  return `当前AI判断：${decision.rating}；${typeof decision.score === "number" ? `综合评分${decision.score}/100仅作辅助，` : `${decision.score ?? "不评分"}，`}策略为${decision.action}。`;
+  return `AI结论：${normalizeAiConclusion(decision.rating, decision.score)}；${typeof decision.score === "number" ? `综合评分${decision.score}/100仅作辅助，` : `${decision.score ?? "不评分"}，`}操作思路只作为观察框架。`;
 }
 
 function buildStockAnalysisText(stock = {}, decision = {}) {
@@ -1639,6 +1678,8 @@ function buildCompactInputSummary(input = {}) {
       capitalSize: input.investmentProfile?.capitalSize,
       trialCapital: input.investmentProfile?.trialCapital,
       style: input.investmentProfile?.style,
+      riskPreference: input.investmentProfile?.riskPreference,
+      holdingPeriod: input.investmentProfile?.holdingPeriod,
       riskData: input.riskData ?? input.risks ?? [],
     },
   };

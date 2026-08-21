@@ -1,4 +1,4 @@
-import { metricCard, opportunityCard, riskCard } from "../components/cards.js";
+import { metricCard } from "../components/cards.js";
 import { getDashboardData, refreshWorkbenchData } from "../services/mockService.js";
 
 export async function renderDashboard() {
@@ -7,31 +7,22 @@ export async function renderDashboard() {
     marketOverview,
     marketSentiment,
     hotSectors,
-    opportunities,
     news,
     importantNews,
-    riskAlerts,
     watchlist,
     aiSummary,
-    aiStatus,
-    taskStatus,
     riskSignals,
     refreshStatus,
     portfolioSummary,
     userDataOverview,
     stockReviewSummary,
-    opportunitySource,
-    opportunityStatus,
-    opportunityLoadingMessage,
     updatedAt,
     source,
   } = await getDashboardData();
-  const activeWatch = watchlist.filter((stock) => stock.alerts?.length > 0).slice(0, 3);
   const decision = aiSummary.investmentDecision ?? {};
   const rankedSectors = rankSectors(hotSectors).slice(0, 12);
   const marketStats = buildMarketStats(marketOverview, marketSentiment);
   const marketNews = mergeMarketNews(importantNews, news).slice(0, 8);
-  const marketOpportunities = buildMarketOpportunities(rankedSectors, marketNews).slice(0, 4);
   const specificRisks = buildSpecificRisks(rankedSectors, marketNews, marketStats, riskSignals).slice(0, 5);
 
   return `
@@ -55,14 +46,15 @@ export async function renderDashboard() {
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>今日机会</h2><span>${opportunityStatus ?? "实时机会池"} · 优先展示可验证标的</span></div>
-        <div class="card-grid">${opportunities.slice(0, 3).map(opportunityCard).join("") || marketOpportunities.map(marketOpportunityCard).join("") || opportunityLoadingCard(opportunityStatus, opportunitySource)}</div>
+        <div class="section-head"><h2>今日重点方向</h2><span>来自全市场热点板块，首页只保留摘要</span></div>
+        <div class="card-grid">${rankedSectors.slice(0, 7).map(compactSectorSummaryCard).join("") || missingSectorCard(source)}</div>
+        <p class="form-message">完整机会池和深度筛选请进入“AI研究机会”或“AI研究团队”。</p>
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>持仓风险</h2><span>投资组合和风险集中度</span></div>
-        <div class="detail-grid compact">
-          ${renderPortfolioRiskSummary(portfolioSummary)}
+        <div class="section-head"><h2>风险提醒</h2><span>只展示今天最需要避开的对象</span></div>
+        <div class="card-grid">
+          ${specificRisks.slice(0, 4).map(specificRiskCard).join("") || `<article class="data-card"><strong>风险数据不足</strong><p>当前缺少可验证的板块、新闻或资金风险，不输出空泛风险结论。</p></article>`}
         </div>
       </section>
 
@@ -81,157 +73,19 @@ export async function renderDashboard() {
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>新闻影响</h2><span>市场、行业、公司公告综合解读</span></div>
-        <div class="card-grid">${marketNews.slice(0, 4).map(newsInsightCard).join("") || missingNewsCard(refreshStatus.updatedAt)}</div>
+        <div class="section-head"><h2>新闻影响</h2><span>这里只放摘要，完整日报在“AI日报”查看</span></div>
+        <div class="card-grid">${marketNews.slice(0, 4).map(newsSummaryCard).join("") || missingNewsCard(refreshStatus.updatedAt)}</div>
       </section>
 
       <section class="wide-section">
-        <div class="section-head"><h2>用户数据管理</h2><span>兼容当前登录体系，本地/云端按已有服务同步</span></div>
+        <div class="section-head"><h2>我的数据摘要</h2><span>详细历史、复盘和报告进入对应页面</span></div>
         <div class="metrics">
           ${[
             { label: "自选股", value: `${userDataOverview?.watchlistCount ?? watchlist.length}只`, change: "观察池" },
-            { label: "投资组合", value: `${userDataOverview?.portfolioCount ?? portfolioSummary?.positions?.length ?? 0}项`, change: "真实持仓记录" },
-            { label: "股票分析历史", value: `${userDataOverview?.stockAnalysisHistoryCount ?? 0}条`, change: userDataOverview?.lastStockAnalysisAt ?? "暂无" },
-            { label: "市场判断历史", value: `${userDataOverview?.marketAnalysisHistoryCount ?? 0}条`, change: userDataOverview?.lastMarketAnalysisAt ?? "暂无" },
+            { label: "投资组合", value: `${userDataOverview?.portfolioCount ?? portfolioSummary?.positions?.length ?? 0}项`, change: "真实持仓" },
             { label: "历史日报", value: `${userDataOverview?.reportCount ?? 0}份`, change: "报告中心" },
-            { label: "复盘记录", value: `${userDataOverview?.reviewRecordCount ?? 0}条`, change: "人工复盘" },
-            { label: "股票判断复盘", value: `${stockReviewSummary?.successRate ?? 0}%`, change: `${stockReviewSummary?.success ?? 0}成/${stockReviewSummary?.failed ?? 0}败/${stockReviewSummary?.pending ?? 0}待看` },
-            { label: "偏好权重", value: (userDataOverview?.preferenceWeights ?? []).slice(0, 3).map((item) => item.industry).join("、") || "待学习", change: "自选/持仓/历史" },
+            { label: "AI复盘", value: `${stockReviewSummary?.successRate ?? 0}%`, change: `${stockReviewSummary?.success ?? 0}成/${stockReviewSummary?.failed ?? 0}败/${stockReviewSummary?.pending ?? 0}待看` },
           ].map(metricCard).join("")}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>详细：全市场热点板块</h2><span>综合涨跌幅、成交金额、资金活跃度和市场热度，TOP12</span></div>
-        <div class="card-grid">${rankedSectors.map(enhancedSectorCard).join("") || missingSectorCard(source)}</div>
-      </section>
-
-      <section class="hero-panel">
-        <div class="section-head">
-          <div>
-            <p class="eyebrow">今日市场状态</p>
-            <h2>${normalizeMarketState(strategy.state, marketSentiment.summary)} · ${marketSentiment.summary}</h2>
-          </div>
-        </div>
-        <div class="strategy-grid">
-          <div><span>当前市场</span><strong>${marketStats.state}</strong></div>
-          <div><span>赚钱效应</span><strong>${marketStats.moneyEffect}</strong></div>
-          <div><span>成交情况</span><strong>${marketStats.turnover}</strong></div>
-        </div>
-        <div class="metrics market-snapshot">
-          ${[
-            { label: "上证指数", value: marketStats.shanghai, change: marketStats.shanghaiChange },
-            { label: "深证指数", value: marketStats.shenzhen, change: marketStats.shenzhenChange },
-            { label: "创业板指", value: marketStats.chinext, change: marketStats.chinextChange },
-            { label: "上涨数量", value: marketStats.upCount, change: "市场广度" },
-            { label: "下跌数量", value: marketStats.downCount, change: marketSentiment.riskLevel ?? "风险" },
-            { label: "平盘数量", value: marketStats.flatCount, change: "中性" },
-            { label: "涨停数量", value: marketStats.limitUpCount, change: "情绪强度" },
-            { label: "跌停数量", value: marketStats.limitDownCount, change: "风险温度" },
-          ].map(metricCard).join("")}
-        </div>
-        <p class="answer"><b>AI总结：</b>${marketStateReason(strategy, marketSentiment, marketOverview)}</p>
-        <p class="ai-summary">${strategy.summary}</p>
-        <div class="driver-strip">${strategy.drivers.map((item) => `<span>${item}</span>`).join("")}</div>
-        <p class="form-message">数据更新时间：${updatedAt ?? refreshStatus.updatedAt}｜来源：${source ?? "行情服务"}｜${refreshStatus.message}</p>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>自选股变化</h2><span>价格、风险、新闻和AI观点</span></div>
-        <div class="detail-grid compact">
-          ${watchlist.slice(0, 5).map((item) => `
-            <article class="data-card">
-              <div class="card-head"><strong>${item.name}</strong><span>${item.code} · ${item.changePercent ?? "涨跌待更新"}</span></div>
-              <p><b>价格</b>${item.price ?? "数据源未返回"} · <b>AI评级</b>${item.aiRating ?? item.aiLevel ?? "观察"} · <b>风险</b>${item.riskLevel ?? item.riskTips?.[0] ?? "常规跟踪"}</p>
-              <p><b>新闻</b>${item.latestNews ?? "暂无强相关新闻，继续观察公告和行情变化。"}</p>
-              <p><b>AI观点</b>${item.aiOpinion ?? "等待AI结合行情、新闻和公告继续更新。"}</p>
-            </article>
-          `).join("") || `<article class="data-card"><strong>暂无自选股</strong><p>进入“我的关注股票”添加观察标的后，这里会显示变化。</p></article>`}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>AI投资经理</h2><span>${aiSummary.source ?? "AI/fallback"} · 只给仓位参考，不直接买卖股票</span></div>
-        <p class="answer"><b>今日市场判断：</b>${aiSummary.currentMarketJudgment ?? `${marketStatusLabel(marketStats, rankedSectors)}。${buildManagerConclusion(decision, strategy, marketStats, rankedSectors, marketNews)}`}</p>
-        <div class="detail-grid">
-          <article class="data-card"><strong>当前市场状态</strong><p>${aiSummary.marketSummary ?? buildMarketStatusDecision(marketStats, rankedSectors, marketNews)}</p></article>
-          <article class="data-card"><strong>今日主线方向</strong><p>${formatMarketMainDirections(aiSummary.mainDirections, aiSummary.hotDirections) || buildMainDirectionDecision(rankedSectors, marketNews)}</p></article>
-          <article class="data-card"><strong>风险方向</strong><p>${formatMarketRiskReminders(aiSummary.riskReminders, aiSummary.risks) || buildRiskDirectionDecision(marketStats, rankedSectors, marketNews)}</p></article>
-          <article class="data-card"><strong>操作思路</strong><p>${aiSummary.operationPlan ?? buildActionJudgment(marketStats, rankedSectors)}</p></article>
-          <article class="data-card"><strong>仓位参考</strong><p>${positionPercent(decision.positionAdvice ?? strategy.position)}。仅作为风险暴露参考，不代表直接买卖。</p></article>
-          <article class="data-card"><strong>判断依据</strong>${tagListSafe(extractBasis(aiSummary, rankedSectors, marketSentiment, marketStats, marketNews).slice(0, 8))}</article>
-          <article class="data-card"><strong>价格/风险区域</strong><p>${buildMarketPriceZones(rankedSectors, marketStats)}</p></article>
-          <article class="data-card"><strong>放弃条件</strong><p>${buildGiveUpConditions(marketStats, rankedSectors)}</p></article>
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>今日机会方向</h2><span>由全市场热点、资金活跃度和新闻催化筛选，不依赖用户关注行业</span></div>
-        <div class="card-grid">
-          ${marketOpportunities.map(marketOpportunityCard).join("") || missingOpportunityCard()}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>今日AI任务状态</h2><span>本地调度框架</span></div>
-        <div class="metrics">
-          ${[
-            { label: "行情已更新", value: refreshStatus.marketOk ? "是" : "待刷新", change: refreshStatus.marketOk ? "✓" : "待执行" },
-            { label: "新闻已获取", value: refreshStatus.newsOk ? "是" : "待刷新", change: refreshStatus.newsOk ? "✓" : "待执行" },
-            { label: "报告已生成", value: taskStatus.reportGenerated ? "是" : "待生成", change: taskStatus.lastRunAt },
-          ].map(metricCard).join("")}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>数据来源状态</h2><span>可信程度提示</span></div>
-        <div class="metrics">
-          ${[
-            { label: "行情", value: marketSourceStatus(source, marketSentiment), change: updatedAt ?? refreshStatus.updatedAt },
-            { label: "新闻", value: refreshStatus.newsOk ? "🟢 东方财富公告/快讯" : "🟡 备用新闻", change: refreshStatus.updatedAt },
-            { label: "AI", value: aiStatus?.connected ? "🟢 真实AI模型" : "🟡 fallback模式", change: aiStatus?.provider ?? aiStatus?.label ?? "AI状态" },
-          ].map(metricCard).join("")}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>具体风险提醒</h2><span>风险必须绑定板块/股票、新闻、行情和资金</span></div>
-        <div class="card-grid">
-          ${specificRisks.map(specificRiskCard).join("") || `<article class="data-card"><strong>风险数据不足</strong><p>当前缺少可验证的板块、新闻或资金风险，不输出空泛风险结论。</p></article>`}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>市场新闻AI解读</h2><span>新闻更新时间：${refreshStatus.updatedAt}</span></div>
-        <div class="card-grid">
-          ${marketNews.map(newsInsightCard).join("") || missingNewsCard(refreshStatus.updatedAt)}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>自选股提醒摘要</h2><span>行情和新闻变化</span></div>
-        <div class="card-grid">
-          ${activeWatch.map((stock) => `
-            <article class="data-card">
-              <div class="card-head"><strong>${stock.name}</strong><span>${stock.code}</span></div>
-              ${(stock.alerts ?? []).map((alert) => `<p>${alert}</p>`).join("")}
-            </article>
-          `).join("")}
-        </div>
-      </section>
-
-      <section class="wide-section">
-        <div class="section-head"><h2>AI研究机会</h2><span>${opportunityStatus ?? "正在分析市场机会"} · 仅作研究观察，不构成投资建议</span></div>
-        <p class="form-message">${opportunityLoadingMessage ?? "正在分析市场机会，优先展示前3个，完整TOP10后台继续生成。"} 来源：${opportunitySource ?? source ?? "行情服务"}</p>
-        <div class="card-grid">${opportunities.slice(0, 3).map(opportunityCard).join("") || opportunityLoadingCard(opportunityStatus, opportunitySource)}</div>
-      </section>
-
-      <section class="split-section">
-        <div class="wide-section flat">
-          <div class="section-head"><h2>风险提醒</h2><span>${strategy.risk}</span></div>
-          ${specificRisks.length
-            ? specificRisks.map((item) => riskCard(`${item.object}：${item.reason.quote}；短期影响：${item.impact.short}`)).join("")
-            : riskAlerts.map(riskCard).join("")}
         </div>
       </section>
     </div>`;
@@ -260,42 +114,6 @@ function tagListSafe(items = []) {
   return `<ul class="tag-list">${clean.map((item) => `<li>${item}</li>`).join("") || "<li>暂无</li>"}</ul>`;
 }
 
-function renderPortfolioRiskSummary(portfolio = {}) {
-  const positions = portfolio?.positions ?? [];
-  if (!positions.length) {
-    return [
-      `<article class="data-card"><strong>暂无持仓记录</strong><p>投资组合为空时，不生成持仓风险判断。</p></article>`,
-      `<article class="data-card"><strong>现金状态</strong><p>现金余额：${portfolio?.cash ?? "未记录"}。</p></article>`,
-    ].join("");
-  }
-  const concentration = portfolio.concentrationRisk ?? {};
-  const topPosition = [...positions].sort((a, b) => Number(b.marketValue ?? 0) - Number(a.marketValue ?? 0))[0];
-  return [
-    `<article class="data-card"><strong>组合风险等级</strong><p>${concentration.level ?? "中"}：${concentration.message ?? "需要结合行业占比和单票仓位观察。"}</p></article>`,
-    `<article class="data-card"><strong>最大风险来源</strong><p>${topPosition?.name ?? topPosition?.stockName ?? "持仓待更新"}，市值${formatMoney(topPosition?.marketValue)}，盈亏${formatNumber(topPosition?.pnl)}。</p></article>`,
-    `<article class="data-card"><strong>行业集中度</strong><p>${(portfolio.industryAllocation ?? []).slice(0, 3).map((item) => `${item.industry ?? item.name}:${formatPercent(item.weight ?? item.percent ?? item.ratio)}`).join("；") || "行业占比待计算"}</p></article>`,
-    `<article class="data-card"><strong>AI组合提示</strong><p>${portfolio.aiAnalysis?.summary ?? "控制单一方向暴露，不做自动交易。"}</p></article>`,
-  ].join("");
-}
-
-function formatMoney(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "未记录";
-  return `${number.toFixed(2)}元`;
-}
-
-function formatPercent(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "待更新";
-  return number <= 1 ? `${(number * 100).toFixed(1)}%` : `${number.toFixed(1)}%`;
-}
-
-function formatNumber(value) {
-  const number = Number(value);
-  if (!Number.isFinite(number)) return "未记录";
-  return `${number.toFixed(2)}元`;
-}
-
 function positionPercent(value = "") {
   if (/半仓/.test(value)) return "50%-60%";
   if (/低仓位/.test(value)) return "20%-30%";
@@ -314,16 +132,26 @@ function rankSectors(sectors = []) {
   }).sort((a, b) => b.compositeScore - a.compositeScore);
 }
 
-function enhancedSectorCard(sector) {
+function compactSectorSummaryCard(sector = {}) {
   return `
     <article class="data-card sector-card">
       <div class="card-head"><strong>${sector.name}</strong><span>${sector.changePercent ?? sector.change ?? sector.status ?? "表现待更新"}</span></div>
-      <p><b>涨跌幅</b>${sector.changePercent ?? sector.change ?? "数据源未返回"}</p>
-      <p><b>资金表现</b>${sector.flow ?? sector.amount ?? sector.turnover ?? "资金数据待更新"}</p>
-      <p><b>热度依据</b>${sector.heatBasis ?? sector.reason ?? "结合涨跌幅、成交额、资金活跃度和市场热度筛选"}</p>
-      <p><b>AI分析原因</b>${sector.aiReason ?? sector.reason ?? "数据不足时不生成确定原因，等待行情源补充。"}</p>
+      <p><b>关注原因</b>${sector.aiReason ?? sector.reason ?? "位于今日热点板块前列，需继续验证成交和资金活跃度。"}</p>
+      <p><b>资金/成交</b>${sector.flow ?? sector.amount ?? sector.turnover ?? "资金字段待更新"}</p>
       <p><b>持续性</b>${sector.sustainability ?? sectorSustainability(sector)}</p>
-      <p><b>风险</b>${sector.risk ?? "短线热度过高时需防止回落"}</p>
+      <p><b>风险</b>${sector.risk ?? "短线热度过高或成交缩量时，容易冲高回落。"}</p>
+    </article>`;
+}
+
+function newsSummaryCard(item = {}) {
+  const impact = normalizeImpact(item.impact ?? item.sentiment ?? item.direction);
+  return `
+    <article class="data-card news-insight-card">
+      <div class="card-head"><strong>${item.title ?? item.headline ?? "新闻标题待更新"}</strong><span>${impact}</span></div>
+      <p><b>来源</b>${item.source ?? "新闻源待确认"} · <b>时间</b>${item.time ?? item.date ?? "时间待更新"}</p>
+      <p><b>摘要</b>${newsImpactSummary(item, impact)}</p>
+      <p><b>影响</b>${newsAffectedSectors(item).slice(0, 3).join("、") || "影响板块待确认"}；${newsShortTermImpact(item, impact)}</p>
+      <p class="form-message">完整新闻解读请在AI日报或新闻详情中查看。</p>
     </article>`;
 }
 
@@ -487,55 +315,6 @@ function buildMarketPriceZones(sectors = [], stats = {}) {
 function buildGiveUpConditions(stats = {}, sectors = []) {
   const topNames = sectors.slice(0, 3).map((item) => item.name).join("、") || "热点方向";
   return `若${topNames}出现成交缩量、资金转弱、涨停数量下降、跌停数量上升，或相关新闻催化被证伪，则放弃追随热点，等待下一次确认。`;
-}
-
-function buildMarketOpportunities(sectors = [], news = []) {
-  return sectors.map((sector) => {
-    const relatedNews = findNewsForSector(sector, news);
-    return {
-      direction: sector.name,
-      reason: `${sector.aiReason ?? sector.reason ?? "板块位于全市场热点前列"}；资金表现：${sector.flow ?? sector.amount ?? "资金数据待更新"}`,
-      relatedStocks: relatedStocksForSector(sector.name),
-      sustainability: sector.sustainability ?? sectorSustainability(sector),
-      risk: sector.risk ?? "若成交缩量或龙头冲高回落，持续性会下降。",
-      catalyst: relatedNews?.title ? `${relatedNews.title}（${relatedNews.source ?? "新闻"}）` : "暂未匹配到强新闻催化，主要依据行情热度和资金活跃度。",
-    };
-  });
-}
-
-function marketOpportunityCard(item = {}) {
-  return `
-    <article class="data-card">
-      <div class="card-head"><strong>${item.direction}</strong><span>${item.relatedStocks.slice(0, 2).join(" / ") || "相关股票待确认"}</span></div>
-      <p><b>原因</b>${item.reason}</p>
-      <p><b>相关股票</b>${item.relatedStocks.join("、") || "数据不足"}</p>
-      <p><b>新闻催化</b>${item.catalyst}</p>
-      <p><b>持续性判断</b>${item.sustainability}</p>
-      <p><b>风险</b>${item.risk}</p>
-    </article>`;
-}
-
-function missingOpportunityCard() {
-  return `
-    <article class="data-card">
-      <div class="card-head"><strong>机会方向数据不足</strong><span>相关股票待确认</span></div>
-      <p><b>原因</b>热点板块、资金活跃度或新闻催化数据未完整返回，暂不生成市场方向判断。</p>
-      <p><b>相关股票</b>数据不足，不做关联标的推断。</p>
-      <p><b>新闻催化</b>新闻接口未返回可验证催化。</p>
-      <p><b>持续性判断</b>数据不足，等待行情和资金字段恢复后再判断。</p>
-      <p><b>风险</b>缺少真实板块和资金数据时，不能将任何方向判定为机会。</p>
-    </article>`;
-}
-
-function opportunityLoadingCard(status = "正在分析市场机会", source = "行情服务") {
-  const insufficient = String(status).includes("不足") || String(source).includes("不足") || String(source).includes("未返回");
-  return `
-    <article class="data-card">
-      <div class="card-head"><strong>${insufficient ? "机会池数据不足" : "正在分析市场机会"}</strong><span>${status ?? "分析中"}</span></div>
-      <p><b>当前状态</b>${insufficient ? "真实热点板块、行情或新闻候选不足，暂不生成假机会。" : "正在根据真实热点板块、行情、新闻和风险条件生成机会池。"}</p>
-      <p><b>数据不足原因</b>${source ?? "行情服务暂未返回完整候选。"}</p>
-      <p><b>处理方式</b>${insufficient ? "等待真实数据恢复后再展示机会。" : "优先展示前3个机会，完整TOP10会在后台继续分析。"}</p>
-    </article>`;
 }
 
 function buildSpecificRisks(sectors = [], news = [], stats = {}, riskSignals = []) {

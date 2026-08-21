@@ -696,7 +696,10 @@ function buildInvestorMatch(input = {}, score = 60) {
     score: matchScore,
     level: matchScore >= 75 ? "高" : matchScore >= 55 ? "中" : "低",
     reasons: matched.length ? matched.map((item) => `匹配用户关注方向：${item}`) : ["与用户画像暂无强匹配，需要降低结论置信度。"],
-    riskReminders: ["资金规模较小，单一标的不宜过度集中。", "成长科技方向波动较大，需要控制追高风险。"],
+    riskReminders: [
+      `资金规模${profile.capitalSize ?? "几万元"}，当前试水资金${profile.trialCapital ?? "5000元"}，单一标的不宜过度集中。`,
+      `风险偏好${profile.riskPreference ?? "平衡"}，持仓周期${profile.holdingPeriod ?? "波段"}，需要避免把短线波动当成确定趋势。`,
+    ],
     positionReference: scoreToPosition(matchScore),
   };
 }

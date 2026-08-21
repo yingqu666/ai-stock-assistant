@@ -31,15 +31,11 @@ export async function renderAiAssistant() {
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>当前上下文</h2><span>AI回答依据</span></div>
-      <div class="detail-grid">
-        <article class="data-card"><strong>市场</strong><p>${context.market.marketSentiment.summary}</p></article>
-        <article class="data-card"><strong>行业热点</strong><p>${(context.market.hotSectors ?? []).map((item) => item.name).slice(0, 4).join("、")}</p></article>
-        <article class="data-card"><strong>关注板块</strong><p>${context.profile.industries.join("、")}</p></article>
-        <article class="data-card"><strong>自选股</strong><p>${(context.watchlist ?? []).map((item) => item.name).slice(0, 5).join("、") || "暂无"}</p></article>
-        <article class="data-card"><strong>风险接受</strong><p>${context.profile.riskLevel} · ${context.profile.style} · ${context.profile.holdingPeriod}</p></article>
-        <article class="data-card"><strong>历史报告</strong><p>${context.reports.length} 份已保存报告</p></article>
-      </div>
+      <div class="section-head"><h2>回答依据摘要</h2><span>不默认展开固定分析</span></div>
+      <article class="data-card">
+        <strong>本次提问会结合</strong>
+        <p>市场：${context.market.marketSentiment.summary}；热点：${(context.market.hotSectors ?? []).map((item) => item.name).slice(0, 3).join("、") || "待更新"}；自选：${(context.watchlist ?? []).map((item) => item.name).slice(0, 3).join("、") || "暂无"}；画像：${context.profile.riskLevel}风险、${context.profile.style}风格、${context.profile.holdingPeriod}周期。</p>
+      </article>
     </section>
 
     <section class="wide-section">

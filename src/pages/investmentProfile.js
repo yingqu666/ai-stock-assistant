@@ -4,6 +4,7 @@ import {
   getInvestmentProfile,
   holdingPeriodOptions,
   industryOptions,
+  riskPreferenceOptions,
   riskOptions,
   saveInvestmentProfile,
   styleOptions,
@@ -24,7 +25,7 @@ export function renderInvestmentProfile() {
       <div class="detail-grid">
         <article class="data-card"><strong>投资画像</strong><p>${profile.preference}</p></article>
         <article class="data-card"><strong>当前试水资金</strong><p>${profile.trialCapital ?? "5000元"}</p></article>
-        <article class="data-card"><strong>风险接受</strong><p>${profile.riskLevel}</p></article>
+        <article class="data-card"><strong>风险偏好</strong><p>${profile.riskPreference ?? "平衡"} · 风险接受${profile.riskLevel}</p></article>
         <article class="data-card"><strong>当前关注板块</strong>${tagList(profile.industries)}</article>
       </div>
     </section>
@@ -54,6 +55,9 @@ export function renderInvestmentProfile() {
         <label>持仓周期
           <select name="holdingPeriod">${holdingPeriodOptions.map((item) => `<option value="${item}" ${item === profile.holdingPeriod ? "selected" : ""}>${item}</option>`).join("")}</select>
         </label>
+        <label>风险偏好
+          <select name="riskPreference">${riskPreferenceOptions.map((item) => `<option value="${item}" ${item === profile.riskPreference ? "selected" : ""}>${item}</option>`).join("")}</select>
+        </label>
         <label>风险接受
           <select name="riskLevel">${riskOptions.map((item) => `<option value="${item}" ${item === profile.riskLevel ? "selected" : ""}>${item}</option>`).join("")}</select>
         </label>
@@ -80,6 +84,7 @@ export function mountInvestmentProfile({ rerender }) {
       capitalSize: formData.get("capitalSize"),
       trialCapital: formData.get("trialCapital"),
       holdingPeriod: formData.get("holdingPeriod"),
+      riskPreference: formData.get("riskPreference"),
       riskLevel: formData.get("riskLevel"),
     });
     const message = document.querySelector("#investment-profile-message");

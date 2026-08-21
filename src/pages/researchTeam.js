@@ -27,13 +27,13 @@ export async function renderResearchTeam() {
     </section>
 
     <section class="wide-section">
-      <div class="section-head"><h2>投资经理AI最终研究报告</h2><span>只做研究观察，不输出确定买卖或保证收益</span></div>
+      <div class="section-head"><h2>投资经理AI深度研究</h2><span>聚焦筛选逻辑和风险拆解，首页只保留摘要</span></div>
       <div class="detail-grid">
-        <article class="data-card"><strong>市场环境</strong><p>${report.marketEnvironment}</p></article>
-        <article class="data-card"><strong>核心机会</strong><p>${report.coreOpportunities}</p></article>
-        <article class="data-card"><strong>重点关注</strong><p>${report.keyFocus}</p></article>
-        <article class="data-card"><strong>风险因素</strong><p>${(report.riskFactors ?? []).join("；") || "暂无明确风险信号"}</p></article>
-        <article class="data-card"><strong>观察建议</strong><p>${report.observationAdvice}</p></article>
+        <article class="data-card"><strong>行业筛选逻辑</strong><p>${report.marketEnvironment}</p></article>
+        <article class="data-card"><strong>机会筛选逻辑</strong><p>${report.coreOpportunities}</p></article>
+        <article class="data-card"><strong>股票选择原因</strong><p>${report.keyFocus}</p></article>
+        <article class="data-card"><strong>风险拆解</strong><p>${(report.riskFactors ?? []).join("；") || "暂无明确风险信号"}</p></article>
+        <article class="data-card"><strong>研究结论</strong><p>${report.observationAdvice}</p></article>
         <article class="data-card"><strong>数据依据</strong><p>${formatEvidence(report.evidence)}</p></article>
       </div>
     </section>`;

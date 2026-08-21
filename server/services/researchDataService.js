@@ -24,10 +24,11 @@ const defaultInvestorProfile = {
   capitalSize: "几万元",
   trialCapital: "5000元",
   style: "成长科技方向",
+  riskPreference: "平衡",
   riskLevel: "中",
   holdingPeriod: "波段观察",
-  focusIndustries: ["AI基础设施", "芯片", "电力", "储能", "资源", "国产替代", "光模块", "光刻机"],
-  preference: "只研究A股，当前以5000元试水，偏成长科技方向，重视AI基础设施、芯片、电力、储能、资源、国产替代、光模块、光刻机。",
+  focusIndustries: ["AI基础设施", "芯片", "新能源", "资源", "电力", "储能", "国产替代", "光模块", "光刻机"],
+  preference: "只研究A股，当前以5000元试水，风险偏好平衡，偏成长科技方向，重视AI基础设施、芯片、新能源、资源、电力、储能、国产替代、光模块、光刻机。",
 };
 
 const latestSourceStatus = {
