@@ -36,8 +36,8 @@ export async function renderDailyReport() {
           { label: "新闻已获取", value: taskStatus.newsFetched ? "是" : "待执行", change: taskStatus.newsFetched ? "完成" : "手动生成" },
           { label: "报告已生成", value: taskStatus.reportGenerated ? "是" : "待执行", change: taskStatus.lastRunAt },
           { label: "已保存报告", value: `${savedReports.length}份`, change: "历史" },
-          { label: "早盘自动任务", value: taskStatus.lastMorningRunAt ?? "尚未生成", change: taskStatus.schedulerMode ?? "本地定时" },
-          { label: "收盘自动任务", value: taskStatus.lastCloseRunAt ?? "尚未生成", change: taskStatus.lastError ? "有异常" : "等待到点" },
+          { label: "生成模式", value: "手动生成", change: "不自动消耗AI次数" },
+          { label: "最近异常", value: taskStatus.lastError ? "有" : "无", change: taskStatus.lastError || "点击按钮才调用AI" },
         ].map(metricCard).join("")}
       </div>
       <div class="detail-grid compact">

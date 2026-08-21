@@ -4,6 +4,9 @@ const defaultDeepseekModel = "deepseek-chat";
 const defaultGenericModel = "gpt-4.1-mini";
 const aiTimeoutMs = normalizeTimeout(process.env.AI_TIMEOUT_MS, 15000);
 let aiQueue = Promise.resolve();
+const aiResultCache = new Map();
+const aiRetryDelayMs = 700;
+const aiMaxAttempts = 2;
 
 const reportSchema = {
   stockBasics: {
@@ -263,6 +266,19 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
   const startedAt = Date.now();
   const configs = resolveAiConfigs();
   const config = configs[0] ?? resolveAiConfig();
+  const normalizedInput = compactAiInput(input);
+  const cacheKey = buildAiCacheKey(task, normalizedInput);
+  const cached = getCachedAiResult(cacheKey);
+  if (cached) {
+    return {
+      ...cached,
+      aiStatus: {
+        ...(cached.aiStatus ?? {}),
+        cached: true,
+        checkedAt: new Date().toISOString(),
+      },
+    };
+  }
   if (config.mode !== "api") {
     const status = buildAiStatus({
       source: "fallback",
@@ -278,16 +294,22 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
     return { ...normalizeOutput({}, fallback()), source: "fallback", aiStatus: status };
   }
 
-  return enqueueAiTask(() => runAiApiTaskSequence({ task, input: compactAiInput(input), outputSchema, fallback, startedAt, configs }));
+  return enqueueAiTask(() => runAiApiTaskSequence({ task, input: normalizedInput, outputSchema, fallback, startedAt, configs, cacheKey }));
 }
 
-async function runAiApiTaskSequence({ task, input, outputSchema, fallback, startedAt, configs }) {
+async function runAiApiTaskSequence({ task, input, outputSchema, fallback, startedAt, configs, cacheKey }) {
   const failures = [];
   for (const config of configs) {
-    try {
-      return await runAiApiTask({ task, input, outputSchema, fallback, startedAt, config, timeoutMs: Math.min(aiTimeoutMs, configs.length > 1 ? 5000 : aiTimeoutMs) });
-    } catch (error) {
-      failures.push(`${config.provider}: ${error.message}`);
+    for (let attempt = 1; attempt <= aiMaxAttempts; attempt += 1) {
+      try {
+        const result = await runAiApiTask({ task, input, outputSchema, fallback, startedAt, config, timeoutMs: Math.min(aiTimeoutMs, configs.length > 1 ? 5000 : aiTimeoutMs), attempt });
+        setCachedAiResult(cacheKey, result);
+        return result;
+      } catch (error) {
+        failures.push(`${config.provider}#${attempt}: ${error.message}`);
+        if (!shouldRetryAiError(error.message) || attempt >= aiMaxAttempts) break;
+        await wait(aiRetryDelayMs);
+      }
     }
   }
   const message = failures.join("；") || "未配置可用AI接口";
@@ -310,7 +332,7 @@ async function runAiApiTaskSequence({ task, input, outputSchema, fallback, start
   };
 }
 
-async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, config, timeoutMs }) {
+async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, config, timeoutMs, attempt = 1 }) {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);
   try {
@@ -360,7 +382,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     if (!content) throw new Error("AI返回为空");
     const source = config.provider === "deepseek" ? "deepseek" : "openai";
     const parsed = parseJsonContent(content);
-    recordAiCall({ task, model: config.model, startedAt, success: true, source, tokenUsage: json.usage ?? null });
+    recordAiCall({ task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`, model: config.model, startedAt, success: true, source, tokenUsage: json.usage ?? null });
     const normalized = normalizeOutput(parsed, fallback());
     return {
       ...normalized,
@@ -373,7 +395,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     const message = describeAiError(error, timeoutMs);
     const category = classifyAiFailure(message);
     console.warn("AI provider failed:", config.provider, message);
-    recordAiCall({ task, model: config.model, startedAt, success: false, source: config.provider, error: message, errorCategory: category, tokenUsage: null });
+    recordAiCall({ task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`, model: config.model, startedAt, success: false, source: config.provider, error: message, errorCategory: category, tokenUsage: null });
     throw new Error(message);
   } finally {
     clearTimeout(timeout);
@@ -384,6 +406,49 @@ function enqueueAiTask(taskRunner) {
   const run = aiQueue.then(taskRunner, taskRunner);
   aiQueue = run.catch(() => {});
   return run;
+}
+
+function buildAiCacheKey(task, input = {}) {
+  const stock = input.stockData ?? {};
+  const code = String(stock.code ?? "").trim();
+  if (!code || !String(task).includes("投资研究报告")) return "";
+  return `stock-report:${new Date().toISOString().slice(0, 10)}:${code}`;
+}
+
+function getCachedAiResult(key) {
+  if (!key) return null;
+  const cached = aiResultCache.get(key);
+  if (!cached) return null;
+  if (cached.date !== new Date().toISOString().slice(0, 10)) {
+    aiResultCache.delete(key);
+    return null;
+  }
+  return clonePlain(cached.result);
+}
+
+function setCachedAiResult(key, result) {
+  if (!key || !["deepseek", "openai", "ai-api"].includes(result?.source)) return;
+  aiResultCache.set(key, {
+    date: new Date().toISOString().slice(0, 10),
+    result: clonePlain(result),
+  });
+  if (aiResultCache.size > 80) {
+    const firstKey = aiResultCache.keys().next().value;
+    if (firstKey) aiResultCache.delete(firstKey);
+  }
+}
+
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value));
+}
+
+function shouldRetryAiError(message = "") {
+  const category = classifyAiFailure(message);
+  return ["timeout", "format_error", "empty_response", "network_error", "server_error"].includes(category);
+}
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
 function resolveAiConfig() {
@@ -1692,14 +1757,17 @@ function buildTechnicalView(input) {
 function parseJsonContent(content) {
   const raw = String(content ?? "");
   const candidates = [
-    raw,
-    raw.replace(/^```json\s*/i, "").replace(/^```\s*/i, "").replace(/```$/i, ""),
+    cleanJsonText(raw),
+    stripMarkdownCodeFence(raw),
+    extractBalancedJsonObject(raw),
     extractJsonObject(raw),
+    extractBalancedJsonObject(stripMarkdownCodeFence(raw)),
+    extractJsonObject(stripMarkdownCodeFence(raw)),
   ].filter(Boolean);
   const errors = [];
-  for (const candidate of candidates) {
+  for (const candidate of [...new Set(candidates)]) {
     try {
-      return JSON.parse(cleanJsonText(candidate));
+      return JSON.parse(repairCommonJsonText(candidate));
     } catch (error) {
       errors.push(error.message);
     }
@@ -1718,6 +1786,53 @@ function extractJsonObject(text) {
   const end = source.lastIndexOf("}");
   if (start < 0 || end <= start) return "";
   return source.slice(start, end + 1);
+}
+
+function extractBalancedJsonObject(text) {
+  const source = String(text ?? "");
+  let start = -1;
+  let depth = 0;
+  let inString = false;
+  let escaped = false;
+  for (let index = 0; index < source.length; index += 1) {
+    const char = source[index];
+    if (start < 0) {
+      if (char === "{") {
+        start = index;
+        depth = 1;
+      }
+      continue;
+    }
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") depth += 1;
+    if (char === "}") depth -= 1;
+    if (depth === 0) return source.slice(start, index + 1);
+  }
+  return "";
+}
+
+function stripMarkdownCodeFence(text) {
+  return String(text ?? "")
+    .trim()
+    .replace(/^```(?:json|JSON)?\s*/i, "")
+    .replace(/```$/i, "")
+    .trim();
+}
+
+function repairCommonJsonText(text) {
+  return cleanJsonText(text).replace(/,\s*([}\]])/g, "$1");
 }
 
 function cleanJsonText(text) {

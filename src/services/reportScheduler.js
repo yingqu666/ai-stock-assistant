@@ -10,33 +10,14 @@ import { getInvestmentProfile } from "./investmentProfileService.js";
 
 const schedulerStateKey = "ai-investment-report-scheduler-state-v1";
 const schedulerRunsKey = "ai-investment-report-scheduler-runs-v1";
-const scheduleConfig = [
-  {
-    id: "morning-auto",
-    name: "自动早盘日报",
-    time: "每天08:00",
-    hour: 8,
-    minute: 0,
-    windowEndHour: 11,
-    description: "生成市场日报、今日主线、风险方向和AI观察池。",
-  },
-  {
-    id: "close-auto",
-    name: "自动收盘复盘",
-    time: "每天20:00",
-    hour: 20,
-    minute: 0,
-    windowEndHour: 23,
-    description: "生成市场复盘、昨日判断验证和明日关注方向。",
-  },
-];
+const scheduleConfig = [];
 
 let lastTaskStatus = {
   marketUpdated: false,
   newsFetched: false,
   reportGenerated: false,
   lastRunAt: "尚未生成",
-  schedulerMode: "浏览器本地定时",
+  schedulerMode: "手动生成模式",
   schedulerStarted: false,
   activeTask: "",
   lastMorningRunAt: "尚未生成",
@@ -60,7 +41,8 @@ export function getTaskStatus() {
   return {
     ...lastTaskStatus,
     ...saved,
-    schedulerStarted: lastTaskStatus.schedulerStarted || saved.schedulerStarted || false,
+    schedulerStarted: false,
+    schedulerMode: "手动生成模式",
     activeTask: lastTaskStatus.activeTask || "",
     lastError: lastTaskStatus.lastError || saved.lastError || "",
   };
@@ -71,14 +53,13 @@ export async function getSavedReports() {
 }
 
 export function startReportScheduler() {
-  if (schedulerTimer) return getTaskStatus();
   lastTaskStatus = {
     ...getTaskStatus(),
-    schedulerStarted: true,
-    schedulerMode: "浏览器本地定时",
+    schedulerStarted: false,
+    schedulerMode: "手动生成模式",
+    activeTask: "",
   };
-  checkScheduledReportTasks();
-  schedulerTimer = window.setInterval(checkScheduledReportTasks, 60 * 1000);
+  saveSchedulerState(lastTaskStatus);
   return lastTaskStatus;
 }
 
@@ -173,8 +154,8 @@ export async function runReportTask(type = "manual") {
     newsFetched: true,
     reportGenerated: true,
     lastRunAt: record.generatedAt,
-    schedulerMode: "浏览器本地定时",
-    schedulerStarted: Boolean(schedulerTimer),
+    schedulerMode: "手动生成模式",
+    schedulerStarted: false,
     activeTask: "",
     lastMorningRunAt: isMorningTask(type) ? record.generatedAt : getTaskStatus().lastMorningRunAt,
     lastCloseRunAt: isCloseTask(type) ? record.generatedAt : getTaskStatus().lastCloseRunAt,
