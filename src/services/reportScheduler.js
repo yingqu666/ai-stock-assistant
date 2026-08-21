@@ -213,6 +213,7 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
   const investmentDecision = aiAnalysis?.investmentDecision ?? report.morning?.investmentDecision ?? {};
   const nextFocus = aiAnalysis?.tomorrowPlan ?? report.close?.nextFocus ?? [...hotNames, ...watchNames, "观察成交额变化", "检查自选股公告"].slice(0, 6);
   const evidence = aiAnalysis?.evidence ?? report.morning?.evidence ?? {};
+  const aiSource = normalizeAiSource(aiAnalysis);
 
   return {
     generatedAt,
@@ -257,12 +258,12 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       risks: riskTexts,
       tomorrowPlan: nextFocus,
       positionAdvice: strategy.position ?? investmentDecision.positionAdvice ?? "保持观察仓位，避免追高。",
-      sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService自选股", "riskService", aiAnalysis?.source ?? "AI分析"],
+      sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService自选股", "riskService", aiSource],
       basis: `基于指数、成交额、涨跌家数、热点行业、新闻事件、自选股和投资档案生成。行情更新时间：${marketData.updatedAt ?? generatedAt}；新闻更新时间：${newsSnapshot.updatedAt ?? generatedAt}。`,
       evidence,
       credibility: aiAnalysis?.credibility ?? report.morning?.credibility ?? {},
       quality,
-      aiStatus: ["真实AI模型", "deepseek"].includes(aiAnalysis?.source) ? "真实AI" : "fallback",
+      aiStatus: aiSource,
     },
     close: {
       date: new Date().toLocaleDateString("zh-CN"),
@@ -288,12 +289,12 @@ function normalizeDailyReport(report, { marketData, newsEvents, watchlist, risks
       watchlistChanges,
       portfolioDaily,
       positionAdvice: strategy.position ?? investmentDecision.positionAdvice ?? "控制仓位，关注风险收益比。",
-      sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService", aiAnalysis?.source ?? "aiService"],
+      sources: ["东方财富行情", newsSnapshot.source ?? "东方财富公告/快讯", "stockService", aiSource],
       basis: `基于收盘行情、新闻变化、关注股票表现和风险信号生成。行情更新时间：${marketData.updatedAt ?? generatedAt}；新闻更新时间：${newsSnapshot.updatedAt ?? generatedAt}。`,
       evidence,
       credibility: aiAnalysis?.credibility ?? report.close?.credibility ?? {},
       quality,
-      aiStatus: ["真实AI模型", "deepseek"].includes(aiAnalysis?.source) ? "真实AI" : "fallback",
+      aiStatus: aiSource,
     },
     history: report.history ?? [],
     taskType,
@@ -590,6 +591,13 @@ function scoreToRating(score) {
 function normalizeRiskTexts(risks = [], fallback = []) {
   const source = risks.length ? risks : fallback;
   return source.map((item) => typeof item === "string" ? item : item.message ?? item.title ?? "风险待跟踪").filter(Boolean).slice(0, 6);
+}
+
+function normalizeAiSource(aiAnalysis = {}) {
+  const source = aiAnalysis?.aiStatus?.source ?? aiAnalysis?.source;
+  if (source === "deepseek" || source === "DeepSeek") return "DeepSeek";
+  if (source === "openai" || source === "ai-api" || source === "OpenAI") return "OpenAI";
+  return "fallback";
 }
 
 function scoreQuality({ marketData, newsEvents, risks }) {

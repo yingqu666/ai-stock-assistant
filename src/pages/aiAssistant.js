@@ -70,7 +70,7 @@ export function mountAiAssistant() {
     const result = await askAiAssistant(question);
     lastAnswer = result;
     if (answer) answer.textContent = result.answer;
-    if (message) message.textContent = `来源：${result.source}`;
+    if (message) message.textContent = `AI来源：${result.source}`;
     if (feedbackActions) feedbackActions.style.display = "flex";
     if (feedbackMessage) feedbackMessage.textContent = "";
   }

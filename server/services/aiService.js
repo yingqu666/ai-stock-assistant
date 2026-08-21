@@ -138,6 +138,8 @@ let lastAiStatus = {
   lastCallAt: null,
   lastSuccessAt: null,
   lastFailureReason: "",
+  lastFailureCategory: "",
+  lastSource: "fallback",
   lastDurationMs: null,
   lastModel: resolveAiConfig().model,
 };
@@ -190,6 +192,7 @@ export function generateFallbackResearchReport(input, error = "") {
   const report = {
     ...normalizeOutput({}, fallbackReport(input)),
     source: "fallback",
+    aiStatus: fallbackAiStatus(error || "规则fallback"),
   };
   if (error) report.error = error;
   return report;
@@ -222,6 +225,7 @@ export async function answerInvestmentQuestion(question, input) {
     followUp: result.followUp ?? result.observationAdvice ?? result.tomorrowPlan ?? [],
     quality: scoreAiQuality(result, input),
     source: result.source ?? "fallback",
+    aiStatus: result.aiStatus ?? fallbackAiStatus(result.error ?? ""),
   };
 }
 
@@ -260,8 +264,18 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
   const configs = resolveAiConfigs();
   const config = configs[0] ?? resolveAiConfig();
   if (config.mode !== "api") {
-    recordAiCall({ task, model: config.model, startedAt, success: true, source: "fallback", tokenUsage: null });
-    return { ...normalizeOutput({}, fallback()), source: "fallback" };
+    const status = buildAiStatus({
+      source: "fallback",
+      provider: config.provider,
+      model: config.model,
+      success: true,
+      startedAt,
+      fallback: true,
+      errorCategory: "not_configured",
+      errorMessage: "未配置真实AI接口，使用规则fallback",
+    });
+    recordAiCall({ task, model: config.model, startedAt, success: true, source: "fallback", tokenUsage: null, errorCategory: status.errorCategory, error: status.errorMessage });
+    return { ...normalizeOutput({}, fallback()), source: "fallback", aiStatus: status };
   }
 
   return enqueueAiTask(() => runAiApiTaskSequence({ task, input: compactAiInput(input), outputSchema, fallback, startedAt, configs }));
@@ -277,8 +291,23 @@ async function runAiApiTaskSequence({ task, input, outputSchema, fallback, start
     }
   }
   const message = failures.join("；") || "未配置可用AI接口";
+  const category = classifyAiFailure(message);
   console.warn("AI providers failed, fallback used:", message);
-  return { ...normalizeOutput({}, fallback()), source: "fallback", error: message };
+  return {
+    ...normalizeOutput({}, fallback()),
+    source: "fallback",
+    error: message,
+    aiStatus: buildAiStatus({
+      source: "fallback",
+      provider: "fallback",
+      model: configs[0]?.model ?? "fallback",
+      success: false,
+      startedAt,
+      fallback: true,
+      errorCategory: category,
+      errorMessage: message,
+    }),
+  };
 }
 
 async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, config, timeoutMs }) {
@@ -337,12 +366,14 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
       ...normalized,
       dataSources: { ...(normalized.dataSources ?? {}), ai: source === "deepseek" ? "DeepSeek" : source },
       source,
+      aiStatus: buildAiStatus({ source, provider: config.provider, model: config.model, success: true, startedAt, fallback: false }),
       tokenUsage: json.usage ?? null,
     };
   } catch (error) {
     const message = describeAiError(error, timeoutMs);
+    const category = classifyAiFailure(message);
     console.warn("AI provider failed:", config.provider, message);
-    recordAiCall({ task, model: config.model, startedAt, success: false, source: config.provider, error: message, tokenUsage: null });
+    recordAiCall({ task, model: config.model, startedAt, success: false, source: config.provider, error: message, errorCategory: category, tokenUsage: null });
     throw new Error(message);
   } finally {
     clearTimeout(timeout);
@@ -671,6 +702,51 @@ function describeAiError(error, timeoutMs) {
   return `AI本地处理异常：${message}`;
 }
 
+function classifyAiFailure(message = "") {
+  const text = String(message);
+  if (/未配置|Key未配置|not_configured/i.test(text)) return "not_configured";
+  if (/401|API Key无效|鉴权失败|key.*invalid|unauthorized/i.test(text)) return "key_error";
+  if (/402|余额不足|付费状态|insufficient|balance/i.test(text)) return "billing_error";
+  if (/429|过于频繁|额度受限|rate.?limit/i.test(text)) return "rate_limit";
+  if (/超时|timeout|AbortError/i.test(text)) return "timeout";
+  if (/JSON解析失败|返回格式|parse/i.test(text)) return "format_error";
+  if (/AI返回为空|empty/i.test(text)) return "empty_response";
+  if (/网络连接失败|fetch failed|ECONN|ENOTFOUND|EAI_AGAIN|socket|network/i.test(text)) return "network_error";
+  if (/5\d\d|服务器错误|server/i.test(text)) return "server_error";
+  return "local_error";
+}
+
+function buildAiStatus({ source, provider, model, success, startedAt, fallback = false, errorCategory = "", errorMessage = "" }) {
+  const normalizedSource = source === "deepseek" && success ? "deepseek" : (fallback || !success ? "fallback" : source);
+  return {
+    source: normalizedSource,
+    provider: provider ?? normalizedSource,
+    model,
+    mode: normalizedSource === "deepseek" ? "真实AI" : "fallback",
+    success: Boolean(success),
+    fallback: normalizedSource !== "deepseek",
+    errorCategory,
+    errorMessage,
+    durationMs: Date.now() - startedAt,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
+function fallbackAiStatus(errorMessage = "") {
+  return {
+    source: "fallback",
+    provider: "fallback",
+    model: "规则fallback",
+    mode: "fallback",
+    success: false,
+    fallback: true,
+    errorCategory: classifyAiFailure(errorMessage || "规则fallback"),
+    errorMessage,
+    durationMs: 0,
+    checkedAt: new Date().toISOString(),
+  };
+}
+
 function trimText(value, maxLength = 500) {
   if (value === undefined || value === null) return value;
   const text = String(value);
@@ -853,6 +929,7 @@ function fallbackAnswer(question, input) {
     answer: formatStructuredAnswer({ ...report, question }),
     observationAdvice: report.tomorrowPlan,
     source: "fallback",
+    aiStatus: fallbackAiStatus("AI助手使用规则fallback"),
   };
 }
 
@@ -1652,15 +1729,17 @@ function cleanJsonText(text) {
     .replace(/[\u0000-\u001F\u007F]/g, (char) => ["\n", "\r", "\t"].includes(char) ? char : "");
 }
 
-function recordAiCall({ task, model, startedAt, success, source, error = "", tokenUsage = null }) {
+function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null }) {
   const durationMs = Date.now() - startedAt;
-  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, tokenUsage };
+  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, errorCategory, tokenUsage };
   aiCallLogs.unshift(log);
   aiCallLogs.splice(100);
   lastAiStatus = {
     lastCallAt: new Date().toISOString(),
     lastSuccessAt: success ? new Date().toISOString() : lastAiStatus.lastSuccessAt,
     lastFailureReason: success ? "" : error,
+    lastFailureCategory: success ? "" : errorCategory,
+    lastSource: success ? source : "fallback",
     lastDurationMs: durationMs,
     lastModel: model,
   };

@@ -7,8 +7,15 @@ const sinaQuoteApi = "https://hq.sinajs.cn/list=";
 const tencentQuoteApi = "https://qt.gtimg.cn/q=";
 const sinaMarketCenterApi = "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php";
 const sinaIndustryApi = "https://vip.stock.finance.sina.com.cn/q/view/newSinaHy.php";
-const requestTimeoutMs = 6500;
-const marketDataVersion = "2026-08-16-market-fallback-diagnostics";
+const requestTimeoutMs = 3200;
+const marketTaskTimeoutMs = {
+  indexes: 2600,
+  hotBoards: 2600,
+  breadth: 4600,
+};
+const marketDataVersion = "2026-08-21-market-snapshot-cache";
+let marketSnapshotCache = null;
+let marketSnapshotInFlight = null;
 import { getStockDetail } from "./stockService.js";
 
 export async function collectReportSourceData({
@@ -46,24 +53,71 @@ export async function collectReportSourceData({
 }
 
 export async function collectMarketData() {
+  const cached = getFreshMarketSnapshotCache();
+  if (cached) {
+    console.info(`[market-snapshot] cache=hit ageMs=${Date.now() - cached.cachedAt} ttlMs=${cached.ttlMs}`);
+    return {
+      ...clonePlain(cached.data),
+      cache: {
+        status: "hit",
+        ageMs: Date.now() - cached.cachedAt,
+        ttlMs: cached.ttlMs,
+      },
+    };
+  }
+  if (marketSnapshotInFlight) {
+    return marketSnapshotInFlight;
+  }
+  marketSnapshotInFlight = collectMarketDataFresh()
+    .then((data) => {
+      const ttlMs = getMarketCacheTtlMs();
+      marketSnapshotCache = {
+        cachedAt: Date.now(),
+        ttlMs,
+        data: clonePlain(data),
+      };
+      return data;
+    })
+    .finally(() => {
+      marketSnapshotInFlight = null;
+    });
+  return marketSnapshotInFlight;
+}
+
+async function collectMarketDataFresh() {
   const diagnostics = [];
+  const timings = {};
+  const totalStartedAt = Date.now();
   const [indexes, boards, breadth] = await Promise.all([
-    fetchIndexes(diagnostics).catch((error) => {
-      recordMarketFailure(diagnostics, "指数聚合", error);
-      return [];
+    timedMarketTask({
+      label: "指数",
+      diagnostics,
+      timings,
+      timeoutMs: marketTaskTimeoutMs.indexes,
+      fallback: [],
+      task: () => fetchIndexes(diagnostics),
     }),
-    fetchHotBoards(diagnostics).catch((error) => {
-      recordMarketFailure(diagnostics, "热点板块", error);
-      return [];
+    timedMarketTask({
+      label: "行业板块",
+      diagnostics,
+      timings,
+      timeoutMs: marketTaskTimeoutMs.hotBoards,
+      fallback: [],
+      task: () => fetchHotBoards(diagnostics),
     }),
-    fetchMarketBreadth(diagnostics).catch((error) => {
-      recordMarketFailure(diagnostics, "市场宽度", error);
-      return { upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回" };
+    timedMarketTask({
+      label: "市场宽度",
+      diagnostics,
+      timings,
+      timeoutMs: marketTaskTimeoutMs.breadth,
+      fallback: { upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回", source: "宽度数据缺失" },
+      task: () => fetchMarketBreadth(diagnostics),
     }),
   ]);
-  if (!indexes.length && !boards.length) {
+  timings.totalMs = Date.now() - totalStartedAt;
+  if (!indexes.length) {
     const message = diagnostics.map((item) => `${item.source}:${item.status}`).join("；") || "全部免费行情源均未返回";
-    const error = new Error(`指数和板块接口均未返回数据：${message}`);
+    const error = new Error(`指数接口未返回数据：${message}`);
     error.diagnostics = diagnostics;
     throw error;
   }
@@ -83,6 +137,11 @@ export async function collectMarketData() {
     version: marketDataVersion,
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
     diagnostics,
+    timings,
+    cache: {
+      status: "miss",
+      ttlMs: getMarketCacheTtlMs(),
+    },
     marketOverview: [
       ...indexes.map((item) => ({ label: item.name, value: formatNumber(item.price), change: formatPercent(item.changePercent) })),
       { label: "成交额", value: indexes.length ? formatAmount(turnover) : "数据缺失", change: indexes.length ? indexSource : "暂未返回" },
@@ -105,6 +164,7 @@ export async function collectMarketData() {
       moneyEffectBasis: moneyEffect.basis,
       riskLevel: averageChange >= 0 ? "中" : "偏高",
       diagnostics,
+      timings,
     },
     hotSectors: boards.slice(0, 12).map((item) => ({
       name: item.name,
@@ -129,6 +189,10 @@ export async function collectMarketData() {
       dataSource: item.source ?? "板块行情",
     })),
   };
+  console.info(
+    `[market-snapshot] cache=miss 新浪指数耗时=${timings["指数"] ?? "n/a"}ms 行业板块耗时=${timings["行业板块"] ?? "n/a"}ms 市场宽度耗时=${timings["市场宽度"] ?? "n/a"}ms 总耗时=${timings.totalMs}ms source="${[indexSource, boardSource, breadthSource].filter(Boolean).join(" + ")}"`,
+  );
+  return snapshot;
 }
 
 async function collectNewsData() {
@@ -142,6 +206,62 @@ async function collectNewsData() {
     link: item.url ?? item.shareUrl ?? "",
     dataStatus: "真实数据",
   }));
+}
+
+async function timedMarketTask({ label, diagnostics, timings, timeoutMs, fallback, task }) {
+  const startedAt = Date.now();
+  let timeoutId;
+  let timedOut = false;
+  const work = Promise.resolve().then(task);
+  work.catch(() => {});
+  const timeout = new Promise((resolve) => {
+    timeoutId = setTimeout(() => {
+      timedOut = true;
+      const error = withMarketSource(new Error(`${label}采集超时 ${timeoutMs}ms`), label, "timeout");
+      recordMarketFailure(diagnostics, label, error);
+      resolve(typeof fallback === "function" ? fallback() : fallback);
+    }, timeoutMs);
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } catch (error) {
+    recordMarketFailure(diagnostics, label, error);
+    return typeof fallback === "function" ? fallback() : fallback;
+  } finally {
+    clearTimeout(timeoutId);
+    timings[label] = Date.now() - startedAt;
+    console.info(`[market-snapshot] ${label}耗时=${timings[label]}ms${timedOut ? " timeout=true" : ""}`);
+  }
+}
+
+function getFreshMarketSnapshotCache() {
+  if (!marketSnapshotCache) return null;
+  const ageMs = Date.now() - marketSnapshotCache.cachedAt;
+  if (ageMs > marketSnapshotCache.ttlMs) return null;
+  return marketSnapshotCache;
+}
+
+function getMarketCacheTtlMs() {
+  return isChinaTradingTime() ? 60_000 : 5 * 60_000;
+}
+
+function isChinaTradingTime(date = new Date()) {
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "Asia/Shanghai",
+    weekday: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  }).formatToParts(date).map((part) => [part.type, part.value]));
+  if (["Sat", "Sun"].includes(parts.weekday)) return false;
+  const hour = Number(parts.hour === "24" ? 0 : parts.hour);
+  const minute = Number(parts.minute);
+  const current = hour * 60 + minute;
+  return current >= 9 * 60 + 15 && current <= 15 * 60 + 15;
+}
+
+function clonePlain(value) {
+  return JSON.parse(JSON.stringify(value));
 }
 
 async function fetchIndexes(diagnostics = []) {
@@ -306,35 +426,46 @@ async function fetchSinaMarketBreadth(diagnostics = []) {
   const total = toNumber(totalRaw.replace(/[^\d.]/g, ""));
   if (!total) throw withMarketSource(new Error("empty stock count"), "新浪财经宽度", "empty");
   const pageSize = 100;
-  const totalPages = Math.min(Math.ceil(total / pageSize), 70);
-  const pages = [];
-  for (let page = 1; page <= totalPages; page += 20) {
-    const chunk = Array.from({ length: Math.min(20, totalPages - page + 1) }, (_, index) => page + index);
-    const data = await Promise.all(chunk.map((pageNumber) => fetchSinaBreadthPage(pageNumber, pageSize).catch((error) => {
-      recordMarketFailure(diagnostics, `新浪财经宽度第${pageNumber}页`, error);
-      return [];
-    })));
-    pages.push(...data.flat());
+  const totalPages = Math.ceil(total / pageSize);
+  const pageLimit = Math.min(totalPages, 36);
+  const [topRows, bottomRows] = await Promise.all([
+    fetchSinaBreadthRows({ pageSize, pageLimit, asc: 0, diagnostics, label: "新浪财经宽度上涨侧" }),
+    fetchSinaBreadthRows({ pageSize, pageLimit, asc: 1, diagnostics, label: "新浪财经宽度下跌侧" }),
+  ]);
+  if (!topRows.length && !bottomRows.length) throw withMarketSource(new Error("empty breadth rows"), "新浪财经宽度", "empty");
+  const topStats = summarizeBreadthRows(topRows);
+  const bottomStats = summarizeBreadthRows(bottomRows);
+  const topCrossed = topRows.length < total && toNumber(topRows[topRows.length - 1]?.changepercent) <= 0;
+  const bottomCrossed = bottomRows.length < total && toNumber(bottomRows[bottomRows.length - 1]?.changepercent) >= 0;
+  const upCount = topCrossed ? topStats.upCount : (bottomCrossed ? Math.max(0, total - bottomStats.downCount - bottomStats.flatCount) : null);
+  const downCount = bottomCrossed ? bottomStats.downCount : (topCrossed ? Math.max(0, total - topStats.upCount - topStats.flatCount) : null);
+  const flatCount = Number.isFinite(upCount) && Number.isFinite(downCount) ? Math.max(0, total - upCount - downCount) : (topStats.flatCount || bottomStats.flatCount || null);
+  if (!Number.isFinite(upCount) || !Number.isFinite(downCount)) {
+    throw withMarketSource(new Error(`partial breadth rows top=${topRows.length} bottom=${bottomRows.length} total=${total}`), "新浪财经宽度", "partial");
   }
-  if (!pages.length) throw withMarketSource(new Error("empty breadth rows"), "新浪财经宽度", "empty");
-  const coverageRatio = pages.length / total;
-  if (coverageRatio < 0.85) {
-    throw withMarketSource(new Error(`partial breadth rows ${pages.length}/${total}`), "新浪财经宽度", "partial");
-  }
-  const result = pages.reduce((acc, item) => {
-    const change = toNumber(item.changepercent);
-    if (change > 0) acc.upCount += 1;
-    if (change < 0) acc.downCount += 1;
-    if (change === 0) acc.flatCount += 1;
-    if (change >= limitThreshold(item.symbol, "up")) acc.limitUpCount += 1;
-    if (change <= -limitThreshold(item.symbol, "down")) acc.limitDownCount += 1;
-    return acc;
-  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0, totalCount: pages.length, status: "新浪财经宽度", source: "新浪财经宽度" });
+  const result = {
+    upCount,
+    downCount,
+    flatCount,
+    limitUpCount: topStats.limitUpCount,
+    limitDownCount: bottomStats.limitDownCount,
+    totalCount: total,
+    status: "新浪财经宽度",
+    source: "新浪财经宽度",
+  };
   return result;
 }
 
-async function fetchSinaBreadthPage(page, pageSize) {
-  const url = `${sinaMarketCenterApi}/Market_Center.getHQNodeData?page=${page}&num=${pageSize}&sort=changepercent&asc=0&node=hs_a&symbol=&_s_r_a=init`;
+async function fetchSinaBreadthRows({ pageSize, pageLimit, asc, diagnostics, label }) {
+  const pageNumbers = Array.from({ length: pageLimit }, (_, index) => index + 1);
+  return (await Promise.all(pageNumbers.map((pageNumber) => fetchSinaBreadthPage(pageNumber, pageSize, asc).catch((error) => {
+    recordMarketFailure(diagnostics, `${label}第${pageNumber}页`, error);
+    return [];
+  })))).flat();
+}
+
+async function fetchSinaBreadthPage(page, pageSize, asc = 0) {
+  const url = `${sinaMarketCenterApi}/Market_Center.getHQNodeData?page=${page}&num=${pageSize}&sort=changepercent&asc=${asc}&node=hs_a&symbol=&_s_r_a=init`;
   const text = await fetchText(url, `新浪财经宽度第${page}页`, { Referer: "https://finance.sina.com.cn/" });
   try {
     const rows = JSON.parse(text);
@@ -342,6 +473,18 @@ async function fetchSinaBreadthPage(page, pageSize) {
   } catch (error) {
     throw withMarketSource(error, `新浪财经宽度第${page}页`, "parse-error");
   }
+}
+
+function summarizeBreadthRows(rows = []) {
+  return rows.reduce((acc, item) => {
+    const change = toNumber(item.changepercent);
+    if (change > 0) acc.upCount += 1;
+    if (change < 0) acc.downCount += 1;
+    if (change === 0) acc.flatCount += 1;
+    if (change >= limitThreshold(item.symbol, "up")) acc.limitUpCount += 1;
+    if (change <= -limitThreshold(item.symbol, "down")) acc.limitDownCount += 1;
+    return acc;
+  }, { upCount: 0, downCount: 0, flatCount: 0, limitUpCount: 0, limitDownCount: 0 });
 }
 
 async function fetchSinaHotBoards(diagnostics = []) {

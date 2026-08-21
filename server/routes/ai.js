@@ -22,7 +22,9 @@ aiRouter.get("/provider-status", asyncHandler(async (_req, res) => {
     version: "2026-08-12-stock-ai-chain-fix",
     mode: status.aiMode,
     lastCallAt: status.lastCallAt,
+    lastSource: status.lastSource,
     lastFailureReason: status.lastFailureReason,
+    lastFailureCategory: status.lastFailureCategory,
   });
 }));
 
@@ -47,17 +49,17 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
   });
   try {
     const report = await generateResearchReport(input);
-    const realAi = ["deepseek", "openai", "ai-api"].includes(report.source);
+    const realAi = ["deepseek", "openai", "ai-api"].includes(report.aiStatus?.source ?? report.source);
     console.info("[stock-ai-report] AI response:", {
       success: realAi,
-      source: report.source,
+      source: report.aiStatus?.source ?? report.source,
       provider: getAiRuntimeStatus().provider,
       mode: getAiRuntimeStatus().aiMode,
       rating: report.investmentDecision?.rating,
       score: report.investmentDecision?.score,
-      error: report.error ?? "",
+      error: report.aiStatus?.errorMessage ?? report.error ?? "",
     });
-    res.json({ ok: true, data: report, report });
+    res.json({ ok: true, data: report, report, aiStatus: report.aiStatus ?? { source: report.source ?? "fallback" } });
   } catch (error) {
     const fallback = generateFallbackResearchReport(input, `AI本地处理异常：${error.message}`);
     console.info("[stock-ai-report] AI response:", {
@@ -66,7 +68,7 @@ aiRouter.post("/stock-report", asyncHandler(async (req, res) => {
       mode: getAiRuntimeStatus().aiMode,
       error: error.message,
     });
-    res.json({ ok: true, data: fallback, report: fallback });
+    res.json({ ok: true, data: fallback, report: fallback, aiStatus: fallback.aiStatus ?? { source: "fallback", errorMessage: error.message } });
   }
 }));
 
@@ -83,12 +85,12 @@ aiRouter.post("/market-analysis", asyncHandler(async (req, res) => {
   try {
     const analysis = await generateMarketAnalysis(input);
     console.info("[market-ai-analysis] AI response:", {
-      source: analysis.source,
+      source: analysis.aiStatus?.source ?? analysis.source,
       provider: getAiRuntimeStatus().provider,
       mode: getAiRuntimeStatus().aiMode,
-      error: analysis.error ?? "",
+      error: analysis.aiStatus?.errorMessage ?? analysis.error ?? "",
     });
-    res.json({ ok: true, data: analysis, analysis });
+    res.json({ ok: true, data: analysis, analysis, aiStatus: analysis.aiStatus ?? { source: analysis.source ?? "fallback" } });
   } catch (error) {
     console.info("[market-ai-analysis] AI response:", {
       source: "fallback",
@@ -97,7 +99,7 @@ aiRouter.post("/market-analysis", asyncHandler(async (req, res) => {
       error: error.message,
     });
     const fallback = generateFallbackResearchReport(input, `AI市场分析异常：${error.message}`);
-    res.json({ ok: true, data: fallback, analysis: fallback });
+    res.json({ ok: true, data: fallback, analysis: fallback, aiStatus: fallback.aiStatus ?? { source: "fallback", errorMessage: error.message } });
   }
 }));
 
@@ -117,7 +119,7 @@ aiRouter.post("/report", asyncHandler(async (req, res) => {
     sourceData: input,
   });
   await saveReportPredictions(req.user.id, report);
-  res.json({ ok: true, data: saved, report });
+  res.json({ ok: true, data: saved, report, aiStatus: report.aiStatus ?? { source: report.source ?? "fallback" } });
 }));
 
 aiRouter.post("/ask", asyncHandler(async (req, res) => {
@@ -126,10 +128,23 @@ aiRouter.post("/ask", asyncHandler(async (req, res) => {
     res.status(400).json({ ok: false, message: "问题不能为空" });
     return;
   }
+  const runtime = getAiRuntimeStatus();
+  console.info("[ai-entry] request:", {
+    entry: "ask",
+    provider: runtime.provider,
+    mode: runtime.aiMode,
+    hasApiKey: runtime.hasApiKey,
+    questionLength: question.length,
+  });
   const context = await enrichQuestionContext(question, req.body?.context ?? {});
   const input = await buildUserAiInput(req.user.id, context);
   const answer = await answerInvestmentQuestion(question, input);
-  res.json({ ok: true, data: answer });
+  console.info("[ai-entry] response:", {
+    entry: "ask",
+    source: answer.aiStatus?.source ?? answer.source ?? "fallback",
+    error: answer.aiStatus?.errorMessage ?? answer.error ?? "",
+  });
+  res.json({ ok: true, data: answer, aiStatus: answer.aiStatus ?? { source: answer.source ?? "fallback" } });
 }));
 
 aiRouter.post("/feedback", asyncHandler(async (req, res) => {
@@ -142,9 +157,21 @@ aiRouter.get("/feedback", asyncHandler(async (req, res) => {
 }));
 
 aiRouter.post("/research-team", asyncHandler(async (req, res) => {
+  const runtime = getAiRuntimeStatus();
+  console.info("[ai-entry] request:", {
+    entry: "research-team",
+    provider: runtime.provider,
+    mode: runtime.aiMode,
+    hasApiKey: runtime.hasApiKey,
+  });
   const input = await buildUserAiInput(req.user.id, req.body ?? {});
   const workflow = await runResearchTeam(input);
-  res.json({ ok: true, data: workflow });
+  console.info("[ai-entry] response:", {
+    entry: "research-team",
+    source: workflow.report?.aiStatus?.source ?? workflow.report?.source ?? "fallback",
+    error: workflow.report?.aiStatus?.errorMessage ?? workflow.report?.error ?? "",
+  });
+  res.json({ ok: true, data: workflow, aiStatus: workflow.report?.aiStatus ?? { source: workflow.report?.source ?? "fallback" } });
 }));
 
 async function buildUserAiInput(userId, extra) {

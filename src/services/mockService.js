@@ -443,6 +443,7 @@ export async function getStockSearchData() {
   const qualityBlocked = stockDetail.dataQuality?.blocked
     || stockDetail.dataQuality?.canGenerateDecision === false
     || stockDetail.dataQuality?.level === "insufficient";
+  const detailAiReport = stockDetail.aiReport?.investmentDecision ? normalizeStockAiReport(stockDetail.aiReport) : null;
   const aiAnalysis = !hasBasicQuote || qualityBlocked
     ? {
       source: "\u6570\u636e\u4e0d\u8db3",
@@ -452,9 +453,9 @@ export async function getStockSearchData() {
       opportunities: [],
       basis: ["数据不足，无法生成可靠判断。"],
     }
-    : stockDetail.aiReport?.investmentDecision
-    ? { ...stockDetail.aiReport, source: ["deepseek", "ai-api"].includes(stockDetail.aiReport.source) ? "\u771f\u5b9eAI\u6a21\u578b" : stockDetail.aiReport.source ?? "\u89c4\u5219\u5206\u6790" }
-    : getAsyncStockAiAnalysis(stockDetail, aiInput);
+    : isRealAiReport(stockDetail.aiReport)
+    ? detailAiReport
+    : getAsyncStockAiAnalysis(stockDetail, aiInput, detailAiReport);
   persistStockAnalysisHistory(aiAnalysis, stockDetail, aiInput);
   const aiPrompt = buildPrompt(aiInput);
   return { stockDetail, stockDatabase, stockNews: mergedStockNews, stockEvents, aiInput, aiPrompt, aiAnalysis };
@@ -462,6 +463,7 @@ export async function getStockSearchData() {
 
 function persistStockAnalysisHistory(aiAnalysis, stockDetail, aiInput) {
   if (!aiAnalysis || aiAnalysis.source === "AI\u5206\u6790\u751f\u6210\u4e2d") return;
+  if (aiAnalysis.aiStatus?.pendingDeepSeek) return;
   saveStockAnalysisHistory(aiAnalysis, stockDetail, aiInput).catch(() => null);
 }
 
@@ -470,12 +472,22 @@ function hasUsableQuote(stock) {
   return Boolean(stock?.code && stock?.name && !missingValues.has(stock.price) && !missingValues.has(stock.changePercent));
 }
 
-function getAsyncStockAiAnalysis(stockDetail, aiInput) {
+function getAsyncStockAiAnalysis(stockDetail, aiInput, fallbackAnalysis = null) {
   const key = stockDetail.code || selectedStockQuery;
   const cached = stockAiCache.get(key);
-  if (cached?.status === "success") return cached.data;
+  if (cached?.status === "success" && (isRealAiReport(cached.data) || Date.now() - (cached.updatedAt ?? 0) < 60 * 1000)) return cached.data;
   if (cached?.status === "failed") {
-    return {
+    return fallbackAnalysis ? {
+      ...fallbackAnalysis,
+      source: `${fallbackAnalysis.source ?? "规则fallback"}（DeepSeek未成功）`,
+      aiStatus: {
+        ...(fallbackAnalysis.aiStatus ?? {}),
+        source: "fallback",
+        fallback: true,
+        errorMessage: cached.error,
+      },
+      risks: [...(fallbackAnalysis.risks ?? []), cached.error].filter(Boolean),
+    } : {
       source: "AI\u5206\u6790\u5931\u8d25",
       summary: "AI\u5206\u6790\u5931\u8d25\uff0c\u57fa\u7840\u884c\u60c5\u4ecd\u53ef\u6b63\u5e38\u67e5\u770b\u3002",
       stockAnalysis: cached.error,
@@ -496,13 +508,44 @@ function getAsyncStockAiAnalysis(stockDetail, aiInput) {
         window.dispatchEvent(new CustomEvent("stock-ai-report-ready", { detail: { code: key, success: false, error: error.message } }));
       });
   }
-  return {
+  return fallbackAnalysis ? {
+    ...fallbackAnalysis,
+    source: `${fallbackAnalysis.source ?? "规则fallback"}（DeepSeek生成中）`,
+    aiStatus: {
+      ...(fallbackAnalysis.aiStatus ?? {}),
+      source: "fallback",
+      fallback: true,
+      pendingDeepSeek: true,
+    },
+    summary: `${fallbackAnalysis.summary ?? fallbackAnalysis.conclusion ?? "已有规则分析底稿。"} DeepSeek正在后台生成，成功后会自动替换。`,
+  } : {
     source: "AI\u5206\u6790\u751f\u6210\u4e2d",
     summary: "\u57fa\u7840\u884c\u60c5\u5df2\u663e\u793a\uff0cAI\u6295\u8d44\u5224\u65ad\u6b63\u5728\u540e\u53f0\u751f\u6210\u3002",
     stockAnalysis: "AI\u7814\u7a76\u62a5\u544a\u751f\u6210\u4e2d\uff0c\u8bf7\u7a0d\u5019\u3002",
     risks: [],
     opportunities: [],
   };
+}
+
+function isRealAiReport(report = {}) {
+  const source = report.aiStatus?.source ?? report.source;
+  return ["deepseek", "ai-api", "openai"].includes(source);
+}
+
+function normalizeStockAiReport(report = {}) {
+  const source = report.aiStatus?.source ?? report.source;
+  return {
+    ...report,
+    source: aiDisplaySource(source),
+    aiStatus: report.aiStatus ?? { source: isRealAiReport(report) ? source : "fallback" },
+  };
+}
+
+function aiDisplaySource(source) {
+  if (source === "deepseek") return "DeepSeek";
+  if (source === "openai" || source === "ai-api") return "OpenAI";
+  if (source === "fallback") return "fallback";
+  return source ?? "fallback";
 }
 
 

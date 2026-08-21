@@ -21,7 +21,7 @@ export async function getResearchTeamWorkflow() {
     const result = await cloudDataApi.runResearchTeam(input);
     const cloudReport = result.data?.report;
     if (cloudReport) {
-      const normalized = normalizeReport(cloudReport, input, "\u4e91\u7aefAI/API");
+      const normalized = normalizeReport(cloudReport, input, normalizeAiSource(result.aiStatus ?? cloudReport.aiStatus ?? cloudReport));
       return { agents: buildLocalAgents(input, normalized), roles: researchRoles, report: normalized, source: normalized.source };
     }
   } catch {
@@ -99,6 +99,13 @@ function normalizeReport(report, input, source) {
     evidence: report.evidence ?? report.conclusionBasis ?? {},
     source,
   };
+}
+
+function normalizeAiSource(status = {}) {
+  const source = status.source ?? status.aiStatus?.source;
+  if (source === "deepseek") return "deepseek";
+  if (source === "openai" || source === "ai-api") return source;
+  return "fallback";
 }
 
 function asArray(value) {

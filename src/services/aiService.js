@@ -106,14 +106,16 @@ export async function generateAiAnalysis(input) {
         riskData: input.riskData,
       });
     const output = result.report ?? result.data?.content ?? result.data?.report ?? result.data;
+    const aiStatus = result.aiStatus ?? output?.aiStatus ?? result.data?.aiStatus;
     if (output?.investmentDecision || output?.marketSummary || output?.companyAnalysis) {
       console.info("[stock-ai-report] AI返回:", {
         success: true,
-        provider: output.source ?? result.data?.source ?? "unknown",
+        provider: aiStatus?.source ?? output.source ?? result.data?.source ?? "unknown",
+        aiStatus,
         rating: output.investmentDecision?.rating,
         score: output.investmentDecision?.score,
       });
-      return normalizeAiOutput(output, input, stock.code || stock.name ? aiSourceLabel(output.source ?? result.data?.source) : (output.source ?? result.data?.source ?? "fallback"));
+      return normalizeAiOutput({ ...output, aiStatus }, input, stock.code || stock.name ? aiSourceLabel(aiStatus?.source ?? output.source ?? result.data?.source) : aiSourceLabel(aiStatus?.source ?? output.source ?? result.data?.source ?? "fallback"));
     }
   } catch (error) {
     console.info("[stock-ai-report] AI返回:", { success: false, error: error.message });
@@ -125,7 +127,7 @@ export async function generateAiAnalysis(input) {
           success: true,
           provider: output.source ?? result.data?.source ?? "unknown",
         });
-        return normalizeAiOutput(output, input, aiSourceLabel(output.source ?? result.data?.source));
+        return normalizeAiOutput({ ...output, aiStatus: result.aiStatus ?? output?.aiStatus ?? result.data?.aiStatus }, input, aiSourceLabel(result.aiStatus?.source ?? output.source ?? result.data?.source));
       }
     } catch (reportError) {
       console.info("[stock-ai-report] AI备用接口返回:", { success: false, error: reportError.message });
@@ -138,6 +140,7 @@ export async function generateAiAnalysis(input) {
 function aiSourceLabel(source) {
   if (source === "deepseek") return "DeepSeek";
   if (source === "openai" || source === "ai-api") return "OpenAI";
+  if (source === "fallback") return "fallback";
   return source ?? "云端AI";
 }
 
@@ -164,11 +167,13 @@ export async function testAiConnection(config) {
 export async function answerInvestmentQuestion(question, context) {
   try {
     const result = await cloudDataApi.askAi({ question, context });
+    const aiStatus = result.aiStatus ?? result.data?.aiStatus;
     return {
       question,
       answer: formatCloudAnswer(result.data),
       raw: result.data,
-      source: ["ai-api", "deepseek"].includes(result.data?.source) ? "真实AI模型" : "规则fallback",
+      source: aiSourceLabel(aiStatus?.source ?? result.data?.source ?? "fallback"),
+      aiStatus,
       context,
     };
   } catch (error) {
@@ -362,6 +367,7 @@ function normalizeAiOutput(output, input, source) {
     credibility: output.credibility ?? fallback.credibility,
     summary: output.summary ?? output.marketSummary ?? fallback.summary,
     stockAdvice: output.stockAdvice ?? output.stockAnalysis ?? fallback.stockAdvice,
+    aiStatus: output.aiStatus ?? { source: source === "DeepSeek" ? "deepseek" : source === "规则fallback" ? "fallback" : source },
     source,
   };
 }
