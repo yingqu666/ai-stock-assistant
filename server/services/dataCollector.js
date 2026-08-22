@@ -110,7 +110,7 @@ async function collectMarketDataFresh() {
       diagnostics,
       timings,
       timeoutMs: marketTaskTimeoutMs.breadth,
-      fallback: { upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回", source: "宽度数据缺失" },
+      fallback: () => missingBreadthResult("市场宽度采集超时或未返回"),
       task: () => fetchMarketBreadth(diagnostics),
     }),
   ]);
@@ -121,19 +121,24 @@ async function collectMarketDataFresh() {
     error.diagnostics = diagnostics;
     throw error;
   }
-  const upCount = breadth.upCount;
-  const downCount = breadth.downCount;
+  const hasBreadth = hasValidBreadth(breadth);
+  const breadthFailureReason = hasBreadth ? "" : buildBreadthFailureReason(diagnostics, breadth);
+  const upCount = hasBreadth ? breadth.upCount : "暂缺";
+  const downCount = hasBreadth ? breadth.downCount : "暂缺";
+  const flatCount = hasBreadth ? breadth.flatCount : "暂缺";
+  const limitUpCount = hasBreadth ? breadth.limitUpCount : "暂缺";
+  const limitDownCount = hasBreadth ? breadth.limitDownCount : "暂缺";
   const averageChange = indexes.length ? indexes.reduce((sum, item) => sum + item.changePercent, 0) / indexes.length : 0;
   const turnover = indexes.reduce((sum, item) => sum + item.turnover, 0);
   const moneyEffect = calculateMoneyEffect(breadth, boards, turnover);
   const indexSource = sourceSummary(indexes, "指数");
   const boardSource = boards.length ? sourceSummary(boards, "板块行情") : "板块数据缺失";
-  const breadthSource = upCount || downCount ? (breadth.source ?? "东方财富宽度") : "宽度数据缺失";
+  const breadthSource = hasBreadth ? (breadth.source ?? "市场宽度") : "宽度数据暂缺";
 
-  return {
+  const snapshot = {
     source: [indexSource, boardSource, breadthSource].filter(Boolean).join(" + "),
-    status: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
-    dataStatus: indexes.length && boards.length && (upCount || downCount) ? "真实数据" : "部分真实",
+    status: indexes.length && boards.length && hasBreadth ? "真实数据" : "部分真实",
+    dataStatus: indexes.length && boards.length && hasBreadth ? "真实数据" : "部分真实",
     version: marketDataVersion,
     updatedAt: new Date().toLocaleString("zh-CN", { hour12: false }),
     diagnostics,
@@ -145,20 +150,23 @@ async function collectMarketDataFresh() {
     marketOverview: [
       ...indexes.map((item) => ({ label: item.name, value: formatNumber(item.price), change: formatPercent(item.changePercent) })),
       { label: "成交额", value: indexes.length ? formatAmount(turnover) : "数据缺失", change: indexes.length ? indexSource : "暂未返回" },
-      { label: "上涨数量", value: formatCount(upCount), change: upCount || downCount ? breadthSource : "暂未返回" },
-      { label: "下跌数量", value: formatCount(downCount), change: upCount || downCount ? breadthSource : "暂未返回" },
-      { label: "平盘数量", value: formatCount(breadth.flatCount), change: breadth.status ?? "东方财富宽度" },
-      { label: "涨停数量", value: formatCount(breadth.limitUpCount), change: "涨停统计" },
-      { label: "跌停数量", value: formatCount(breadth.limitDownCount), change: "跌停统计" },
+      { label: "上涨数量", value: formatCount(upCount), change: hasBreadth ? breadthSource : breadthFailureReason },
+      { label: "下跌数量", value: formatCount(downCount), change: hasBreadth ? breadthSource : breadthFailureReason },
+      { label: "平盘数量", value: formatCount(flatCount), change: hasBreadth ? (breadth.status ?? breadthSource) : "市场宽度暂缺" },
+      { label: "涨停数量", value: formatCount(limitUpCount), change: hasBreadth ? "涨停统计" : "市场宽度暂缺" },
+      { label: "跌停数量", value: formatCount(limitDownCount), change: hasBreadth ? "跌停统计" : "市场宽度暂缺" },
     ],
     marketSentiment: {
       summary: `三大指数平均涨跌幅 ${formatPercent(averageChange)}，成交额约 ${formatAmount(turnover)}。`,
       upCount,
       downCount,
-      flatCount: breadth.flatCount,
-      limitUpCount: breadth.limitUpCount,
-      limitDownCount: breadth.limitDownCount,
-      totalCount: breadth.totalCount,
+      flatCount,
+      limitUpCount,
+      limitDownCount,
+      totalCount: hasBreadth ? breadth.totalCount : "暂缺",
+      breadthAvailable: hasBreadth,
+      breadthStatus: hasBreadth ? "真实数据" : "暂缺",
+      breadthFailureReason,
       turnover: formatAmount(turnover),
       moneyEffect: moneyEffect.label,
       moneyEffectBasis: moneyEffect.basis,
@@ -190,7 +198,7 @@ async function collectMarketDataFresh() {
     })),
   };
   console.info(
-    `[market-snapshot] cache=miss 新浪指数耗时=${timings["指数"] ?? "n/a"}ms 行业板块耗时=${timings["行业板块"] ?? "n/a"}ms 市场宽度耗时=${timings["市场宽度"] ?? "n/a"}ms 总耗时=${timings.totalMs}ms source="${[indexSource, boardSource, breadthSource].filter(Boolean).join(" + ")}"`,
+    `[market-snapshot] cache=miss 新浪指数耗时=${timings["指数"] ?? "n/a"}ms 行业板块耗时=${timings["行业板块"] ?? "n/a"}ms 市场宽度耗时=${timings["市场宽度"] ?? "n/a"}ms 总耗时=${timings.totalMs}ms source="${[indexSource, boardSource, breadthSource].filter(Boolean).join(" + ")}" breadthAvailable=${hasBreadth} breadthReason="${breadthFailureReason}"`,
   );
   return snapshot;
 }
@@ -393,7 +401,7 @@ async function fetchMarketBreadth(diagnostics = []) {
       recordMarketFailure(diagnostics, source, error);
     }
   }
-  return { upCount: null, downCount: null, flatCount: null, limitUpCount: null, limitDownCount: null, totalCount: null, status: "宽度接口未返回", source: "宽度数据缺失" };
+  return missingBreadthResult("全部免费市场宽度源均未返回");
 }
 
 async function fetchEastmoneyMarketBreadth(diagnostics = []) {
@@ -821,6 +829,44 @@ function limitThreshold(symbol = "", direction = "up") {
   return 9.8;
 }
 
+function hasValidBreadth(breadth = {}) {
+  return isCountValue(breadth.upCount)
+    && isCountValue(breadth.downCount)
+    && Number(breadth.upCount) + Number(breadth.downCount) > 0;
+}
+
+function isCountValue(value) {
+  return value !== null && value !== undefined && value !== "" && Number.isFinite(Number(value));
+}
+
+function missingBreadthResult(message = "市场宽度暂缺") {
+  return {
+    upCount: null,
+    downCount: null,
+    flatCount: null,
+    limitUpCount: null,
+    limitDownCount: null,
+    totalCount: null,
+    status: "市场宽度暂缺",
+    source: "宽度数据暂缺",
+    message,
+  };
+}
+
+function buildBreadthFailureReason(diagnostics = [], breadth = {}) {
+  const failures = diagnostics
+    .filter((item) => String(item.source ?? "").includes("宽度") && item.status !== "attempt")
+    .slice(-6)
+    .map((item) => `${item.source}:${item.status}${item.error ? ` ${trimDiagnosticText(item.error)}` : ""}`);
+  if (failures.length) return `市场宽度暂缺：${failures.join("；")}`;
+  return breadth.message ?? breadth.status ?? "市场宽度暂缺：免费数据源暂未返回";
+}
+
+function trimDiagnosticText(value = "", maxLength = 80) {
+  const text = String(value);
+  return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
 function fallbackMarketData(error) {
   return {
     source: "fallback",
@@ -829,8 +875,14 @@ function fallbackMarketData(error) {
     marketOverview: [],
     marketSentiment: {
       summary: `真实行情采集失败：${error.message}`,
-      upCount: 0,
-      downCount: 0,
+      upCount: "暂缺",
+      downCount: "暂缺",
+      flatCount: "暂缺",
+      limitUpCount: "暂缺",
+      limitDownCount: "暂缺",
+      breadthAvailable: false,
+      breadthStatus: "暂缺",
+      breadthFailureReason: error.message,
       riskLevel: "未知",
     },
     hotSectors: [],

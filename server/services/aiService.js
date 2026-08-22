@@ -355,6 +355,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
               "如果securityType为st，必须显著提示退市、流动性、财务和交易风险，不能因短期涨幅给出积极评级。",
               "价格区间只能引用输入priceLevels，不能自行编造具体价格。",
               "可以给出明确的研究判断和评级，但禁止输出保证收益、确定买入、确定卖出等结论。",
+              "最终输出必须只包含一个合法JSON对象；不要Markdown代码块、不要前后解释文字、不要列表标题。",
               "回答必须是结构化JSON。",
             ].join("\n"),
           },
@@ -382,7 +383,16 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     if (!content) throw new Error("AI返回为空");
     const source = config.provider === "deepseek" ? "deepseek" : "openai";
     const parsed = parseJsonContent(content);
-    recordAiCall({ task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`, model: config.model, startedAt, success: true, source, tokenUsage: json.usage ?? null });
+    recordAiCall({
+      task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`,
+      model: config.model,
+      startedAt,
+      success: true,
+      source,
+      tokenUsage: json.usage ?? null,
+      responseLength: String(content).length,
+      parseSuccess: true,
+    });
     const normalized = normalizeOutput(parsed, fallback());
     return {
       ...normalized,
@@ -395,7 +405,18 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     const message = describeAiError(error, timeoutMs);
     const category = classifyAiFailure(message);
     console.warn("AI provider failed:", config.provider, message);
-    recordAiCall({ task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`, model: config.model, startedAt, success: false, source: config.provider, error: message, errorCategory: category, tokenUsage: null });
+    recordAiCall({
+      task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`,
+      model: config.model,
+      startedAt,
+      success: false,
+      source: config.provider,
+      error: message,
+      errorCategory: category,
+      tokenUsage: null,
+      responseLength: error?.responseLength ?? 0,
+      parseSuccess: error?.parseSuccess ?? false,
+    });
     throw new Error(message);
   } finally {
     clearTimeout(timeout);
@@ -771,7 +792,7 @@ function classifyAiFailure(message = "") {
   const text = String(message);
   if (/未配置|Key未配置|not_configured/i.test(text)) return "not_configured";
   if (/401|API Key无效|鉴权失败|key.*invalid|unauthorized/i.test(text)) return "key_error";
-  if (/402|余额不足|付费状态|insufficient|balance/i.test(text)) return "billing_error";
+  if (/402|余额不足|付费状态|insufficient|balance/i.test(text)) return "balance_error";
   if (/429|过于频繁|额度受限|rate.?limit/i.test(text)) return "rate_limit";
   if (/超时|timeout|AbortError/i.test(text)) return "timeout";
   if (/JSON解析失败|返回格式|parse/i.test(text)) return "format_error";
@@ -1797,13 +1818,22 @@ function buildTechnicalView(input) {
 
 function parseJsonContent(content) {
   const raw = String(content ?? "");
+  if (!raw.trim()) {
+    const error = new Error("AI响应JSON解析失败：AI返回为空");
+    error.responseLength = 0;
+    error.parseSuccess = false;
+    throw error;
+  }
+  const withoutFence = stripMarkdownCodeFence(raw);
   const candidates = [
     cleanJsonText(raw),
-    stripMarkdownCodeFence(raw),
+    withoutFence,
     extractBalancedJsonObject(raw),
     extractJsonObject(raw),
-    extractBalancedJsonObject(stripMarkdownCodeFence(raw)),
-    extractJsonObject(stripMarkdownCodeFence(raw)),
+    extractLooseJsonObject(raw),
+    extractBalancedJsonObject(withoutFence),
+    extractJsonObject(withoutFence),
+    extractLooseJsonObject(withoutFence),
   ].filter(Boolean);
   const errors = [];
   for (const candidate of [...new Set(candidates)]) {
@@ -1818,7 +1848,10 @@ function parseJsonContent(content) {
     preview: trimText(raw, 500),
     errors: errors.slice(0, 3),
   });
-  throw new Error(`AI响应JSON解析失败：${errors[0] ?? "无法解析模型返回"}`);
+  const error = new Error(`AI响应JSON解析失败：${errors[0] ?? "无法解析模型返回"}`);
+  error.responseLength = raw.length;
+  error.parseSuccess = false;
+  throw error;
 }
 
 function extractJsonObject(text) {
@@ -1827,6 +1860,15 @@ function extractJsonObject(text) {
   const end = source.lastIndexOf("}");
   if (start < 0 || end <= start) return "";
   return source.slice(start, end + 1);
+}
+
+function extractLooseJsonObject(text) {
+  const source = String(text ?? "");
+  const start = source.indexOf("{");
+  if (start < 0) return "";
+  const end = source.lastIndexOf("}");
+  if (end > start) return source.slice(start, end + 1);
+  return source.slice(start);
 }
 
 function extractBalancedJsonObject(text) {
@@ -1867,29 +1909,97 @@ function extractBalancedJsonObject(text) {
 function stripMarkdownCodeFence(text) {
   return String(text ?? "")
     .trim()
-    .replace(/^```(?:json|JSON)?\s*/i, "")
-    .replace(/```$/i, "")
+    .replace(/```(?:json|JSON|javascript|js|css)?\s*/g, "")
+    .replace(/```/g, "")
     .trim();
 }
 
 function repairCommonJsonText(text) {
-  return cleanJsonText(text).replace(/,\s*([}\]])/g, "$1");
+  const cleaned = escapeUnsafeStringNewlines(cleanJsonText(text)).replace(/,\s*([}\]])/g, "$1");
+  return closeTruncatedJson(cleaned).replace(/,\s*([}\]])/g, "$1");
 }
 
 function cleanJsonText(text) {
   return String(text ?? "")
     .trim()
-    .replace(/^```json\s*/i, "")
-    .replace(/^```\s*/i, "")
-    .replace(/```$/i, "")
+    .replace(/```(?:json|JSON|javascript|js|css)?\s*/g, "")
+    .replace(/```/g, "")
     .replace(/[\u0000-\u001F\u007F]/g, (char) => ["\n", "\r", "\t"].includes(char) ? char : "");
 }
 
-function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null }) {
+function escapeUnsafeStringNewlines(text) {
+  let result = "";
+  let inString = false;
+  let escaped = false;
+  for (const char of String(text ?? "")) {
+    if (escaped) {
+      result += char;
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      result += char;
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      result += char;
+      inString = !inString;
+      continue;
+    }
+    if (inString && char === "\n") {
+      result += "\\n";
+      continue;
+    }
+    if (inString && char === "\r") continue;
+    if (inString && char === "\t") {
+      result += "\\t";
+      continue;
+    }
+    result += char;
+  }
+  return result;
+}
+
+function closeTruncatedJson(text) {
+  let result = "";
+  const stack = [];
+  let inString = false;
+  let escaped = false;
+  for (const char of String(text ?? "")) {
+    result += char;
+    if (escaped) {
+      escaped = false;
+      continue;
+    }
+    if (char === "\\") {
+      escaped = true;
+      continue;
+    }
+    if (char === "\"") {
+      inString = !inString;
+      continue;
+    }
+    if (inString) continue;
+    if (char === "{") stack.push("}");
+    if (char === "[") stack.push("]");
+    if ((char === "}" || char === "]") && stack[stack.length - 1] === char) stack.pop();
+  }
+  if (inString) result += "\"";
+  return `${result}${stack.reverse().join("")}`;
+}
+
+function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null, responseLength = 0, parseSuccess = null }) {
   const durationMs = Date.now() - startedAt;
-  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, errorCategory, tokenUsage };
+  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, errorCategory, tokenUsage, responseLength, parseSuccess };
   aiCallLogs.unshift(log);
   aiCallLogs.splice(100);
+  const logMessage = `[ai-call] task=${task} model=${model} source=${source} success=${success} responseLength=${responseLength} parseSuccess=${parseSuccess}`;
+  if (success) {
+    console.info(logMessage);
+  } else {
+    console.warn(`${logMessage} errorCategory=${errorCategory} failureReason=${trimText(error, 220)}`);
+  }
   lastAiStatus = {
     lastCallAt: new Date().toISOString(),
     lastSuccessAt: success ? new Date().toISOString() : lastAiStatus.lastSuccessAt,
