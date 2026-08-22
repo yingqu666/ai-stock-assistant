@@ -31,14 +31,15 @@ export async function queryStock(query) {
     saveCachedStock(normalized);
     return normalized;
   } catch (detailError) {
-    errors.push("\u8be6\u60c5\u63a5\u53e3\u5931\u8d25\uff1a" + detailError.message);
+    const friendlyError = normalizeStockErrorMessage(detailError.message);
+    errors.push("\u8be6\u60c5\u63a5\u53e3\u5931\u8d25\uff1a" + friendlyError);
     addLog({
       module: "stock",
       status: "failed",
       mode: "detail-fallback",
       source: "stockService",
       message: "\u80a1\u7968\u8be6\u60c5\u63a5\u53e3\u672a\u8fd4\u56de\uff0c\u7ee7\u7eed\u5c1d\u8bd5\u65e7\u80a1\u7968\u641c\u7d22\u63a5\u53e3",
-      error: detailError.message,
+      error: friendlyError,
     });
   }
 
@@ -55,14 +56,15 @@ export async function queryStock(query) {
     saveCachedStock(normalized);
     return normalized;
   } catch (error) {
-    errors.push("\u641c\u7d22\u63a5\u53e3\u5931\u8d25\uff1a" + error.message);
+    const friendlyError = normalizeStockErrorMessage(error.message);
+    errors.push("\u641c\u7d22\u63a5\u53e3\u5931\u8d25\uff1a" + friendlyError);
     addLog({
       module: "stock",
       status: "failed",
       mode: "local-backup",
       source: "stockService",
       message: "\u771f\u5b9e\u80a1\u7968\u67e5\u8be2\u5931\u8d25\uff0c\u663e\u793a\u6570\u636e\u4e0d\u53ef\u7528",
-      error: error.message,
+      error: friendlyError,
     });
     return withUnavailableQuote(fallback, errors.join("\uff1b"));
   }
@@ -358,6 +360,7 @@ function withCachedQuote(stock = {}, message = "") {
 }
 
 function withUnavailableQuote(stock = {}, message = "") {
+  const friendlyMessage = normalizeStockErrorMessage(message);
   return {
     ...stock,
     code: stock.code ?? "",
@@ -383,10 +386,21 @@ function withUnavailableQuote(stock = {}, message = "") {
     financials: {},
     dataSource: "真实行情获取失败",
     quoteSource: "真实行情获取失败",
-    dataStatus: "数据源未返回",
-    dataMessage: message || "真实行情获取失败，请稍后重试。",
+    dataStatus: STATUS_LOCAL,
+    dataMessage: friendlyMessage || "行情数据暂缺，正在等待备用数据源",
     updatedAt: nowText(),
   };
+}
+
+function normalizeStockErrorMessage(message = "") {
+  const text = String(message || "");
+  if (/Unexpected token|<!doctype|<html|<\/html>|返回格式异常|HTML/i.test(text)) {
+    return "行情数据暂缺，正在等待备用数据源";
+  }
+  if (/行情暂缺|market_data_error|数据源未返回|Failed to fetch/i.test(text)) {
+    return "行情数据暂缺，正在等待备用数据源";
+  }
+  return text || "行情数据暂缺，正在等待备用数据源";
 }
 
 function getCachedStock(query) {
@@ -457,7 +471,7 @@ function buildQuoteTracking(stock, quote) {
 function normalizeDataStatus(status) {
   if (status === "real" || status === "真实数据") return "真实数据";
   if (status === "partial" || status === "部分真实" || status === "部分数据") return STATUS_PARTIAL;
-  if (status === "unavailable" || status === "fallback" || status === "备用数据" || status === "数据不足") return STATUS_LOCAL;
+  if (status === "unavailable" || status === "fallback" || status === "备用数据" || status === "数据不足" || status === "数据源未返回") return STATUS_LOCAL;
   return status ?? STATUS_LOCAL;
 }
 

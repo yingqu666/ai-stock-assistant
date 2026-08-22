@@ -37,13 +37,28 @@ export async function apiRequest(path, options = {}) {
     window.clearTimeout(timeout);
   }
 
-  const data = await response.json();
+  const text = await response.text();
+  let data;
+  try {
+    data = text ? JSON.parse(text) : {};
+  } catch (error) {
+    const message = isHtmlResponse(text)
+      ? "行情数据暂缺，正在等待备用数据源"
+      : `接口返回格式异常：${error.message}`;
+    writeApiLog(path, "parse-failed", message);
+    throw new Error(message);
+  }
+
   if (!response.ok) {
     const message = data.message ?? `API HTTP ${response.status}`;
     writeApiLog(path, "api-failed", message);
     throw new Error(message);
   }
   return data;
+}
+
+function isHtmlResponse(text = "") {
+  return /^\s*</.test(text) || /<\/?(html|body|pre|doctype)\b/i.test(text);
 }
 
 function writeApiLog(path, status, error) {

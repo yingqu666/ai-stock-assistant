@@ -288,6 +288,10 @@ export async function renderStockSearch() {
     <section class="wide-section">
       <div class="section-head"><h2>AI分析区域</h2><span>${aiAnalysis.source ?? "AI/fallback"}</span></div>
       <div class="detail-grid">
+        ${infoCard("AI来源", aiAnalysis.source ?? (aiAnalysis.aiStatus?.source === "deepseek" ? "DeepSeek" : "fallback"))}
+        ${infoCard("生成时间", aiAnalysis.aiStatus?.generatedAt ?? aiAnalysis.aiStatus?.checkedAt ?? stockDetail.updatedAt ?? empty)}
+        ${infoCard("可信度", `${aiAnalysis.aiCredibility?.level ?? aiAnalysis.credibility?.level ?? "中"}：${aiAnalysis.aiCredibility?.reason ?? aiAnalysis.credibility?.reason ?? "结合行情、新闻、公告和财务字段判断。"}`)}
+        ${infoCard("失败原因", aiAnalysis.failureReason ?? aiAnalysis.aiStatus?.errorMessage ?? "无")}
         ${infoCard("市场总结", aiAnalysis.summary ?? aiAnalysis.marketSummary)}
         ${infoCard("个股分析", aiAnalysis.stockAdvice ?? aiAnalysis.stockAnalysis)}
         ${infoCard("关注方向", (aiAnalysis.opportunities ?? []).join("；"))}

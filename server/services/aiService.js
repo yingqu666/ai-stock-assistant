@@ -7,6 +7,7 @@ let aiQueue = Promise.resolve();
 const aiResultCache = new Map();
 const aiRetryDelayMs = 700;
 const aiMaxAttempts = 2;
+const allowedAiConclusions = ["关注", "等待", "谨慎观察", "风险较高"];
 
 const reportSchema = {
   stockBasics: {
@@ -83,6 +84,14 @@ const reportSchema = {
     { name: "行业名称", reason: "上涨原因", catalyst: "新闻催化", sustainability: "持续性判断", risk: "风险" },
   ],
   tomorrowPlan: ["明日市场观察"],
+  currentState: "当前状态，引用价格、涨跌幅、成交额和行业",
+  attentionLogic: "关注逻辑，必须引用行情、板块、新闻或公告",
+  bullishFactors: ["看多因素，最多3条，每条带依据"],
+  bearishFactors: ["看空因素，最多3条，每条带依据"],
+  maximumRisk: "最大风险，必须具体到数据或事件",
+  shortTermObservation: "短线观察，1-5交易日",
+  midLongTermObservation: "中线观察，1-4周",
+  aiConclusion: "关注/等待/谨慎观察/风险较高",
   conclusion: "一句话结论",
   basis: ["行情、新闻、公告、财务、用户数据等依据"],
   evidence: {
@@ -285,6 +294,7 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
       responseLength: 0,
       parseSuccess: true,
       cacheHit: true,
+      ...summarizeAiTaskContext(task, normalizedInput),
     });
     return {
       ...cached,
@@ -306,7 +316,7 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
       errorCategory: "not_configured",
       errorMessage: "未配置真实AI接口，使用规则fallback",
     });
-    recordAiCall({ task, model: config.model, startedAt, success: true, source: "fallback", tokenUsage: null, errorCategory: status.errorCategory, error: status.errorMessage });
+    recordAiCall({ task, model: config.model, startedAt, success: true, source: "fallback", tokenUsage: null, errorCategory: status.errorCategory, error: status.errorMessage, ...summarizeAiTaskContext(task, normalizedInput) });
     return { ...normalizeOutput({}, fallback()), source: "fallback", aiStatus: status };
   }
 
@@ -371,14 +381,16 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
               "如果securityType为st，必须显著提示退市、流动性、财务和交易风险，不能因短期涨幅给出积极评级。",
               "价格区间只能引用输入priceLevels，不能自行编造具体价格。",
               "可以给出明确的研究判断和评级，但禁止输出保证收益、确定买入、确定卖出等结论。",
-              "最终输出必须只包含一个合法JSON对象；不要Markdown代码块、不要前后解释文字、不要列表标题。",
-              "回答必须是结构化JSON。",
+              "最终输出必须只包含一个合法JSON对象；第一个字符必须是{，最后一个字符必须是}。",
+              "不要Markdown代码块、不要前后解释文字、不要列表标题、不要注释、不要尾随逗号。",
+              "股票分析必须包含currentState、attentionLogic、bullishFactors、bearishFactors、maximumRisk、shortTermObservation、midLongTermObservation、aiConclusion。",
+              "aiConclusion只能是：关注、等待、谨慎观察、风险较高。",
             ].join("\n"),
           },
           { role: "user", content: buildPrompt({ task, input, outputSchema }) },
         ],
-        temperature: 0.2,
-        max_tokens: 1200,
+        temperature: 0.1,
+        max_tokens: 1000,
         response_format: { type: "json_object" },
       }),
     });
@@ -399,6 +411,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
     if (!content) throw new Error("AI返回为空");
     const source = config.provider === "deepseek" ? "deepseek" : "openai";
     const parsed = parseJsonContent(content);
+    const taskContext = summarizeAiTaskContext(task, input);
     recordAiCall({
       task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`,
       model: config.model,
@@ -408,6 +421,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
       tokenUsage: json.usage ?? null,
       responseLength: String(content).length,
       parseSuccess: true,
+      ...taskContext,
     });
     const normalized = normalizeOutput(parsed, fallback());
     return {
@@ -420,6 +434,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
   } catch (error) {
     const message = describeAiError(error, timeoutMs);
     const category = classifyAiFailure(message);
+    const taskContext = summarizeAiTaskContext(task, input);
     console.warn("AI provider failed:", config.provider, message);
     recordAiCall({
       task: `${task}${attempt > 1 ? ` retry#${attempt}` : ""}`,
@@ -432,6 +447,7 @@ async function runAiApiTask({ task, input, outputSchema, fallback, startedAt, co
       tokenUsage: null,
       responseLength: error?.responseLength ?? 0,
       parseSuccess: error?.parseSuccess ?? false,
+      ...taskContext,
     });
     throw new Error(message);
   } finally {
@@ -492,12 +508,15 @@ function buildAiCallMetrics() {
     todayRealCalls: realCalls.length,
     deepseekSuccess,
     fallbackCount,
+    deepseekSuccessRate: realCalls.length ? `${Math.round((deepseekSuccess / realCalls.length) * 100)}%` : "0%",
+    fallbackRate: todayLogs.length ? `${Math.round((fallbackCount / todayLogs.length) * 100)}%` : "0%",
     cacheHits: todayLogs.filter((item) => item.cacheHit).length,
     averageResponseMs: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0,
     failureReasons: summarizeFailureReasons(todayLogs),
     last10: todayLogs.slice(0, 10).map((item) => ({
       time: item.time,
-      task: simplifyAiTaskName(item.task),
+      task: item.requestType ?? simplifyAiTaskName(item.task),
+      stockCode: item.stockCode,
       source: item.source,
       success: item.success,
       cacheHit: item.cacheHit,
@@ -546,6 +565,15 @@ function simplifyAiTaskName(task = "") {
   if (text.includes("cache-hit")) return "cache";
   if (text.includes("股票") || text.includes("投资研究报告")) return "stock-report";
   return text.slice(0, 30);
+}
+
+function summarizeAiTaskContext(task = "", input = {}) {
+  const requestType = simplifyAiTaskName(task);
+  const stock = input.stockData ?? input.stockQuote ?? input.aiInputSummary?.stock ?? {};
+  return {
+    requestType,
+    stockCode: String(stock.code ?? "").trim(),
+  };
 }
 
 function clonePlain(value) {
@@ -903,7 +931,8 @@ function buildAiStatus({ source, provider, model, success, startedAt, fallback =
     errorCategory,
     errorMessage,
     durationMs: Date.now() - startedAt,
-    checkedAt: new Date().toISOString(),
+    generatedAt: nowIsoText(),
+    checkedAt: nowIsoText(),
   };
 }
 
@@ -918,7 +947,8 @@ function fallbackAiStatus(errorMessage = "") {
     errorCategory: classifyAiFailure(errorMessage || "规则fallback"),
     errorMessage,
     durationMs: 0,
-    checkedAt: new Date().toISOString(),
+    generatedAt: nowIsoText(),
+    checkedAt: nowIsoText(),
   };
 }
 
@@ -926,6 +956,10 @@ function trimText(value, maxLength = 500) {
   if (value === undefined || value === null) return value;
   const text = String(value);
   return text.length > maxLength ? `${text.slice(0, maxLength)}...` : text;
+}
+
+function nowIsoText() {
+  return new Date().toISOString();
 }
 
 function buildPrompt({ task, input, outputSchema }) {
@@ -1124,6 +1158,8 @@ function normalizeOutput(output, fallback) {
   const basis = Array.isArray(output.basis) ? output.basis : flattenEvidence(evidence);
   const riskAnalysis = output.riskAnalysis ?? fallback.riskAnalysis;
   const blocked = shouldBlockJudgement(fallback.stockData ?? fallback.stockBasics ?? fallback);
+  const aiConclusion = normalizeAiConclusion(output.aiConclusion ?? investmentDecision.rating ?? fallback.aiConclusion, investmentDecision.score);
+  const dataSources = output.dataSources ?? fallback.dataSources;
   return {
     ...fallback,
     ...output,
@@ -1147,7 +1183,8 @@ function normalizeOutput(output, fallback) {
     midLongTermObservation: output.midLongTermObservation ?? fallback.midLongTermObservation,
     overallJudgement: output.overallJudgement ?? fallback.overallJudgement,
     investorFit: output.investorFit ?? fallback.investorFit,
-    dataSources: output.dataSources ?? fallback.dataSources,
+    dataSources,
+    aiCredibility: buildAiCredibility({ dataSources, evidence, blocked }),
     investmentDecision,
     companyAnalysis: output.companyAnalysis ?? fallback.companyAnalysis,
     recentChanges: output.recentChanges ?? fallback.recentChanges,
@@ -1157,7 +1194,13 @@ function normalizeOutput(output, fallback) {
     hotDirections: Array.isArray(output.hotDirections) ? output.hotDirections : fallback.hotDirections,
     industryAnalysis: output.industryAnalysis ?? fallback.industryAnalysis,
     stockAnalysis: output.stockAnalysis ?? fallback.stockAnalysis,
-    conclusion: output.conclusion ?? fallback.conclusion ?? output.summary ?? output.marketSummary ?? fallback.marketSummary,
+    currentState: output.currentState ?? fallback.currentState,
+    attentionLogic: output.attentionLogic ?? fallback.attentionLogic,
+    bullishFactors: Array.isArray(output.bullishFactors) ? output.bullishFactors.slice(0, 3) : fallback.bullishFactors,
+    bearishFactors: Array.isArray(output.bearishFactors) ? output.bearishFactors.slice(0, 3) : fallback.bearishFactors,
+    maximumRisk: output.maximumRisk ?? fallback.maximumRisk,
+    aiConclusion,
+    conclusion: sanitizeTradingLanguage(output.conclusion ?? fallback.conclusion ?? output.summary ?? output.marketSummary ?? fallback.marketSummary),
     basis,
     evidence,
     risks: Array.isArray(output.risks) ? output.risks : flattenRiskAnalysis({ riskAnalysis, investmentDecision }),
@@ -1538,6 +1581,7 @@ function buildCurrentStateText(stock = {}, decision = {}) {
 
 function normalizeAiConclusion(rating, score) {
   const text = String(rating ?? "");
+  if (allowedAiConclusions.includes(text)) return text;
   if (/风险|回避|暂不/.test(text)) return "风险较高";
   if (/等待|机会/.test(text)) return "等待";
   if (/谨慎|观察|中性/.test(text)) return "谨慎观察";
@@ -1550,6 +1594,31 @@ function normalizeAiConclusion(rating, score) {
   }
   if (/关注/.test(text)) return "关注";
   return "谨慎观察";
+}
+
+function buildAiCredibility({ dataSources = {}, evidence = {}, blocked = false } = {}) {
+  if (blocked) {
+    return {
+      level: "低",
+      reason: "关键数据不足，仅能作为观察参考。",
+      generatedAt: nowIsoText(),
+    };
+  }
+  const sourceCount = ["quote", "announcement", "news"].filter((key) => dataSources[key] && !String(dataSources[key]).includes("未返回")).length;
+  const evidenceCount = flattenEvidence(evidence).filter((item) => item && !String(item).includes("数据源未返回")).length;
+  const level = sourceCount >= 2 && evidenceCount >= 4 ? "高" : sourceCount >= 1 || evidenceCount >= 2 ? "中" : "低";
+  return {
+    level,
+    reason: `来源覆盖${sourceCount}/3，依据${evidenceCount}条。`,
+    generatedAt: nowIsoText(),
+  };
+}
+
+function sanitizeTradingLanguage(text = "") {
+  return String(text ?? "")
+    .replace(/明确买入|买入/g, "关注")
+    .replace(/明确卖出|卖出/g, "降低风险暴露")
+    .replace(/保证上涨|保证收益|稳赚|必涨/g, "不保证收益");
 }
 
 function buildOverallJudgement(decision = {}, stock = {}) {
@@ -2004,16 +2073,29 @@ function stripMarkdownCodeFence(text) {
 }
 
 function repairCommonJsonText(text) {
-  const cleaned = escapeUnsafeStringNewlines(cleanJsonText(text)).replace(/,\s*([}\]])/g, "$1");
-  return closeTruncatedJson(cleaned).replace(/,\s*([}\]])/g, "$1");
+  const cleaned = repairDanglingJsonValue(escapeUnsafeStringNewlines(cleanJsonText(text)))
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/:\s*([}\]])/g, ":null$1");
+  return repairDanglingJsonValue(closeTruncatedJson(cleaned))
+    .replace(/,\s*([}\]])/g, "$1")
+    .replace(/:\s*([}\]])/g, ":null$1");
 }
 
 function cleanJsonText(text) {
   return String(text ?? "")
     .trim()
+    .replace(/<think>[\s\S]*?<\/think>/gi, "")
     .replace(/```(?:json|JSON|javascript|js|css)?\s*/g, "")
     .replace(/```/g, "")
     .replace(/[\u0000-\u001F\u007F]/g, (char) => ["\n", "\r", "\t"].includes(char) ? char : "");
+}
+
+function repairDanglingJsonValue(text) {
+  let output = String(text ?? "").trim();
+  if (!output) return output;
+  output = output.replace(/,\s*$/g, "");
+  if (/:\s*$/.test(output)) output += "null";
+  return output;
 }
 
 function escapeUnsafeStringNewlines(text) {
@@ -2078,12 +2160,12 @@ function closeTruncatedJson(text) {
   return `${result}${stack.reverse().join("")}`;
 }
 
-function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null, responseLength = 0, parseSuccess = null, cacheHit = false }) {
+function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null, responseLength = 0, parseSuccess = null, cacheHit = false, requestType = "", stockCode = "" }) {
   const durationMs = Date.now() - startedAt;
-  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, errorCategory, tokenUsage, responseLength, parseSuccess, cacheHit };
+  const log = { time: new Date().toISOString(), task, requestType: requestType || simplifyAiTaskName(task), stockCode, model, source, success, durationMs, error, errorCategory, tokenUsage, responseLength, parseSuccess, cacheHit };
   aiCallLogs.unshift(log);
   aiCallLogs.splice(100);
-  const logMessage = `[ai-call] task=${task} model=${model} source=${source} success=${success} cacheHit=${cacheHit} responseLength=${responseLength} parseSuccess=${parseSuccess}`;
+  const logMessage = `[ai-call] requestType=${log.requestType} stockCode=${stockCode || "-"} model=${model} source=${source} success=${success} cacheHit=${cacheHit} durationMs=${durationMs} responseLength=${responseLength} parseSuccess=${parseSuccess}`;
   if (success) {
     console.info(logMessage);
   } else {

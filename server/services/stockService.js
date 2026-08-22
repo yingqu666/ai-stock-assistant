@@ -205,10 +205,18 @@ async function getFastQuoteByCode(code, cachedDetail = null) {
       quoteSource: "\u771f\u5b9e\u884c\u60c5\u83b7\u53d6\u5931\u8d25",
       dataSource: "\u771f\u5b9e\u884c\u60c5\u83b7\u53d6\u5931\u8d25",
       dataStatus: STATUS_MOCK,
-      dataMessage: error.message,
+      dataMessage: normalizeMarketErrorMessage(error.message),
       updatedAt: nowText(),
     });
   }
+}
+
+function normalizeMarketErrorMessage(message = "") {
+  const text = String(message || "");
+  if (/fetch failed|network|timeout|超时|HTML|Unexpected token|<!doctype|<html/i.test(text)) {
+    return "行情暂缺";
+  }
+  return text || "行情暂缺";
 }
 
 async function searchEastmoney(keyword) {
@@ -225,45 +233,31 @@ async function searchEastmoney(keyword) {
 
 async function fetchQuote(stock) {
   const normalizedStock = { ...stock, quoteCode: normalizeQuoteCode(stock.quoteCode ?? stock.code) };
-  try {
-    return restoreInputCode(await withRejectTimeout(fetchEastmoneyQuote(normalizedStock), 1600, "\u4e1c\u65b9\u8d22\u5bcc\u884c\u60c5\u8d85\u65f6"), stock);
-  } catch (eastmoneyError) {
-    const [sinaResult, tencentResult] = await Promise.allSettled([
-      withRejectTimeout(fetchSinaQuote(normalizedStock), 1800, "\u65b0\u6d6a\u884c\u60c5\u8d85\u65f6"),
-      withRejectTimeout(fetchTencentQuote(normalizedStock, eastmoneyError.message), 1800, "\u817e\u8baf\u884c\u60c5\u8d85\u65f6"),
-    ]);
-    if (sinaResult.status === "fulfilled" && tencentResult.status === "fulfilled") {
-      return restoreInputCode(mergeBackupQuotes(sinaResult.value, tencentResult.value), stock);
-    }
-    if (sinaResult.status === "fulfilled") return restoreInputCode(sinaResult.value, stock);
-    if (tencentResult.status === "fulfilled") return restoreInputCode(tencentResult.value, stock);
-    return restoreInputCode(await withRejectTimeout(
-      fetchEastmoneyKlineQuote(normalizedStock, `${eastmoneyError.message}; ${sinaResult.reason?.message}; ${tencentResult.reason?.message}`),
-      1400,
-      "\u516c\u5f00\u65e5\u7ebf\u5907\u7528\u884c\u60c5\u8d85\u65f6",
-    ), stock);
-  }
-}
+  const errors = [];
 
-function mergeBackupQuotes(sina, tencent) {
-  const missing = new Set([UNKNOWN, "\u6682\u65e0", "", undefined, null]);
-  const value = (primary, secondary) => missing.has(primary) ? secondary : primary;
-  const sinaPrice = normalizeNumber(sina.price);
-  const tencentPrice = normalizeNumber(tencent.price);
-  const conflict = sinaPrice > 0 && tencentPrice > 0 && Math.abs(sinaPrice - tencentPrice) / Math.max(sinaPrice, tencentPrice) > 0.03;
-  return {
-    ...tencent,
-    ...sina,
-    turnoverRate: value(sina.turnoverRate, tencent.turnoverRate),
-    marketCap: value(sina.marketCap, tencent.marketCap),
-    pe: value(sina.pe, tencent.pe),
-    pb: value(sina.pb, tencent.pb),
-    dataSource: `${SOURCE_SINA} / ${SOURCE_TENCENT}`,
-    quoteSource: `${SOURCE_SINA} / ${SOURCE_TENCENT}`,
-    dataStatus: conflict ? STATUS_MOCK : STATUS_PARTIAL,
-    dataConflict: conflict ? `新浪/腾讯价格冲突：${sina.price} vs ${tencent.price}` : "",
-    dataMessage: conflict ? "关键行情源价格差异异常，已降低数据质量，不交给AI生成强结论。" : undefined,
-  };
+  try {
+    return restoreInputCode(await withRejectTimeout(fetchSinaQuote(normalizedStock), 1800, "\u65b0\u6d6a\u884c\u60c5\u8d85\u65f6"), stock);
+  } catch (sinaError) {
+    errors.push(`\u65b0\u6d6a\u884c\u60c5\uff1a${sinaError.message}`);
+  }
+
+  try {
+    return restoreInputCode(await withRejectTimeout(fetchTencentQuote(normalizedStock, errors.join("\uff1b")), 1800, "\u817e\u8baf\u884c\u60c5\u8d85\u65f6"), stock);
+  } catch (tencentError) {
+    errors.push(`\u817e\u8baf\u884c\u60c5\uff1a${tencentError.message}`);
+  }
+
+  try {
+    return restoreInputCode(await withRejectTimeout(fetchEastmoneyQuote(normalizedStock), 1800, "\u4e1c\u65b9\u8d22\u5bcc\u884c\u60c5\u8d85\u65f6"), stock);
+  } catch (eastmoneyError) {
+    errors.push(`\u4e1c\u65b9\u8d22\u5bcc\u884c\u60c5\uff1a${eastmoneyError.message}`);
+  }
+
+  return restoreInputCode(await withRejectTimeout(
+    fetchEastmoneyKlineQuote(normalizedStock, errors.join("\uff1b")),
+    1400,
+    "\u516c\u5f00\u65e5\u7ebf\u5907\u7528\u884c\u60c5\u8d85\u65f6",
+  ), stock);
 }
 
 async function fetchEastmoneyQuote(stock) {
