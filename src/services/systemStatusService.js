@@ -93,6 +93,9 @@ export async function getSystemStatusData() {
       message: ai.message ?? ai.lastFailureReason ?? "AI fallback可用",
       updatedAt: ai.lastCallAt ? new Date(ai.lastCallAt).toLocaleString("zh-CN", { hour12: false }) : "未调用",
       lastFailureReason: ai.lastFailureReason ?? "",
+      lastFailureCategory: ai.lastFailureCategory ?? "",
+      metrics: ai.metrics ?? {},
+      cache: ai.cache ?? {},
     },
     database: {
       mode: db.mode ?? "memory",

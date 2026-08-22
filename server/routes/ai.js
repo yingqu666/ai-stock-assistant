@@ -19,12 +19,14 @@ aiRouter.get("/provider-status", asyncHandler(async (_req, res) => {
     enabled: status.mode === "api" && status.hasApiKey,
     keyConfigured: status.hasApiKey,
     model: status.model,
-    version: "2026-08-12-stock-ai-chain-fix",
+    version: "2026-08-22-stage91-94-ai-workflow",
     mode: status.aiMode,
     lastCallAt: status.lastCallAt,
     lastSource: status.lastSource,
     lastFailureReason: status.lastFailureReason,
     lastFailureCategory: status.lastFailureCategory,
+    metrics: status.metrics,
+    cache: status.cache,
   });
 }));
 

@@ -24,6 +24,9 @@ export async function renderDashboard() {
   const marketStats = buildMarketStats(marketOverview, marketSentiment);
   const marketNews = mergeMarketNews(importantNews, news).slice(0, 8);
   const specificRisks = buildSpecificRisks(rankedSectors, marketNews, marketStats, riskSignals).slice(0, 5);
+  const dataHealth = buildDashboardDataHealth({ source, marketSentiment, hotSectors: rankedSectors, news: marketNews, refreshStatus, aiSummary });
+  const strategyAdvice = buildStrategyAdvice({ marketStats, rankedSectors, marketNews, decision, strategy });
+  const stockPlans = buildStockObservationPlans(watchlist).slice(0, 3);
 
   return `
     <div class="dashboard-grid">
@@ -42,7 +45,32 @@ export async function renderDashboard() {
         </div>
         <p class="answer"><b>AI核心结论：</b>${aiSummary.marketSummary ?? buildMarketStatusDecision(marketStats, rankedSectors, marketNews)}</p>
         <p class="ai-summary"><b>判断依据：</b>${extractBasis(aiSummary, rankedSectors, marketSentiment, marketStats, marketNews).slice(0, 5).join("；")}</p>
+        <div class="data-health-strip">
+          ${dataHealth.map((item) => `<span><b>${item.label}</b>${item.value}<small>${item.detail}</small></span>`).join("")}
+        </div>
         <p id="refresh-message" class="form-message">数据更新时间：${updatedAt ?? refreshStatus.updatedAt}｜来源：${source ?? "行情服务"}｜${refreshStatus.message}</p>
+      </section>
+
+      <section class="wide-section compact-workflow">
+        <div class="section-head"><h2>今日操作思路</h2><span>只做仓位和观察计划，不输出确定买卖</span></div>
+        <div class="detail-grid">
+          <article class="data-card">
+            <div class="card-head"><strong>策略建议卡</strong><span>${strategyAdvice.position}</span></div>
+            <p><b>市场宽度</b>${strategyAdvice.breadth}</p>
+            <p><b>热点</b>${strategyAdvice.hotspot}</p>
+            <p><b>风险</b>${strategyAdvice.risk}</p>
+            <p><b>执行思路</b>${strategyAdvice.action}</p>
+          </article>
+          ${stockPlans.map((plan) => `
+            <article class="data-card">
+              <div class="card-head"><strong>${plan.name}</strong><span>${plan.code}</span></div>
+              <p><b>当前</b>${plan.state}</p>
+              <p><b>关注区间</b>${plan.watchZone}</p>
+              <p><b>失效条件</b>${plan.invalidate}</p>
+              <p><b>观察周期</b>${plan.period}</p>
+            </article>
+          `).join("") || `<article class="data-card"><strong>股票观察计划</strong><p>添加自选股后，这里会显示关注区间、失效条件和观察周期。</p></article>`}
+        </div>
       </section>
 
       <section class="wide-section">
@@ -120,6 +148,70 @@ function positionPercent(value = "") {
   if (/降低/.test(value)) return "0%-20%";
   if (/%/.test(value)) return value;
   return "30%-50%";
+}
+
+function buildDashboardDataHealth({ source = "", marketSentiment = {}, hotSectors = [], news = [], refreshStatus = {}, aiSummary = {} }) {
+  const marketStatus = marketSentiment.breadthAvailable === false
+    ? "部分完整"
+    : /数据不足|缺失|暂缺/.test(`${source}${marketSentiment.breadthStatus ?? ""}`)
+      ? "部分完整"
+      : "正常";
+  const newsStatus = news.length ? "正常" : "暂缺";
+  const aiSource = aiSummary.aiStatus?.source ?? aiSummary.source ?? aiSummary.dataSources?.ai ?? "fallback";
+  return [
+    {
+      label: "行情",
+      value: marketStatus,
+      detail: `${source || "行情来源待更新"} · ${marketSentiment.breadthFailureReason || marketSentiment.moneyEffectBasis || "宽度/成交正常读取"}`,
+    },
+    {
+      label: "新闻",
+      value: newsStatus,
+      detail: news.length ? `${news.length}条市场/行业新闻` : "新闻接口本次未返回",
+    },
+    {
+      label: "AI",
+      value: String(aiSource).toLowerCase().includes("deepseek") ? "DeepSeek" : "fallback",
+      detail: aiSummary.aiStatus?.errorMessage || aiSummary.failureReason || "AI结论来自当前市场输入",
+    },
+    {
+      label: "更新时间",
+      value: refreshStatus.updatedAt ?? "待更新",
+      detail: refreshStatus.message ?? "手动刷新可更新行情和新闻",
+    },
+  ];
+}
+
+function buildStrategyAdvice({ marketStats = {}, rankedSectors = [], marketNews = [], decision = {}, strategy = {} }) {
+  const state = marketStatusLabel(marketStats, rankedSectors);
+  const top = rankedSectors[0];
+  const risk = buildRiskDirectionDecision(marketStats, rankedSectors, marketNews);
+  const position = positionPercent(decision.positionAdvice ?? strategy.position);
+  return {
+    position: `${state} · ${position}`,
+    breadth: `上涨${marketStats.upCount}家，下跌${marketStats.downCount}家，赚钱效应${marketStats.moneyEffect}`,
+    hotspot: top ? `${top.name}：${top.flow ?? top.amount ?? "资金待确认"}，持续性${top.sustainability ?? sectorSustainability(top)}` : "热点板块数据不足，先等待确认",
+    risk,
+    action: buildActionJudgment(marketStats, rankedSectors),
+  };
+}
+
+function buildStockObservationPlans(watchlist = []) {
+  return watchlist.map((stock) => {
+    const price = parseNumber(stock.price);
+    const change = parseNumber(stock.changePercent);
+    const lower = price ? (price * 0.97).toFixed(2) : "待确认";
+    const upper = price ? (price * 1.02).toFixed(2) : "待确认";
+    const risk = price ? (price * 0.93).toFixed(2) : "待确认";
+    return {
+      name: stock.name ?? stock.code ?? "自选标的",
+      code: stock.code ?? "",
+      state: stock.aiOpinion ?? (change > 2 ? "可以观察，等待回落确认" : change < -2 ? "谨慎观察，先看止跌" : "观察，等待量价确认"),
+      watchZone: price ? `${lower}-${upper}` : "价格数据暂缺",
+      invalidate: price ? `跌破${risk}且成交额放大，或相关新闻/公告转弱` : "行情未返回时不生成精确价格",
+      period: "1-4周，短线先看1-5个交易日量价变化",
+    };
+  });
 }
 
 function rankSectors(sectors = []) {
@@ -517,7 +609,7 @@ function flattenEvidence(value) {
 }
 
 function parseNumber(value) {
-  const match = String(value ?? "").replace("+", "").match(/-?\d+(?:\.\d+)?/);
+  const match = String(value ?? "").replace(/[+,]/g, "").match(/-?\d+(?:\.\d+)?/);
   return match ? Number(match[0]) : 0;
 }
 

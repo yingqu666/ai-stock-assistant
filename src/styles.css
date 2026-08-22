@@ -269,6 +269,38 @@ h3 {
   font-size: 13px;
 }
 
+.data-health-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-top: 14px;
+}
+
+.data-health-strip span {
+  min-width: 0;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: rgba(255, 255, 255, 0.78);
+  padding: 9px 10px;
+  color: #344054;
+  font-size: 13px;
+}
+
+.data-health-strip b,
+.data-health-strip small {
+  display: block;
+}
+
+.data-health-strip small {
+  margin-top: 4px;
+  color: var(--muted);
+  overflow-wrap: anywhere;
+}
+
+.compact-workflow .data-card p {
+  margin: 8px 0;
+}
+
 .section-head,
 .card-head,
 .stock-search {
@@ -858,6 +890,7 @@ h3 {
   }
 
   .strategy-grid,
+  .data-health-strip,
   .metrics,
   .card-grid,
   .detail-grid,
@@ -944,6 +977,38 @@ h3 {
   .driver-strip {
     display: grid;
     grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .hero-panel .section-head {
+    margin-bottom: 8px;
+  }
+
+  .hero-panel .strategy-grid,
+  .hero-panel .data-health-strip {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+  }
+
+  .hero-panel .strategy-grid div,
+  .hero-panel .data-health-strip span {
+    padding: 8px;
+  }
+
+  .hero-panel .strategy-grid span,
+  .hero-panel .data-health-strip small {
+    font-size: 11px;
+  }
+
+  .hero-panel .strategy-grid strong {
+    margin-top: 4px;
+    font-size: 16px;
+    line-height: 1.2;
+  }
+
+  .hero-panel .answer,
+  .hero-panel .ai-summary {
+    margin-top: 8px;
+    line-height: 1.55;
   }
 
   .nav {

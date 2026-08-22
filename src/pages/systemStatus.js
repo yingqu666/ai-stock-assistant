@@ -50,6 +50,27 @@ export async function renderSystemStatus() {
     </section>
 
     <section class="wide-section">
+      <div class="section-head"><h2>AI调用状态中心</h2><span>今日DeepSeek稳定性、fallback和缓存情况</span></div>
+      <div class="metrics">
+        ${[
+          { label: "今日AI调用", value: `${status.ai.metrics?.todayTotal ?? 0}次`, change: `真实请求${status.ai.metrics?.todayRealCalls ?? 0}次` },
+          { label: "DeepSeek成功", value: `${status.ai.metrics?.deepseekSuccess ?? 0}次`, change: `缓存命中${status.ai.metrics?.cacheHits ?? 0}次` },
+          { label: "fallback", value: `${status.ai.metrics?.fallbackCount ?? 0}次`, change: formatFailureReasons(status.ai.metrics?.failureReasons) },
+          { label: "平均响应", value: `${status.ai.metrics?.averageResponseMs ?? 0}ms`, change: `缓存${status.ai.cache?.size ?? 0}条` },
+        ].map(metricCard).join("")}
+      </div>
+      <div class="detail-grid">
+        ${(status.ai.metrics?.last10 ?? []).slice(0, 6).map((item) => `
+          <article class="data-card">
+            <div class="card-head"><strong>${item.task ?? "AI调用"}</strong><span>${item.source ?? "fallback"}</span></div>
+            <p>${item.success ? "成功" : "失败"} · ${item.cacheHit ? "缓存命中" : `${item.durationMs ?? 0}ms`}</p>
+            <small>${item.errorCategory || "无错误"} · ${item.time ? new Date(item.time).toLocaleString("zh-CN", { hour12: false }) : "时间待更新"}</small>
+          </article>
+        `).join("") || `<article class="data-card"><strong>暂无调用记录</strong><p>生成AI分析后这里会显示DeepSeek与fallback统计。</p></article>`}
+      </div>
+    </section>
+
+    <section class="wide-section">
       <div class="section-head"><h2>数据库状态</h2><span>Supabase PostgreSQL / memory fallback</span></div>
       <div class="detail-grid">
         <article class="data-card"><strong>模式</strong><p>${status.database.mode}</p></article>
@@ -69,4 +90,10 @@ export async function renderSystemStatus() {
         <article class="data-card"><strong>错误</strong><p>${status.scheduler.lastError || "无"}</p></article>
       </div>
     </section>`;
+}
+
+function formatFailureReasons(reasons = {}) {
+  const rows = Object.entries(reasons);
+  if (!rows.length) return "无失败记录";
+  return rows.map(([key, value]) => `${key}:${value}`).join(" / ");
 }

@@ -165,6 +165,11 @@ export function getAiRuntimeStatus() {
       genericKeyConfigured: Boolean(process.env.OPENAI_API_KEY || process.env.AI_API_KEY),
     },
     fallbackProviders: resolveAiConfigs().slice(1).map((item) => item.provider),
+    metrics: buildAiCallMetrics(),
+    cache: {
+      size: aiResultCache.size,
+      types: summarizeAiCacheTypes(),
+    },
     ...lastAiStatus,
   };
 }
@@ -270,6 +275,17 @@ async function runAiJsonTask({ task, input, outputSchema, fallback }) {
   const cacheKey = buildAiCacheKey(task, normalizedInput);
   const cached = getCachedAiResult(cacheKey);
   if (cached) {
+    recordAiCall({
+      task: `${task} cache-hit`,
+      model: cached.aiStatus?.model ?? cached.tokenUsage?.model ?? "cache",
+      startedAt,
+      success: true,
+      source: cached.source ?? cached.aiStatus?.source ?? "deepseek",
+      tokenUsage: cached.tokenUsage ?? null,
+      responseLength: 0,
+      parseSuccess: true,
+      cacheHit: true,
+    });
     return {
       ...cached,
       aiStatus: {
@@ -430,10 +446,15 @@ function enqueueAiTask(taskRunner) {
 }
 
 function buildAiCacheKey(task, input = {}) {
+  const date = new Date().toISOString().slice(0, 10);
+  const taskText = String(task ?? "");
   const stock = input.stockData ?? {};
   const code = String(stock.code ?? "").trim();
-  if (!code || !String(task).includes("投资研究报告")) return "";
-  return `stock-report:${new Date().toISOString().slice(0, 10)}:${code}`;
+  if (code && taskText.includes("投资研究报告")) return `stock-report:${date}:${code}`;
+  if (taskText.includes("首页AI市场分析")) return `market-analysis:${date}:${marketCacheSignature(input)}`;
+  if (taskText.includes("回答用户") && !code) return "";
+  if (taskText.includes("投资研究报告")) return `research-report:${date}:${marketCacheSignature(input)}`;
+  return "";
 }
 
 function getCachedAiResult(key) {
@@ -457,6 +478,74 @@ function setCachedAiResult(key, result) {
     const firstKey = aiResultCache.keys().next().value;
     if (firstKey) aiResultCache.delete(firstKey);
   }
+}
+
+function buildAiCallMetrics() {
+  const today = new Date().toISOString().slice(0, 10);
+  const todayLogs = aiCallLogs.filter((item) => String(item.time ?? "").startsWith(today));
+  const realCalls = todayLogs.filter((item) => !item.cacheHit);
+  const deepseekSuccess = realCalls.filter((item) => item.success && item.source === "deepseek").length;
+  const fallbackCount = todayLogs.filter((item) => item.source === "fallback" || item.errorCategory || !item.success).length;
+  const durations = realCalls.map((item) => Number(item.durationMs)).filter(Number.isFinite);
+  return {
+    todayTotal: todayLogs.length,
+    todayRealCalls: realCalls.length,
+    deepseekSuccess,
+    fallbackCount,
+    cacheHits: todayLogs.filter((item) => item.cacheHit).length,
+    averageResponseMs: durations.length ? Math.round(durations.reduce((sum, value) => sum + value, 0) / durations.length) : 0,
+    failureReasons: summarizeFailureReasons(todayLogs),
+    last10: todayLogs.slice(0, 10).map((item) => ({
+      time: item.time,
+      task: simplifyAiTaskName(item.task),
+      source: item.source,
+      success: item.success,
+      cacheHit: item.cacheHit,
+      durationMs: item.durationMs,
+      errorCategory: item.errorCategory,
+    })),
+  };
+}
+
+function summarizeFailureReasons(logs = []) {
+  return logs.reduce((acc, item) => {
+    const key = item.errorCategory || (item.source === "fallback" && !item.success ? "fallback" : "");
+    if (!key) return acc;
+    acc[key] = (acc[key] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function summarizeAiCacheTypes() {
+  return [...aiResultCache.keys()].reduce((acc, key) => {
+    const type = String(key).split(":")[0] || "unknown";
+    acc[type] = (acc[type] ?? 0) + 1;
+    return acc;
+  }, {});
+}
+
+function marketCacheSignature(input = {}) {
+  const market = input.marketData ?? input.marketSnapshot ?? {};
+  const sectors = (market.hotSectors ?? []).slice(0, 6).map((item) => item.name ?? item.code ?? "").join("|");
+  const updatedAt = String(market.updatedAt ?? "").slice(0, 10);
+  return `${updatedAt || "today"}:${simpleHash(`${market.source ?? ""}|${sectors}`)}`;
+}
+
+function simpleHash(value = "") {
+  let hash = 0;
+  for (const char of String(value)) {
+    hash = ((hash << 5) - hash + char.charCodeAt(0)) | 0;
+  }
+  return Math.abs(hash).toString(36);
+}
+
+function simplifyAiTaskName(task = "") {
+  const text = String(task);
+  if (text.includes("首页AI市场分析")) return "market-analysis";
+  if (text.includes("回答用户")) return "ask";
+  if (text.includes("cache-hit")) return "cache";
+  if (text.includes("股票") || text.includes("投资研究报告")) return "stock-report";
+  return text.slice(0, 30);
 }
 
 function clonePlain(value) {
@@ -516,9 +605,9 @@ function normalizeAiInput(input = {}) {
   const announcementData = asArray(input.announcementData ?? input.announcements ?? stockData.announcements);
   return {
     question: input.question,
-    marketData: input.marketData ?? input.market ?? {},
+    marketData: input.marketData ?? input.marketSnapshot ?? input.market ?? {},
     stockData,
-    newsData,
+    newsData: newsData.length ? newsData : asArray(input.newsSnapshot?.news),
     announcementData,
     investmentProfile: input.investmentProfile ?? input.profile ?? input.settings ?? {},
     riskData: asArray(input.riskData ?? input.risks),
@@ -1989,12 +2078,12 @@ function closeTruncatedJson(text) {
   return `${result}${stack.reverse().join("")}`;
 }
 
-function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null, responseLength = 0, parseSuccess = null }) {
+function recordAiCall({ task, model, startedAt, success, source, error = "", errorCategory = "", tokenUsage = null, responseLength = 0, parseSuccess = null, cacheHit = false }) {
   const durationMs = Date.now() - startedAt;
-  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, errorCategory, tokenUsage, responseLength, parseSuccess };
+  const log = { time: new Date().toISOString(), task, model, source, success, durationMs, error, errorCategory, tokenUsage, responseLength, parseSuccess, cacheHit };
   aiCallLogs.unshift(log);
   aiCallLogs.splice(100);
-  const logMessage = `[ai-call] task=${task} model=${model} source=${source} success=${success} responseLength=${responseLength} parseSuccess=${parseSuccess}`;
+  const logMessage = `[ai-call] task=${task} model=${model} source=${source} success=${success} cacheHit=${cacheHit} responseLength=${responseLength} parseSuccess=${parseSuccess}`;
   if (success) {
     console.info(logMessage);
   } else {
