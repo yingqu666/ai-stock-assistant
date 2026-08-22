@@ -237,6 +237,12 @@ export function generateRuleBasedAnalysis(input) {
   const scoreBreakdown = buildScoreBreakdown(input, investmentDecision.score);
   const investorMatch = buildInvestorMatch(input, investmentDecision.score);
   const riskLevel = buildRiskLevel(investmentDecision.score, input.riskData);
+  const sentiment = input.marketData?.marketSentiment ?? {};
+  const mainDirection = hotDirections[0];
+  const marketState = `${investmentDecision.marketTrend ?? "震荡观察"}：${marketSummary}，上涨${sentiment.upCount ?? missing}家，下跌${sentiment.downCount ?? missing}家。`;
+  const capitalDirection = hotDirections.length
+    ? `资金关注${hotDirections.slice(0, 3).map((item) => item.name).join("、")}，需要观察成交活跃度是否延续。`
+    : "热点板块数据不足，资金方向待确认。";
 
   return {
     assetProfile,
@@ -267,6 +273,12 @@ export function generateRuleBasedAnalysis(input) {
       marketRisks: ["市场成交不足", "指数回撤", "高位题材波动放大"],
     },
     investmentDecision,
+    marketState,
+    capitalDirection,
+    mainOpportunity: mainDirection ? `${mainDirection.name}：${mainDirection.reason}` : "市场主线数据不足，暂不生成主要机会。",
+    mainRisk: buildRiskList(input, newsEvents)[0] ?? "市场风险数据不足，需观察指数和成交变化。",
+    tomorrowObservation: "观察涨跌家数、成交额、热点板块和新闻事件是否延续。",
+    currentMarketJudgment: marketState,
     marketSummary: `今日市场：${marketSummary}。`,
     coreLogic: "核心逻辑：结合指数涨跌、成交额、涨跌家数、热点板块、新闻公告和用户关注标的进行结构化观察。",
     industryAnalysis: formatHotDirections(hotDirections),
@@ -366,6 +378,12 @@ function normalizeAiOutput(output, input, source) {
     recentChanges: output.recentChanges ?? fallback.recentChanges,
     investmentLogic: output.investmentLogic ?? fallback.investmentLogic,
     riskAnalysis: output.riskAnalysis ?? fallback.riskAnalysis,
+    marketState: output.marketState ?? fallback.marketState ?? output.currentMarketJudgment,
+    capitalDirection: output.capitalDirection ?? fallback.capitalDirection,
+    mainOpportunity: output.mainOpportunity ?? fallback.mainOpportunity,
+    mainRisk: output.mainRisk ?? fallback.mainRisk,
+    tomorrowObservation: output.tomorrowObservation ?? fallback.tomorrowObservation,
+    currentMarketJudgment: output.currentMarketJudgment ?? fallback.currentMarketJudgment,
     marketSummary: output.marketSummary ?? output.summary ?? fallback.marketSummary,
     hotDirections: Array.isArray(output.hotDirections) ? output.hotDirections : fallback.hotDirections,
     industryAnalysis: output.industryAnalysis ?? fallback.industryAnalysis,
@@ -376,6 +394,7 @@ function normalizeAiOutput(output, input, source) {
     evidence: output.evidence ?? output.conclusionBasis ?? fallback.evidence,
     conclusionBasis: output.conclusionBasis ?? fallback.conclusionBasis,
     credibility: output.credibility ?? fallback.credibility,
+    aiCredibility: output.aiCredibility ?? fallback.aiCredibility,
     summary: output.summary ?? output.marketSummary ?? fallback.summary,
     stockAdvice: output.stockAdvice ?? output.stockAnalysis ?? fallback.stockAdvice,
     aiStatus: output.aiStatus ?? { source: source === "DeepSeek" ? "deepseek" : source === "规则fallback" ? "fallback" : source },

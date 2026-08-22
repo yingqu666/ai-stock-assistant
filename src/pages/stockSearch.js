@@ -165,15 +165,14 @@ export async function renderStockSearch() {
     </section>
 
     ${canScore ? `<section class="wide-section">
-      <div class="section-head"><h2>五维评分</h2><span>技术、资金、基本面、消息、市场环境</span></div>
+      <div class="section-head"><h2>AI综合评分</h2><span>辅助判断，不是涨跌预测</span></div>
       <div class="metrics">
         ${[
-          { label: "综合评分", value: hasAiDecision ? `${decision.score}/100` : aiStateText, change: hasAiDecision ? "AI综合" : "尚无AI评分" },
-          { label: "技术面", value: `${breakdown.technical}/20`, change: stockDetail.changePercent ?? empty },
-          { label: "资金面", value: `${breakdown.capital}/20`, change: stockDetail.amount ?? empty },
-          { label: "基本面", value: `${breakdown.fundamental}/20`, change: isEtf ? "ETF看指数和成分" : (financials.status ?? "财务") },
-          { label: "消息面", value: `${breakdown.news}/20`, change: `${stockNews.length + announcements.length}条` },
-          { label: "市场环境", value: `${breakdown.market}/20`, change: "结合大盘环境" },
+          { label: "AI综合评分", value: hasAiDecision ? `${decision.score}/100` : aiStateText, change: "仅辅助判断，不代表可以买" },
+          { label: "趋势依据", value: `${breakdown.trend}/30`, change: `${tradingPosition.trend} · ${tradingPosition.pricePosition}` },
+          { label: "资金依据", value: `${breakdown.capitalStrength}/25`, change: stockDetail.amount ?? empty },
+          { label: "行业依据", value: `${breakdown.industry}/25`, change: stockDetail.industry ?? empty },
+          { label: "风险扣分", value: `${breakdown.risk}/20`, change: ensureAtLeast(decision.risks, ["波动风险"], 1)[0] },
         ].map(metricCard).join("")}
       </div>
       <div class="detail-grid compact">
@@ -848,7 +847,21 @@ function scoreBreakdown(stock, decision = {}, aiAnalysis = {}) {
   const fundamental = stock.assetType === "ETF" ? 12 : (stock.financials?.revenue || stock.marketCap ? 14 : 9);
   const news = Math.min(20, 10 + ((stock.announcements ?? []).length * 2));
   const market = Math.max(5, Math.min(20, total - technical - capital - fundamental - news));
-  return { total, technical, capital, fundamental, news, market };
+  const trend = Math.min(30, Math.round(technical * 1.5));
+  const industry = Math.min(25, Math.max(8, Math.round((fundamental + market) * 0.75)));
+  const risk = Math.max(0, Math.min(20, 20 - Math.max(0, 60 - total) * 0.25 - asList(decision.risks).length));
+  return {
+    total,
+    technical,
+    capital,
+    fundamental,
+    news,
+    market,
+    trend,
+    capitalStrength: Math.min(25, Math.round(capital * 1.25)),
+    industry: Math.round(industry),
+    risk: Math.round(risk),
+  };
 }
 
 function buildQualityOpportunity(stock, breakdown, decision = {}, aiAnalysis = {}) {

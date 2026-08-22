@@ -106,6 +106,11 @@ const reportSchema = {
 };
 
 const marketAnalysisSchema = {
+  marketState: "市场状态：强势/震荡偏强/震荡等待/风险阶段，必须引用指数、涨跌家数和成交额",
+  capitalDirection: "资金方向：说明资金更关注哪些板块，必须引用TOP热点板块和成交/资金活跃度",
+  mainOpportunity: "主要机会：只描述市场方向或板块，不输出具体买卖股票",
+  mainRisk: "主要风险：必须具体到市场、板块或事件",
+  tomorrowObservation: "明日观察：列出需要验证的市场信号",
   currentMarketJudgment: "当前市场判断：强势/震荡偏强/震荡等待/风险阶段，并说明一句核心理由",
   marketSummary: "今日A股市场分析，必须引用指数、涨跌家数、成交额、涨停跌停、热点板块和新闻",
   mainDirections: [
@@ -250,12 +255,12 @@ export async function runResearchTeam(input) {
   const report = await generateResearchReport(input);
   return {
     agents: [
-      { name: "市场分析师", responsibility: "指数、成交量、市场情绪、涨跌家数", output: report.marketSummary },
-      { name: "行业分析师", responsibility: "热点行业、政策影响、产业趋势", output: formatHotDirections(report.hotDirections) || report.industryAnalysis },
-      { name: "公司分析师", responsibility: "公司基本面、公告、财务、新闻", output: report.companyAnalysis ?? report.stockAnalysis },
-      { name: "技术分析师", responsibility: "趋势、成交、波动", output: buildTechnicalView(input) },
-      { name: "风险分析师", responsibility: "估值风险、行业风险、市场风险", output: flattenRiskAnalysis(report).join("；") },
-      { name: "投资经理AI", responsibility: "综合分析并输出最终研究判断", output: report.conclusion },
+      { name: "市场分析师", responsibility: "只看指数、市场情绪和成交，不重复公司分析", output: buildResearchTeamMarketView(input, report) },
+      { name: "行业分析师", responsibility: "只看板块、资金活跃度和政策/新闻催化", output: buildResearchTeamIndustryView(input, report) },
+      { name: "公司分析师", responsibility: "只看财报、公告和公司事件", output: buildResearchTeamCompanyView(input, report) },
+      { name: "技术分析师", responsibility: "只看趋势、成交和波动位置", output: buildTechnicalView(input) },
+      { name: "风险分析师", responsibility: "只看下跌风险、黑天鹅和风险触发条件", output: buildResearchTeamRiskView(report) },
+      { name: "投资经理AI", responsibility: "最后综合，输出观察结论和仓位参考，不给确定买卖", output: buildResearchTeamManagerView(report) },
     ],
     report,
   };
@@ -726,9 +731,19 @@ function fallbackMarketAnalysis(input = {}) {
       midTermImpact: "若成交额不能延续，主线持续性会下降。",
     },
   ];
+  const marketSummary = `今日市场处于${state}，上涨${sentiment.upCount ?? "数据不足"}家、下跌${sentiment.downCount ?? "数据不足"}家，成交额${sentiment.turnover ?? findMetric(marketData.marketOverview, "成交")?.value ?? "数据不足"}。`;
+  const capitalDirection = sectors.length
+    ? `资金主要集中在${sectors.slice(0, 3).map((item) => `${item.name ?? "板块"}（${item.amount ?? item.turnover ?? item.changePercent ?? "成交数据不足"}）`).join("、")}，需要看成交活跃度能否延续。`
+    : "热点板块和资金方向数据不足，暂不判断资金主线。";
+  const mainRisk = `${riskReminders[0].target}：${riskReminders[0].reason}`;
   return {
     currentMarketJudgment: `${state}：基于涨跌家数、成交额和热点板块强度的规则fallback判断。`,
-    marketSummary: `今日市场处于${state}，上涨${sentiment.upCount ?? "数据不足"}家、下跌${sentiment.downCount ?? "数据不足"}家，成交额${sentiment.turnover ?? findMetric(marketData.marketOverview, "成交")?.value ?? "数据不足"}。`,
+    marketState: `${state}：${marketSummary}`,
+    capitalDirection,
+    mainOpportunity: mainDirections[0] ? `${mainDirections[0].name}：${mainDirections[0].reason}` : "数据不足，暂不生成主要机会方向。",
+    mainRisk,
+    tomorrowObservation: "观察涨跌家数、成交额、涨停跌停和TOP热点板块是否延续。",
+    marketSummary,
     mainDirections,
     riskReminders,
     operationPlan: "以观察主线持续性和控制仓位暴露为主，不追高，不输出确定买卖。",
@@ -963,23 +978,53 @@ function nowIsoText() {
 }
 
 function buildPrompt({ task, input, outputSchema }) {
+  const requestType = simplifyAiTaskName(task);
   return JSON.stringify({
     task,
-    rules: [
-      "只基于输入数据做A股/ETF投研，不编造行情、新闻、公告或财务。",
-      "报告必须简短，固定包含：当前状态、关注逻辑、看多因素、看空因素、最大风险、短线观察(1-5天)、中线观察(1-4周)、AI结论。",
-      "必须引用当前价格、涨跌幅、成交额、PE、PB、行业；如果财务字段存在，也要引用ROE和净利润。",
-      "新闻最多使用输入中的3条，公告最多使用3条，优先个股相关新闻，保留真实来源名称。",
-      "结合投资者画像输出匹配度、关注理由、风险提醒和仓位参考。",
-      "AI结论只能使用：关注、等待、谨慎观察、风险较高。",
-      "评分只能作为辅助信息，不能作为主要结论；必须先给当前判断，再说明行业、行情、财务、新闻、公告和风险依据。",
-      "仓位参考只能表达风险暴露，不得写成交易指令。",
-      "禁止确定买入、确定卖出、保证收益。没有数据时明确写数据缺失。",
-    ],
+    requestType,
+    rules: buildPromptRules(requestType),
     requiredInputFields: ["marketData", "stockData", "newsData", "announcementData", "investmentProfile", "riskData"],
     input,
-    outputSchema: compactOutputSchema(outputSchema),
+    outputSchema: compactOutputSchema(requestType, outputSchema),
   }, null, 2);
+}
+
+function buildPromptRules(requestType = "") {
+  const baseRules = [
+    "只基于输入数据做A股/ETF投研，不编造行情、新闻、公告或财务。",
+    "最终输出只能是合法JSON对象，第一个字符必须是{，最后一个字符必须是}。",
+    "禁止Markdown代码块、前后解释文字、尾随逗号、确定买入、确定卖出、保证上涨、保证收益。",
+    "没有数据时明确写数据缺失，并降低结论强度。",
+  ];
+  if (requestType === "market-analysis") {
+    return [
+      ...baseRules,
+      "这是首页市场分析，不是股票报告，不要展开公司基本面。",
+      "必须输出marketState、capitalDirection、mainOpportunity、mainRisk、tomorrowObservation。",
+      "marketState要回答今天市场情绪如何，必须引用指数、涨跌家数、成交额或涨停跌停。",
+      "capitalDirection要说明资金关注哪些方向，必须引用TOP热点板块、成交额、资金活跃度或新闻。",
+      "mainRisk必须具体到市场、板块或事件，不能只写注意市场风险。",
+      "tomorrowObservation要列出明天需要验证的市场信号。",
+    ];
+  }
+  if (requestType === "ask") {
+    return [
+      ...baseRules,
+      "回答必须包含【AI投资判断】【依据】【风险】【观察建议】，语言简洁。",
+      "如果用户问股票/ETF，必须引用行情、行业、新闻、公告或财务；如果问市场，必须引用指数、涨跌家数、成交额和热点板块。",
+      "AI结论只能使用：关注、等待、谨慎观察、风险较高。",
+    ];
+  }
+  return [
+    ...baseRules,
+    "这是股票/ETF分析，固定包含currentState、attentionLogic、bullishFactors、bearishFactors、maximumRisk、shortTermObservation、midLongTermObservation、aiConclusion。",
+    "currentState不是简单复述涨跌，必须判断趋势、资金状态和价格位置高低，例如短线反弹但成交未放大、放量突破后仍需验证等。",
+    "attentionLogic必须拆成行业逻辑、资金逻辑、事件逻辑，并引用行业、成交额、新闻或公告。",
+    "bullishFactors和bearishFactors最多3条，每条都要带数据依据。",
+    "shortTermObservation面向1-5个交易日，midLongTermObservation面向1-4周，必须说明需要验证什么。",
+    "AI结论只能使用：关注、等待、谨慎观察、风险较高。",
+    "评分只能作为辅助判断，不能暗示高分一定可以买。",
+  ];
 }
 
 function buildLegacyPrompt({ task, input, outputSchema }) {
@@ -1012,7 +1057,23 @@ function buildLegacyPrompt({ task, input, outputSchema }) {
   }, null, 2);
 }
 
-function compactOutputSchema() {
+function compactOutputSchema(requestType = "") {
+  if (requestType === "market-analysis") {
+    return {
+      marketState: "市场状态，引用指数、涨跌家数、成交额或涨停跌停",
+      capitalDirection: "资金方向，引用TOP热点板块、成交/资金活跃度",
+      mainOpportunity: "主要机会，说明板块/方向和依据，不输出买卖",
+      mainRisk: "主要风险，具体到市场/板块/事件",
+      tomorrowObservation: "明日观察，需要验证的信号",
+      currentMarketJudgment: "当前市场判断",
+      mainDirections: [{ name: "方向", reason: "原因", sustainability: "持续性", risk: "风险" }],
+      riskReminders: [{ target: "风险对象", reason: "风险原因", shortTermImpact: "短期影响", midTermImpact: "中期影响" }],
+      operationPlan: "操作思路，只能观察、等待、控制仓位、降低风险暴露",
+      investmentDecision: { marketTrend: "市场趋势", rating: "关注/等待/谨慎观察/风险较高", positionAdvice: "仓位参考", reasons: ["依据"], risks: ["风险"], watchPoints: ["观察点"] },
+      evidence: { market: ["市场依据"], industry: ["板块依据"], news: ["新闻依据"], risk: ["风险依据"] },
+      conclusion: "一句话结论",
+    };
+  }
   return {
     stockBasics: { name: "名称", code: "代码", industry: "行业", assetType: "股票/ETF", summary: "股票概况" },
     currentQuote: { price: "当前价格", changePercent: "涨跌幅", volume: "成交量", amount: "成交额", turnoverRate: "换手率", marketCap: "总市值", pe: "PE", pb: "PB" },
@@ -1191,6 +1252,12 @@ function normalizeOutput(output, fallback) {
     investmentLogic: output.investmentLogic ?? fallback.investmentLogic,
     riskAnalysis,
     marketSummary: output.marketSummary ?? fallback.marketSummary,
+    marketState: output.marketState ?? fallback.marketState ?? output.currentMarketJudgment ?? fallback.currentMarketJudgment,
+    capitalDirection: output.capitalDirection ?? fallback.capitalDirection,
+    mainOpportunity: output.mainOpportunity ?? fallback.mainOpportunity,
+    mainRisk: output.mainRisk ?? fallback.mainRisk,
+    tomorrowObservation: output.tomorrowObservation ?? fallback.tomorrowObservation,
+    currentMarketJudgment: output.currentMarketJudgment ?? fallback.currentMarketJudgment,
     hotDirections: Array.isArray(output.hotDirections) ? output.hotDirections : fallback.hotDirections,
     industryAnalysis: output.industryAnalysis ?? fallback.industryAnalysis,
     stockAnalysis: output.stockAnalysis ?? fallback.stockAnalysis,
@@ -1972,6 +2039,54 @@ function buildTechnicalView(input) {
   const stock = input?.stockData ?? input?.stockQuote ?? {};
   const volume = stock.amount ?? input?.marketData?.marketOverview?.find?.((item) => String(item.label).includes("成交"))?.value ?? "数据源未返回";
   return `技术观察：重点看价格位置、成交额${volume}、热点延续性和波动放大风险；只作为趋势观察，不作为买卖指令。`;
+}
+
+function buildResearchTeamMarketView(input = {}, report = {}) {
+  const market = input.marketData ?? input.marketSnapshot ?? {};
+  const sentiment = market.marketSentiment ?? {};
+  const indexes = asArray(market.marketOverview ?? market.indexes).slice(0, 3)
+    .map((item) => `${item.label ?? item.name} ${item.value ?? item.price ?? ""} ${item.change ?? item.changePercent ?? ""}`.trim())
+    .join("；");
+  return [
+    `指数：${indexes || "指数数据不足"}`,
+    `情绪：上涨${sentiment.upCount ?? "暂缺"}家，下跌${sentiment.downCount ?? "暂缺"}家，赚钱效应${sentiment.moneyEffect ?? sentiment.summary ?? "暂缺"}`,
+    `成交：${sentiment.turnover ?? findMetric(market.marketOverview, "成交")?.value ?? "暂缺"}`,
+    `市场结论：${report.marketState ?? report.currentMarketJudgment ?? report.marketSummary ?? "等待市场数据补齐"}`,
+  ].join("；");
+}
+
+function buildResearchTeamIndustryView(input = {}, report = {}) {
+  const market = input.marketData ?? input.marketSnapshot ?? {};
+  const sectors = asArray(market.hotSectors ?? report.hotDirections).slice(0, 5)
+    .map((item) => `${item.name ?? "板块"}：${item.changePercent ?? item.change ?? item.reason ?? "热度待确认"}，成交/资金${item.amount ?? item.capitalFlow ?? item.flow ?? "暂缺"}`);
+  const news = asArray(input.newsData ?? input.newsEvents).slice(0, 2).map((item) => `${item.title}（${item.source ?? "新闻"}）`);
+  return `板块：${sectors.join("；") || "热点板块暂缺"}；政策/新闻：${news.join("；") || "暂无强政策新闻"}；资金方向：${report.capitalDirection ?? "等待资金数据确认"}`;
+}
+
+function buildResearchTeamCompanyView(input = {}, report = {}) {
+  const stock = input.stockData ?? input.stockQuote ?? {};
+  const financial = report.financialReview ?? {};
+  const announcements = asArray(input.announcementData ?? stock.announcements).slice(0, 3).map((item) => `${item.title ?? "公告"}（${item.source ?? "公告源"}）`);
+  return [
+    `标的：${stock.name ?? stock.code ?? "未指定"}`,
+    stock.assetType === "ETF" ? `ETF方向：${stock.trackingIndex ?? stock.industry ?? "跟踪方向暂缺"}` : `财务：${financial.summary ?? `营收${stock.financials?.revenue ?? "暂缺"}，净利润${stock.financials?.netProfit ?? "暂缺"}`}`,
+    `公告/事件：${announcements.join("；") || "公告暂缺"}`,
+  ].join("；");
+}
+
+function buildResearchTeamRiskView(report = {}) {
+  const risks = [
+    report.maximumRisk,
+    ...flattenRiskAnalysis(report),
+    ...(report.riskReminders ?? []).map((item) => `${item.target ?? "风险"}：${item.reason ?? item}`),
+  ].filter(Boolean);
+  return risks.slice(0, 6).join("；") || "风险数据不足，需观察指数回撤、热点退潮和公告利空。";
+}
+
+function buildResearchTeamManagerView(report = {}) {
+  const decision = report.investmentDecision ?? {};
+  const conclusion = normalizeAiConclusion(report.aiConclusion ?? decision.rating, decision.score);
+  return `最终判断：${conclusion}；仓位参考：${decision.positionAdvice ?? "低仓位观察"}；核心依据：${asStringList(decision.reasons).slice(0, 3).join("；") || report.attentionLogic || report.conclusion || "等待更多数据确认"}。`;
 }
 
 function parseJsonContent(content) {
